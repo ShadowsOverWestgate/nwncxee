@@ -4,23 +4,16 @@ using CX.Graphics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-117 review r1 finding 9: the one thing neither the off-device check nor
-/// <see cref="PltVerify"/> can prove -- that <b>the GLSL that ships</b> resolves a PLT the way the CPU says
-/// it does. Both of those compare C# against C#; this renders <c>cx_plt.glsl</c>'s own
-/// <c>CxPltResolve</c> on the GPU, reads the pixels back and compares them to
-/// <see cref="PltImage.Resolve"/>.
-/// <para>Once per session, behind <c>alloy.pltverify</c>, and cold by construction: one 16x16 draw, read
-/// through <see cref="GpuReadback"/> (a persistently mapped ring) rather than <c>glGetBufferSubData</c> or
-/// <c>glGetTexImage</c>, either of which makes NVIDIA wait out the whole queued frame.</para>
-/// <para><b>Why the comparison is exact.</b> The target is <see cref="Side"/> square and the fragment shader
-/// takes <c>uv = gl_FragCoord.xy / vec2(pltDim)</c>, so output pixel (x, y) lands on the CENTRE of PLT texel
-/// (x, y): the bilinear weights are 0, the uv derivative is one texel per pixel so the LOD is 0, and the
-/// resolve reduces to the single palette fetch the CPU does. Any difference is a real difference in the
-/// shader's indexing, its wrap, its rounding or its palette row -- not filtering.</para></summary>
+/// <summary>Proves that <b>the GLSL that ships</b> resolves a PLT the way the CPU does, which comparing C#
+/// against C# cannot: renders <c>cx_plt.glsl</c>'s own <c>CxPltResolve</c>, reads the pixels back through
+/// <see cref="GpuReadback"/> (never <c>glGetTexImage</c>: NVIDIA waits out the whole queued frame) and
+/// compares them to <see cref="PltImage.Resolve"/>. Once per session behind <c>alloy.pltverify</c>.</summary>
 internal static unsafe class PltGpuCheck
 {
-    /// <summary>Side of the readback target: the first 16x16 texels of the PLT, which is 256 comparisons --
-    /// enough to catch an indexing or rounding error, small enough that the draw and the copy are noise.</summary>
+    /// <summary>Side of the readback target: the first 16x16 texels of the PLT, 256 comparisons, one cold
+    /// draw. The target is square and the shader takes <c>uv = gl_FragCoord.xy / vec2(pltDim)</c>, so pixel
+    /// (x, y) lands on the CENTRE of texel (x, y) -- bilinear weights 0, LOD 0 -- which makes any difference
+    /// one of indexing, wrap, rounding or palette row, never filtering.</summary>
     private const int Side = 16;
 
     private enum Phase : byte { Idle, Armed, Rendered, Done }
@@ -83,9 +76,9 @@ internal static unsafe class PltGpuCheck
             if (++_waited > WaitFrames) Fail($"\"{_name}\" was still not resident after {_waited} frames");
             return;
         }
-        // The master palette is the probe's other input. In engine mode nothing else needs it, so build it
-        // here -- PltVerify has already read the seven slots on the game thread, and this is the context the
-        // upload belongs in.
+        // The master palette is the probe's other input, and when Alloy is off nothing else needs it -- so
+        // build it here. PltVerify has already read the seven slots on the game thread, and this is the
+        // context the upload belongs in.
         if (!PltPalettes.Ready) PltPalettes.Create();
         if (!PltPalettes.Ready)
         {

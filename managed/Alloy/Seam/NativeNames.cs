@@ -5,16 +5,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>Model, object and part names as NATIVE, immortal <c>char const*</c>.
-/// <para>Three slots and one engine struct hand a name straight to the game and let it keep the pointer:
-/// <c>Gob::GetModelName</c> @0x437270 returns <c>model + 0x10</c>, <c>Gob::GetRandomPart</c> @0x43d4c0 returns
-/// <c>part->MdlNode + 0x38</c>, and <c>CHitInfo+0x68</c> is the hit part's name (CX-118). In the engine those
-/// pointers were into the model, which outlives every caller. CX's names are managed strings, which a native
-/// caller must never see, so each distinct name is copied once into native memory and never freed -- a model
-/// corpus has a few thousand distinct node names, i.e. tens of kilobytes for the session, against a
-/// lifetime problem that has no other cheap answer.</para>
-/// <para>Cold by construction: an entry is minted the first time a name is asked for and found again by
-/// dictionary lookup after that. Nothing here may be called from a hot loop, and nothing is.</para></summary>
+/// <summary>Model, object and part names as NATIVE, immortal <c>char const*</c>: three slots and
+/// <c>CHitInfo+0x68</c> hand a name straight to the game and let it keep the pointer
+/// (<c>Gob::GetModelName</c> @0x437270, <c>Gob::GetRandomPart</c> @0x43d4c0), so each distinct name is copied
+/// once into native memory and never freed. Cold -- minted on first ask, never called from a hot loop.</summary>
 public static unsafe class NativeNames
 {
     private static readonly Dictionary<string, nint> _byName = new(StringComparer.Ordinal);

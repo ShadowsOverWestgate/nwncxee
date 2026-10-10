@@ -3,7 +3,7 @@ using CX.Framework;
 
 namespace CX.Services.Sound;
 
-/// <summary>CX-57: the native Steam Audio mixer (native/cxaudio.cpp), linked in (DirectPInvoke "cxaudio"). The
+/// <summary>The native Steam Audio mixer (native/cxaudio.cpp), linked in (DirectPInvoke "cxaudio"). The
 /// structs mirror the C ones field for field.</summary>
 internal static unsafe class SoundCore
 {

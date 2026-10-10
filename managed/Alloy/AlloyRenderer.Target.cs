@@ -7,11 +7,13 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#173/#467: FRAMEBUFFER PLUMBING. The engine's target is the default framebuffer by construction (the shim binds FBO 0 at the anchor); this latches its viewport, sRGB state and clear values, and binds the 4.6-side equivalent.</summary>
+/// <summary>Framebuffer plumbing. The engine's target is the default framebuffer by construction (the shim
+/// binds FBO 0 at the anchor); this latches its viewport, sRGB state and clear values, and binds the 4.6-side
+/// equivalent.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>#257: where the engine wants this frame's result. Every field is a GL query answer, latched
-    /// per generation rather than re-asked per frame.</summary>
+    /// <summary>Where the engine wants this frame's result. Every field is a GL query answer, latched per
+    /// generation rather than re-asked per frame.</summary>
     internal struct Target
     {
         internal int Vp0, Vp1, Vp2, Vp3;
@@ -20,13 +22,10 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     private static Target _target;
-    /// <summary>The generation the latch belongs to: the camera's own viewport (<c>+0x4dc</c>/<c>+0x4e0</c>),
-    /// the GUI scale, and the enrolled Scene. The first two are what the GL viewport is BUILT from --
-    /// <c>Camera::RenderScene</c> @0x4a8365 sets it from <c>Camera::UpscaleViewport</c>'s output, and that
-    /// function's whole scale factor is <c>CAurora::GetGUIScale()</c> (@0x4a44b0's first read), which
-    /// <c>Metrics.GameUiScale</c> already tracks per frame. The third covers an area transition, which is
-    /// when the engine rebuilds its render targets. Deliberately conservative -- a spurious re-read costs
-    /// seven GL calls once.</summary>
+    /// <summary>The generation the latch belongs to: the camera's own viewport (<c>+0x4dc</c>/<c>+0x4e0</c>) and
+    /// the GUI scale -- what the GL viewport is BUILT from, <c>Camera::UpscaleViewport</c>'s output scaled by
+    /// <c>CAurora::GetGUIScale()</c> -- plus the enrolled Scene, for the area transition that rebuilds the
+    /// engine's render targets. Deliberately conservative: a spurious re-read costs seven GL calls once.</summary>
     private static float _tgtVpW = -1f, _tgtVpH = -1f, _tgtUiScale = -1f;
     private static IntPtr _tgtScene = IntPtr.Zero;
     private static bool _tgtValid;
@@ -47,7 +46,7 @@ public sealed unsafe partial class AlloyRenderer
             _tgtVpW = FrameInputs.CamViewW; _tgtVpH = FrameInputs.CamViewH;
             _tgtUiScale = CX.Ui.Metrics.GameUiScale; _tgtScene = _enrollScene;
             ReadTarget(out _target);
-            // #458: the shim binds FBO 0 before the anchor, so there is no engine name here to go stale.
+            // The shim binds FBO 0 before the anchor, so there is no engine name here to go stale.
             _tgtValid = true;
         }
         else if (_frameSeq % LogEvery == 0)
@@ -62,10 +61,8 @@ public sealed unsafe partial class AlloyRenderer
                 _target = now;
             }
         }
-        // The clear values are NOT latched, and the reason is the one #257 kept verbatim: a GL share list
-        // shares objects, not per-context state, so glClearColor cannot be queried from inside the 4.6
-        // bracket -- this is the only place the value can be had, and it is the one the engine's own
-        // Clear(7) just used at the anchor. Two calls, not nine.
+        // A GL share list shares objects, not per-context state, so the clear values cannot be queried from
+        // inside the 4.6 bracket: here is the only place to have them, so they are read per frame, not latched.
         ReadClear(ref _target);
         return ref _target;
     }
@@ -85,9 +82,9 @@ public sealed unsafe partial class AlloyRenderer
         ReadClear(ref t);
     }
 
-    /// <summary>#132/#214: the engine's clear colour and depth, the values its own Clear(7) just used at the
-    /// anchor. The owned target starts from them, and the resolve blits ours back over every pixel of the
-    /// depth. Read per frame, never latched -- they are live area state, not frame topology.</summary>
+    /// <summary>The target's clear values: the depth GL holds, and for colour the area's fog colour caught at
+    /// the <c>SetFog</c> hook. The owned target starts from them, and the resolve blits ours back over every
+    /// pixel of the depth. Read per frame, never latched -- live area state, not frame topology.</summary>
     private static void ReadClear(ref Target t)
     {
         t.Clear0 = 0f; t.Clear1 = 0f; t.Clear2 = 0f; t.Clear3 = 1f; t.ClearDepth = 1f;
@@ -96,39 +93,26 @@ public sealed unsafe partial class AlloyRenderer
         Gl.GetFloatv(Gl.COLOR_CLEAR_VALUE, c);
         t.Clear0 = c[0]; t.Clear1 = c[1]; t.Clear2 = c[2]; t.Clear3 = c[3];
         float d; Gl.GetFloatv(Gl.DEPTH_CLEAR_VALUE, &d); t.ClearDepth = d;
-        // CX-120: in DB mode there is no engine Clear(7) to have just run, so GL's clear colour is whatever
-        // last touched it -- the GUI's -- and the world's void rendered PALE where vanilla renders it dark.
-        // The value it wants is the engine's OWN: `CNWCArea::SetFog(amount, colour)` @0x802380 hands that
-        // colour to the global SetClearColor, and the day/night palettes call it with the area's fog pair
-        // (`SetAsDay` @0x8064a0 with +0x1e0/+0xc4, `SetAsNight` @0x806640 with +0x17c/+0xa4). So vanilla's
-        // beyond-geometry pixel is the area's fog COLOUR whatever the fog AMOUNT is -- the amount drives the
-        // fog term, never the clear -- and the call is a game-layer one that DB mode still makes.
-        // <see cref="ScreenOwner.ClearRgba"/> is that call's argument, caught at the hook: ground truth,
-        // where reading FrameInputs' fog and gating it on FogOn reconstructed it and cleared an unfogged
-        // area to BLACK, which is the user's "black fog" beyond the world's edge.
+        // GL's own clear colour is whatever last touched it (the GUI's), so the value the world wants is the
+        // one the game layer hands CNWCArea::SetFog -- the area's fog COLOUR whatever the fog AMOUNT is, caught
+        // at the hook as ScreenOwner.ClearRgba. Display-space, NOT linearised, and alpha 0: the post stack and
+        // the GUI composite read the world target's alpha, so a 1 here is not cosmetic.
         float[] eng = ScreenOwner.ClearRgba;
-        // Display-space, NOT linearised. Measured both ways: mode 0's void is the lavender the fog colour
-        // reads as on screen, and linearising for the HDR target (the curve UploadFogColour applies to the
-        // fog UNIFORM, #132) makes it darker still.
-        // Alpha 0, which is what the engine's own Clear(7) leaves and what the frame diff measured in mode 0.
-        // A 1 here is not cosmetic: the post stack and the GUI composite read the world target's alpha.
         t.Clear0 = eng[0]; t.Clear1 = eng[1]; t.Clear2 = eng[2]; t.Clear3 = 0f;
     }
 
-    /// <summary>#375: the target block the colour pass was ENTERED with, copied at the top of the pass. A
-    /// second <see cref="ThisFrameTarget"/> call mid-pass is not a read of the same answer: on a self-check
-    /// frame it re-queries GL, and mid-pass GL says whatever Alloy last bound -- the post stack's own
-    /// colour-only framebuffer, which the latch then adopted as the engine's target and every later frame
-    /// resolved into. That was the "screen goes dark for good once gamma moves" report, live.</summary>
+    /// <summary>The target block the colour pass was ENTERED with, copied at the top of the pass. A second
+    /// <see cref="ThisFrameTarget"/> call mid-pass is not the same answer: on a self-check frame it re-queries
+    /// GL, which mid-pass says whatever Alloy last bound -- the post stack's own colour-only framebuffer, which
+    /// the latch would adopt as the engine's target for every later frame.</summary>
     private static Target _passTarget;
 
     /// <summary>Snapshot the pass's target block. Once, at the top of the colour pass, after the one
     /// <see cref="ThisFrameTarget"/> read.</summary>
     private static void HoldPassTarget(in Target t) => _passTarget = t;
 
-    /// <summary>#375: put the pass's engine target back as the draw framebuffer, sRGB state included -- for
-    /// the post stack's last stage, which writes where the resolve would have. From the snapshot, never a
-    /// fresh read.</summary>
+    /// <summary>Put the pass's engine target back as the draw framebuffer, sRGB state included -- for the post
+    /// stack's last stage, which writes where the resolve would have. From the snapshot, never a fresh read.</summary>
     internal static void RebindFrameTarget()
     {
         ref Target t = ref _passTarget;
@@ -136,8 +120,8 @@ public sealed unsafe partial class AlloyRenderer
         if (t.Srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
     }
 
-    /// <summary>Bind the 4.6-side draw target. #456: "same drawable, shared" is true under GLX and FALSE
-    /// under WGL -- where a present texture exists, the 4.6 context writes that instead and the engine
-    /// context blits it after the bracket (PresentTarget).</summary>
+    /// <summary>Bind the 4.6-side draw target. "Same drawable, shared" holds under GLX and NOT under WGL:
+    /// where a <see cref="PresentTarget"/> texture exists the 4.6 context writes that instead, and the engine
+    /// context blits it after the bracket.</summary>
     private static void BindTarget() => Gl.BindFramebuffer(Gl.FRAMEBUFFER, PresentTarget.Fbo46);
 }

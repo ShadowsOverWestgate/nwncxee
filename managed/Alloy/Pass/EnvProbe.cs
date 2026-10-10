@@ -6,26 +6,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// The per-area image-based lighting probe (ADR 0011 M3, #121): a small prefiltered colour cubemap captured
-/// from the Alloy scene draw, the ambient-specular source of every Alloy lit part. It replaces the engine's
-/// pseudo-spheremap: <c>inc_envmap.shd</c>'s sphere branch is not a reflection at all (an octahedral squash
-/// of the VIEW-SPACE normal plus a screen-position fudge, biased to (0.5,0.25)), and the texture it squashes
-/// is the AREA's authored env map -- which is why indoor metal reflects an outdoor sky. The scene env map at
-/// <c>scene+0x1e8</c> is therefore never bound by the Alloy pass: this cube is what the area actually looks
-/// like from where the player stands.
-/// <para>Cost: capture is the Alloy draw again, six times, into <see cref="Size"/>-square faces -- on an
-/// area change, not per frame (<see cref="Wanted"/>), inside the colour bracket the Alloy pass already
-/// opened. The cube stores LINEAR radiance in RGBA16F: filtering display-space values darkens them, so the
-/// capture stage skips its display-space encode (<c>uCapture</c>) and the sampler needs no linearisation.</para>
-/// <para>CX-46: the capture lands in <see cref="_cap"/>, whose box mip chain only feeds two compute
-/// dispatches after it: <c>cx_probe_ggx</c> GGX-prefilters it into the published <see cref="Tex"/> (level i
-/// = perceptual roughness i / (Mips - 1), the inverse of every sample site's <c>sqrt(rough)</c> mapping) and
-/// <c>cx_probe_sh</c> projects SH9 irradiance into <see cref="_sh"/>, the lit stage's ambient shape. A
-/// driver that cannot run them stands the whole probe down: no silent box-filtered fallback.</para>
-/// <para>CX-51: creatures are left out of the capture, and its alpha is 1 / distance, which CxProbeFetch
-/// (cx_ssr.glsl) uses to parallax-correct every lookup against <see cref="Origin"/> -- what an SSR miss falls
-/// back to then stands where the screen would have shown it. ponytail: one probe per area, captured at the
-/// camera; what the camera's position cannot see (an awning's underside) is not in it either.</para>
+/// The per-area image-based lighting probe (ADR 0011): a small prefiltered colour cubemap captured from the
+/// Alloy scene draw, the ambient-specular source of every Alloy lit part, in LINEAR RGBA16F. It replaces the
+/// engine's pseudo-spheremap, which squashes the AREA's authored env map over a view-space normal -- which is
+/// why indoor metal reflects an outdoor sky -- so the scene env map is never bound by the Alloy pass.
 /// </summary>
 internal static unsafe class EnvProbe
 {
@@ -38,8 +22,8 @@ internal static unsafe class EnvProbe
     /// <summary>The GGX-prefiltered cube, or 0 when it has not been built. Sampled by the Alloy lit stage on
     /// <see cref="ProbeUnit"/>.</summary>
     internal static uint Tex { get; private set; }
-    /// <summary>A capture has COMPLETED. Until then the Alloy pass feeds no ambient specular at all, which
-    /// is exactly its pre-#121 behaviour -- never a half-written cube.</summary>
+    /// <summary>A capture has COMPLETED. Until then the Alloy pass feeds no ambient specular at all, never
+    /// a half-written cube.</summary>
     internal static bool Ready { get; private set; }
     /// <summary>World point the live cube was captured from: the parallax correction's centre, and the one the
     /// "has the player walked out of this probe" test measures from.</summary>
@@ -48,12 +32,10 @@ internal static unsafe class EnvProbe
     /// count is the failure this ticket's third acceptance criterion is about.</summary>
     internal static int Captures { get; private set; }
 
-    /// <summary>Texture unit the probe binds on: above the material slots (3..9 since #146 added the AO
-    /// map), which are above the two shadow maps (1/2) and the diffuse (0). It must stay above them -- a
-    /// samplerCube and a sampler2D on ONE unit is INVALID_OPERATION and the draw is dropped, silently as far
-    /// as the frame is concerned. Above the grass push map and the #139 resolve as well: those are other
-    /// programs, but a cube target sharing a unit with them is exactly the mistake this alias exists to
-    /// prevent. See <see cref="TextureSlots"/> for the whole ladder, which asserts that ordering.</summary>
+    /// <summary>Texture unit the probe binds on: above the material slots, which are above the two shadow maps
+    /// and the diffuse. It must stay above them -- a samplerCube and a sampler2D on ONE unit is
+    /// INVALID_OPERATION and the draw is dropped, silently as far as the frame is concerned. See
+    /// <see cref="TextureSlots"/> for the whole ladder, which asserts that ordering.</summary>
     internal const uint ProbeUnit = TextureSlots.Probe;
 
     /// <summary>Near plane of a face frustum. Small: the probe sits at the camera, and the geometry that
@@ -81,7 +63,7 @@ internal static unsafe class EnvProbe
     private static uint _cap;
     /// <summary>The SH9 buffer: written as SSBO <see cref="ShOutBinding"/>, read as UBO <see cref="ShBinding"/>.</summary>
     private static uint _sh;
-    /// <summary>The two CX-46 compute programs.</summary>
+    /// <summary>The two prefilter compute programs.</summary>
     private static uint _progGgx, _progSh;
     /// <summary><c>cx_probe_ggx</c>'s <c>uLevel</c>: the level (so the roughness) being written.</summary>
     private static int _locLevel;
@@ -250,7 +232,7 @@ internal static unsafe class EnvProbe
         Revoke();   // a cube built by a dead context is stale for the world reason too
     }
 
-    /// <summary>#209: the world edge. The cube describes an area that has gone away, and this is the only thing
+    /// <summary>The world edge. The cube describes an area that has gone away, and this is the only thing
     /// that asks for a new one. The GL objects survive: they are the context's, not the world's, and the next
     /// capture reuses them.</summary>
     internal static void Revoke() => Ready = false;
@@ -277,7 +259,7 @@ internal static unsafe class EnvProbe
         Gl.BindBufferBase(Gl.UNIFORM_BUFFER, ShBinding, _sh);
     }
 
-    /// <summary>The two CX-46 dispatches over the fresh capture: GGX into every level of <see cref="Tex"/>, SH9
+    /// <summary>The two dispatches over the fresh capture: GGX into every level of <see cref="Tex"/>, SH9
     /// into <see cref="_sh"/>. Compute, so no raster state is touched; the program and the unit are put back.</summary>
     private static void Prefilter()
     {
@@ -376,7 +358,7 @@ internal static unsafe class EnvProbe
     }
 
     /// <summary>Stand the probe down by name for the session. The Alloy pass keeps drawing; it simply feeds
-    /// no ambient specular, which is its pre-#121 behaviour rather than a broken frame.</summary>
+    /// no ambient specular, rather than drawing a broken frame.</summary>
     private static void Fail(string why)
     {
         Ready = false;

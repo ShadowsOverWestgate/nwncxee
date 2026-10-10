@@ -5,18 +5,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #148: a depth-only snapshot of the Alloy frame, taken at the point the caller asks for it.
-/// <para>It exists because the Alloy frame's ONE framebuffer copy (<see cref="FrameSnapshot"/>, ADR 0011
-/// <see cref="PassId.FbCopy"/>) is taken before water and only when there is water on screen, so by the time
-/// the last content classes draw there is nothing readable left. Sampling the bound depth attachment instead
-/// is what most engines do here and it is undefined in GL -- depth writes being off is not the same as the
-/// attachment being read-only, which is a Vulkan concept and not one this renderer has. So: a copy.</para>
-/// <para>The texture allocation is <see cref="RenderTarget.AllocDepth"/>, shared with <see cref="FrameSnapshot"/>'s
-/// copy since #174 -- it carries the two live-verified #129 findings that cost real debugging: the depth
-/// format must come from the ATTACHED OBJECT (a packed D24S8 reads as a plain 24-bit one through the
-/// attachment query, and the blit is then discarded whole and silently), and the sampled copy must have
-/// <c>TEXTURE_COMPARE_MODE</c> forced to NONE or a driver hands back a comparison result instead of a depth.
-/// Probing the source's format stays here: that half is genuinely per-caller.</para>
+/// A depth-only snapshot of the Alloy frame, taken where the caller asks for it, because the frame's ONE
+/// framebuffer copy (<see cref="FrameSnapshot"/>) is taken before water and only when there is water on
+/// screen. Sampling the bound depth attachment instead is undefined in GL -- depth writes being off is not
+/// the attachment being read-only -- so: a copy, allocated by <see cref="RenderTarget.AllocDepth"/>.
 /// </summary>
 internal static unsafe class SceneDepth
 {
@@ -29,18 +21,27 @@ internal static unsafe class SceneDepth
     internal static bool Ready { get; private set; }
     internal static int Takes;
 
-    private static uint _fbo, _tex, _depFormat, _depMask;
-    private static int _w, _h;
-    /// <summary>CX-4: the (PassGen, source) the current copy was taken for; a repeat Take with the same key
-    /// and viewport reuses it. -1 = no reusable copy.</summary>
-    private static int _takenGen = -1, _takenSrc;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name or probed
+    /// format from the dead context survives as a field nobody remembered to zero.</summary>
+    private sealed class DepthCopyState
+    {
+        public uint Fbo, Tex;
+        /// <summary>The source attachment's depth format, and the blit mask it implies.</summary>
+        public uint DepFormat, DepMask;
+        public int W, H;
+        /// <summary>The (PassGen, source) the current copy was taken for; a repeat Take with the same key
+        /// and viewport reuses it. -1 = no reusable copy.</summary>
+        public int TakenGen = -1, TakenSrc;
+    }
+
+    private static DepthCopyState _gl = new();
     private static readonly StandDown _down = new("SceneDepth");
     private static ExtenderLog? _log;
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
     /// <summary>Snapshot the bound draw target's depth. Every exit rebinds the source framebuffer: leaving
-    /// the copy's FBO bound would send the rest of the frame -- the probe capture, the #139 resolve and the
+    /// the copy's FBO bound would send the rest of the frame -- the probe capture, the resolve and the
     /// engine's whole residual bucket walk -- into an incomplete target, which is a lost frame rather than
     /// the stand-down this promises.</summary>
     internal static bool Take(int* viewport)
@@ -53,10 +54,10 @@ internal static unsafe class SceneDepth
     private static bool TakeInner(int* viewport)
     {
         int src; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &src);
-        if (Ready && _takenGen == AlloyRenderer.PassGen && _takenSrc == src
-            && viewport[0] == 0 && viewport[1] == 0 && viewport[2] == _w && viewport[3] == _h) return true;
+        if (Ready && _gl.TakenGen == AlloyRenderer.PassGen && _gl.TakenSrc == src
+            && viewport[0] == 0 && viewport[1] == 0 && viewport[2] == _gl.W && viewport[3] == _gl.H) return true;
         Ready = false;
-        _takenGen = -1;
+        _gl.TakenGen = -1;
         if (_down.Failed) return false;
         if (Gl.BlitFramebuffer == null || Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null
             || Gl.GetFramebufferAttachmentParameteriv == null) return Fail("a required GL entry point is missing");
@@ -72,8 +73,8 @@ internal static unsafe class SceneDepth
 
         Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, (uint)src);
-        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
-        Gl.BlitFramebuffer(0, 0, w, h, 0, 0, w, h, _depMask, (uint)Gl.NEAREST);
+        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _gl.Fbo);
+        Gl.BlitFramebuffer(0, 0, w, h, 0, 0, w, h, _gl.DepMask, (uint)Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src);
         // Checked, because the failure mode is silent and total: a depth blit between mismatched formats
         // raises INVALID_OPERATION and discards the whole call, leaving a texture that reads as "everything
@@ -81,18 +82,18 @@ internal static unsafe class SceneDepth
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
         if (err != 0)
         {
-            uint chosen = _depFormat;
-            _depFormat = 0;                       // re-probe: the format we chose is the prime suspect
+            uint chosen = _gl.DepFormat;
+            _gl.DepFormat = 0;                       // re-probe: the format we chose is the prime suspect
             return Fail($"the depth blit raised 0x{err:x} (depth format 0x{chosen:x} mismatched?)");
         }
         Takes++;
         Ready = true;
-        _takenGen = AlloyRenderer.PassGen; _takenSrc = src;
+        _gl.TakenGen = AlloyRenderer.PassGen; _gl.TakenSrc = src;
         return true;
     }
 
     /// <summary>Something wrote depth since the last <see cref="Take"/>: the next one blits afresh.</summary>
-    internal static void Invalidate() => _takenGen = -1;
+    internal static void Invalidate() => _gl.TakenGen = -1;
 
     /// <summary>Bind the copy on <see cref="Unit"/> and leave unit 0 current -- the diffuse rebinds there and
     /// every draw after this assumes it.</summary>
@@ -100,7 +101,7 @@ internal static unsafe class SceneDepth
     {
         if (!Ready) return;
         Gl.ActiveTexture(Gl.TEXTURE0 + Unit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _tex);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.Tex);
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
 
@@ -108,7 +109,8 @@ internal static unsafe class SceneDepth
     /// </summary>
     internal static void Forget()
     {
-        _fbo = 0; _tex = 0; _w = 0; _h = 0; _depFormat = 0; Ready = false; _takenGen = -1;
+        _gl = new DepthCopyState();
+        Ready = false;
     }
 
     /// <summary>The format the source's depth attachment actually holds. Keyed on SIZE as well as "probed
@@ -116,33 +118,33 @@ internal static unsafe class SceneDepth
     /// would size the copy from the previous mode.</summary>
     private static bool Probe(uint src, int w, int h)
     {
-        if (_depFormat != 0 && _w == w && _h == h) return true;
+        if (_gl.DepFormat != 0 && _gl.W == w && _gl.H == h) return true;
         uint fmt = RenderTarget.ProbeDepthFormat(src);
         if (fmt == 0) return false;
-        _depFormat = fmt;
-        bool packed = RenderTarget.Packed(_depFormat);
-        _depMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
+        _gl.DepFormat = fmt;
+        bool packed = RenderTarget.Packed(_gl.DepFormat);
+        _gl.DepMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
         return true;
     }
 
     private static bool Ensure(int w, int h)
     {
-        if (_fbo != 0 && _tex != 0 && _w == w && _h == h) return true;
-        _w = w; _h = h;
-        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        bool packed = RenderTarget.Packed(_depFormat);
-        RenderTarget.AllocDepth(ref _tex, _depFormat, w, h);
-        if (_fbo == 0 || _tex == 0) return Fail("could not create the depth copy target");
+        if (_gl.Fbo != 0 && _gl.Tex != 0 && _gl.W == w && _gl.H == h) return true;
+        _gl.W = w; _gl.H = h;
+        if (_gl.Fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f; }
+        bool packed = RenderTarget.Packed(_gl.DepFormat);
+        RenderTarget.AllocDepth(ref _gl.Tex, _gl.DepFormat, w, h);
+        if (_gl.Fbo == 0 || _gl.Tex == 0) return Fail("could not create the depth copy target");
 
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         // Colour-less: glDrawBuffer/glReadBuffer NONE is what makes a depth-only FBO complete.
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER,
-            packed ? Gl.DEPTH_STENCIL_ATTACHMENT : Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _tex, 0);
+            packed ? Gl.DEPTH_STENCIL_ATTACHMENT : Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _gl.Tex, 0);
         if (Gl.DrawBuffer != null) Gl.DrawBuffer(Gl.NONE);
         if (Gl.ReadBuffer != null) Gl.ReadBuffer(Gl.NONE);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
-        { _w = _h = 0; return Fail($"the depth copy framebuffer is incomplete (0x{status:x})"); }
+        { _gl.W = _gl.H = 0; return Fail($"the depth copy framebuffer is incomplete (0x{status:x})"); }
         return true;
     }
 

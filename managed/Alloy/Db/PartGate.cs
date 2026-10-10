@@ -1,28 +1,9 @@
 namespace CX.Alloy.Db;
 
-/// <summary>The engine's part ENABLE gate, which is not a gate the game sets: <c>Gob::ProcessGob</c>
-/// @0x43e920 runs <c>TreeSetGeometryFlags</c> @0x43e620 over the whole part tree whenever
-/// <c>Gob::SetProcessFlag</c> @0x43e970 has marked it, and that pass clears <c>Part+0x34</c> on every part
-/// whose SUBTREE instances no geometry.
-///
-/// <para>The engine's own words, per part: <c>old = part+0x34</c>; recurse the children and OR their answers;
-/// if <c>Part::AsPartTriMesh</c> (vtable+0x60) answers non-null keep <c>old</c> and answer 1, else write
-/// <c>old &amp; anyChild</c> and answer that. So the byte is <c>old &amp;&amp; subtree-has-geometry</c>, and
-/// only <c>PartTriMesh</c> and the subclasses that inherit its slot -- <c>PartSkin</c>,
-/// <c>PartDanglyMesh</c>, <c>PartAnimMesh</c>, <c>PartAABB</c> -- count as geometry. A dummy, light, emitter,
-/// beam, camera, trigger, shadow or reference part does not.</para>
-///
-/// <para>That is where the parity dump's 192 disabled parts of a mode-0 inn come from: the cloak rig, the
-/// tail and belt fans, the VFX anchors and the <c>head</c>/<c>lhand</c>/<c>rhand</c> attach dummies hold no
-/// mesh and no graft, so the engine gates them off; <c>lbicep_g</c> stays on because a graft hangs below it
-/// and <c>lshoulder_g</c> does not. It is NOT <c>Gob::SetSubtreeEnabled</c> (the game never asks for a part
-/// to be turned off) and not model data.</para>
-///
-/// <para>Only five engine functions read the byte -- <c>Gob::PartDraw</c>, <c>Gob::PartVolumeProject</c>,
-/// <c>Scene::AddPartsTreeToDrawBuckets</c>, <c>Part::HitCheck</c> and
-/// <c>WritePartHighlightVertices</c> -- so the gate is a draw/shadow/hit/highlight test and nothing else.
-/// The pose, the light walk, the emitter walk and the bounding box ignore it, and so must CX.</para>
-/// </summary>
+/// <summary>The engine's part ENABLE gate, which the game never sets: <c>TreeSetGeometryFlags</c> @0x43e620,
+/// run from <c>Gob::ProcessGob</c> @0x43e920, leaves <c>Part+0x34</c> as <c>old &amp;&amp; subtree-has-geometry</c>,
+/// where only <c>PartTriMesh</c> and its subclasses count. Its five readers are draw, volume projection, draw
+/// buckets, hit check and highlight -- the pose, light, emitter and bbox walks ignore it, and so must CX.</summary>
 internal static class PartGate
 {
     /// <summary>A composition's object count ceiling and the propagation's iteration ceiling. A humanoid is
@@ -39,7 +20,7 @@ internal static class PartGate
     internal static long Ran, Gated, Overflowed;
 
     /// <summary>Does this part instance geometry of its own -- the answer <c>Part::AsPartTriMesh</c> gives?
-    /// <see cref="PartKind.Merged"/> is CX-116's swallowed node, which in the engine is still the
+    /// <see cref="PartKind.Merged"/> is the swallowed node, which in the engine is still the
     /// <c>PartTriMesh</c> its triangles came from.</summary>
     private static bool HasGeometry(int p) => SceneDb.PartKindOf[p] switch
     {

@@ -7,7 +7,7 @@ using CX.Ui;
 
 namespace CX.Services.Radial;
 
-/// <summary>Which root built the engine tree, by vptr (CX-162 §3).
+/// <summary>Which root built the engine tree, by vptr.
 /// <see cref="Plain"/> is a bare <c>CRadialMenu</c> -- the tile/ground root and every creator-made child.</summary>
 public enum RootKind { Unknown, Plain, Creature, Spell, RadialSpell, Trap, Item, Placeable, Door, Quickbar, ChatWindow }
 
@@ -26,14 +26,10 @@ public readonly record struct RadialSlot(int Index, SlotKind Kind, string Label,
 }
 
 /// <summary>
-/// Static reader/driver over an engine <c>CRadialMenu*</c> (CX-689): classify the root, read its eight slots,
-/// materialize a child through the engine's own <c>CreateSubMenu</c>, invoke a leaf with the platform's call
-/// shape, tear the tree down. GL-free and allocation-tolerant (every caller is a cold right-click path). Offsets
-/// come from <see cref="EngineLayout"/>; the label read-back walks <c>m_pText[i]</c> (a <c>CGuiTextBubble</c>) to
-/// its <c>CAurString*</c> (ctor @0x588690 stores <c>NewCAurString(-1)</c> at +0xf8; the Windows ctor @rva 0x1fd310
-/// at +0xf0), and reads the wrapped lines back through its vtable (<see cref="CAurString.ReadText"/>), which a DB-mode
-/// facade answers as well. A
-/// <c>CGuiTextBubble::SetText</c> tap was the alternative; read-back needs no hook and no per-bubble bookkeeping.
+/// Static reader/driver over an engine <c>CRadialMenu*</c>: classify the root, read its eight slots, materialize a
+/// child through the engine's own <c>CreateSubMenu</c>, invoke a leaf with the platform's call shape, tear the tree
+/// down. GL-free and allocation-tolerant (every caller is a cold right-click path). The label read-back walks
+/// <c>m_pText[i]</c> to its <c>CAurString*</c> (ctor @0x588690 at +0xf8; Windows ctor @rva 0x1fd310 at +0xf0).
 /// </summary>
 internal static unsafe partial class RadialTree
 {
@@ -160,7 +156,7 @@ internal static unsafe partial class RadialTree
         return child.Ptr;
     }
 
-    /// <summary>The cascade rows of one engine menu (CX-690): vanilla slot order with the empty slots left out, the
+    /// <summary>The cascade rows of one engine menu: vanilla slot order with the empty slots left out, the
     /// icon resref for <c>TextRig.DrawIcon</c>, disabled + uses-left as the creator set them at this open, a submenu
     /// mark on creator slots, and the slot index as the row's tag (boxed once, cold). Reads fresh on every call --
     /// nothing is cached across opens (research §9.7).</summary>
@@ -182,9 +178,7 @@ internal static unsafe partial class RadialTree
     /// <summary>The leaf call exactly as <c>HandleMenuAction</c> @0x585530 makes it, under the
     /// <c>s_pCurrentEventObject = menu</c> bracket. Itanium: <c>this = obj + adj</c>, an odd <c>fn</c> is a vtable byte
     /// offset + 1 (<c>fn = *(vtable(this) + fn - 1)</c>); Win64 (@rva 0x1f9350): <c>fn(obj, param)</c>, no adjust, no
-    /// thunk decode. False when the slot's entry is the unset sentinel (vanilla would call the no-op
-    /// <c>HandleUninitializedCallback</c>).
-    /// Windows: the call shape is transcribed from the decompiled body, self-checked here, not yet run under Proton.</summary>
+    /// thunk decode. False when the entry is the unset sentinel, where vanilla calls its no-op handler.</summary>
     public static bool Invoke(IntPtr menu, int i)
     {
         if (_eventObject == null || (uint)i >= SlotCount) return false;
@@ -197,7 +191,7 @@ internal static unsafe partial class RadialTree
         return Call(menu, self, fn, m.Param[i]);
     }
 
-    /// <summary>A handler invoked on an object CX built (a self stand-in, CX-694): <c>fn(obj, param)</c> under the
+    /// <summary>A handler invoked on an object CX built (a self stand-in): <c>fn(obj, param)</c> under the
     /// event-object bracket, non-virtual on both platforms (the table names plain member functions).</summary>
     public static bool InvokeOn(IntPtr obj, IntPtr fn, long param)
     {
@@ -206,7 +200,7 @@ internal static unsafe partial class RadialTree
     }
 
     /// <summary>One leaf call under the <c>s_pCurrentEventObject</c> bracket. Left raw: the target is a member-fn
-    /// pointer read out of the menu, so it belongs to no symbol and no <c>[Fn]</c> declaration can name it (CX-37).</summary>
+    /// pointer read out of the menu, so it belongs to no symbol and no <c>[Fn]</c> declaration can name it.</summary>
     private static bool Call(IntPtr eventObj, IntPtr self, IntPtr fn, long param)
     {
         IntPtr saved = *_eventObject;

@@ -4,14 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 (seam-scene): the per-frame environment the scene and camera slots need and the scene
-/// database does not hold -- the draw rect, the screen size and the game's UI scale. Three engine reads, each
-/// resolved once at boot and each a WINDOW property rather than a scene one, which is why they survive DB mode
-/// unchanged: the engine still owns the window, the swap chain and the SDL event loop, and
-/// <c>GLRender::m_viewport</c> is what it last set.
-/// <para>Latched once per present rather than read per slot call: <c>MapToScreen</c> is called per nameplate
-/// per frame and <c>CAurora::GetGUIScale</c> walks a config object, so a per-call read would put a hundred
-/// engine calls in a frame that is meant to make none.</para></summary>
+/// <summary>The per-frame environment the scene and camera slots need and the scene database does not hold:
+/// the draw rect, the screen size and the game's UI scale. Three engine reads, resolved once at boot, each a
+/// WINDOW property rather than a scene one -- the engine still owns the window, the swap chain and the SDL
+/// event loop. Latched once per present, because a per-slot read would be a hundred engine calls a frame.</summary>
 internal static unsafe class SeamFrame
 {
     private static int* _viewport, _screenW, _screenH;

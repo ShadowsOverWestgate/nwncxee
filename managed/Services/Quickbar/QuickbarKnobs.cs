@@ -2,12 +2,10 @@ using CX.Framework;
 
 namespace CX.Services.Quickbar;
 
-/// <summary>The <c>quickbar</c> group (spec §4.2 Quickbar &amp; compass) and the storage
-/// <see cref="QuickbarService"/> reads: the master (off = the stock centre position, no bars, compass shown;
-/// live both ways, #591), the three quickbar rows and the compass toggle -- <c>quickbar.compass=1</c> shows it, the inverse of the old
-/// <c>compass</c> hide key. Window snapping moved to the <c>ui</c> group. A layout set marks the service dirty;
-/// the in-game tick repositions and redraws on the frame. Touched from <c>QuickbarService.Initialize</c> so the
-/// group declares whether or not the hook arms.</summary>
+/// <summary>The <c>quickbar</c> group and the storage <see cref="QuickbarService"/> reads: the master (off = the stock
+/// centre position, no bars, compass shown; live both ways), the three quickbar rows and the compass toggle
+/// (<c>quickbar.compass=1</c> shows it). A layout set marks the service dirty; the in-game tick repositions and
+/// redraws on the frame. Touched from <c>QuickbarService.Initialize</c>, so the group declares whether the hook arms.</summary>
 internal static class QuickbarKnobs
 {
     internal static readonly KnobGroup G;

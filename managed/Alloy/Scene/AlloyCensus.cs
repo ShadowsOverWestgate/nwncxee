@@ -13,18 +13,16 @@ namespace CX.Alloy;
 /// that gave the class its name went with the engine-scene path.</summary>
 internal static unsafe partial class AlloyCensus
 {
-    /// <summary>The engine's per-item-alpha draw bucket (#126).</summary>
+    /// <summary>The engine's per-item-alpha draw bucket.</summary>
     internal const int AlphaBucket = 8;
 
     /// <summary><c>dst == 2</c> is <c>GL_ONE</c>: the engine's own additive test on
     /// <see cref="EngineLayout.MatDstBlend"/>, and the one pair it turns the depth mask off for.</summary>
     internal const int BlendOne = 2;
 
-    /// <summary>#134: the dynamic gob pair (#103's taxonomy). Everything instanced lands in one of these two
-    /// -- placeables, doors, and the tileset's own static objects -- and until the <c>shaped</c> gate was
-    /// corrected nothing in them ever reached enrollment, so excluding them here cost nothing visible. They
-    /// are ownable as a PAIR: the engine walks 2 then 3, and owning one without the other splits a single
-    /// instance's geometry across two renderers.</summary>
+    /// <summary>The dynamic gob pair: everything instanced lands in one of these two -- placeables, doors, and the
+    /// tileset's own static objects. Ownable only as a PAIR, since the engine walks 2 then 3 and owning one without
+    /// the other splits a single instance's geometry across two renderers.</summary>
     internal const int GobOpaqueBucket = 2, GobBlendBucket = 3;
 
     /// <summary><c>dumptex</c> (cx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
@@ -35,28 +33,12 @@ internal static unsafe partial class AlloyCensus
     /// bucket 6 (water). Different classes, not degrees of one.</summary>
     internal const int SampleFbWater = 2;
 
-    /// <summary>CX-90: <c>sample_framebuffer 1</c> -- draw bucket 5. The engine's own changelog
-    /// (<c>lang/en/docs/patchnotes/87.8193.35.md</c>) states the whole of what it buys: "renders near the end
-    /// of the frame. Allows rendering refractions and similar." It is a draw-ORDER keyword; the refraction is
-    /// the material's own fragment shader's business, and the copy it would read is bound by the engine on
-    /// texture units 11/12 as <c>texFBColor</c>/<c>texFBDepth</c>
-    /// (<c>Camera::BindRenderSubframeTextures</c> @0x4a6ab0, called from <c>CopyRenderSubframe</c> @0x4a6b90).
-    /// <para>No stock shader samples those from world geometry (only <c>fswater.shd</c> and
-    /// <c>fsparticle.shd</c>'s depth tap do) and no stock <c>.mtr</c> declares the keyword at all, so there is
-    /// no vanilla shading behaviour attached to it -- see <c>docs/alloy-refusals.md</c>.</para></summary>
+    /// <summary><c>sample_framebuffer 1</c> -- draw bucket 5. A draw-ORDER keyword only ("renders near the end of
+    /// the frame"); the refraction is the material's own fragment shader's business, and the copy it would read is
+    /// bound on texture units 11/12 as <c>texFBColor</c>/<c>texFBDepth</c>
+    /// (<c>Camera::BindRenderSubframeTextures</c> @0x4a6ab0, from <c>CopyRenderSubframe</c> @0x4a6b90).</summary>
     internal const int SampleFbLate = 1;
 
-    /// <summary>Draw buckets the Alloy pass takes parts from. 0/1 are the static tile pair (#82), and #126
-    /// adds the three residual static classes named by <see cref="AlloyClass"/>: 4 additive, 7 the
-    /// tilefade cap, 8 the fade buckets. #134 and #128 then added the dynamic gob pair 2/3 -- drawn from
-    /// Scene::RenderDynamicGeometry rather than from RenderSinglePass's own walk, but through the same
-    /// RenderDrawBucket this service brackets, which is why owning placeables and then creatures needed no new
-    /// capture point. CX-90 adds 5, the late class: <c>sample_framebuffer 1</c> asks for draw ORDER and
-    /// nothing else, so its parts are classified off their material like every other part and drawn in the
-    /// pass that material implies -- what <see cref="TryOwnCandidate"/> still rejects there is
-    /// <c>volumetric</c> (<see cref="RefusedByLateKeywords"/>).
-    /// <para>Membership here and suppression in <c>AlloyRenderer.IterSight</c> are ONE list: suppressing a
-    /// bucket we do not draw drops geometry, and drawing one we do not suppress double-draws it.</para></summary>
     /// <summary>The engine's late draw bucket: <c>sample_framebuffer 1</c> parts.</summary>
     internal const int LateBucket = 5;
 
@@ -66,43 +48,39 @@ internal static unsafe partial class AlloyCensus
 
     internal static readonly string[] _unknown = new string[MaxUnknown];
 
-    /// <summary>CX-90: does a material's pair of late-draw keywords refuse the part outright? Pure, so the
-    /// precedence is testable off-device: <c>volumetric</c> always does (the engine draws it TWICE per pass,
-    /// back faces to depth and then front faces against that depth -- a two-pass trick no one-owner scheme
-    /// survives, and <c>AddPartsTreeToDrawBuckets</c> files it in buckets 3 AND 5 accordingly), and so does
-    /// any <c>sample_framebuffer</c> value that is neither water nor <see cref="SampleFbLate"/>.
-    /// <para><paramref name="water"/> is <see cref="IsWater"/>'s verdict, not <c>sampleFb == 2</c>: the
-    /// bumpy-shiny route reaches bucket 6 with the keyword absent.</para></summary>
+    /// <summary>Does a material's pair of late-draw keywords refuse the part outright? <c>volumetric</c> always
+    /// does -- the engine draws it twice per pass, back then front faces, and files it in buckets 3 AND 5 -- and so
+    /// does any <c>sample_framebuffer</c> that is neither water nor <see cref="SampleFbLate"/>. <paramref name="water"/>
+    /// is <see cref="IsWater"/>'s verdict, not <c>sampleFb == 2</c>: bumpy-shiny reaches bucket 6 keyword-less.</summary>
     internal static bool RefusedByLateKeywords(int sampleFb, bool volumetric, bool water)
         => volumetric || (sampleFb != 0 && !water && sampleFb != SampleFbLate);
 
+    /// <summary>Draw buckets the Alloy pass takes parts from: the static tile pair 0/1, the residual static
+    /// classes 4 additive, 7 the tilefade cap, 8 the fade buckets, the dynamic gob pair 2/3, and 5 the late class.
+    /// Membership here and suppression in <c>AlloyRenderer.IterSight</c> are ONE list: suppressing a bucket we do
+    /// not draw loses geometry, and drawing one we do not suppress double-draws it.</summary>
     internal static bool OwnableBucket(int bucket)
         => bucket == 0 || bucket == 1 || bucket == GobOpaqueBucket || bucket == GobBlendBucket
            || bucket == 4 || bucket == 7 || bucket == AlphaBucket || bucket == LateBucket
            || (bucket == AlloyRenderer.WaterBucket && FrameSnapshot.Usable);
 
-    /// <summary>#125: does this material's SharedMaterial name a custom shader the Alloy pass does not
-    /// implement? For world geometry an unknown custom shader is owned anyway and drawn with the plain
-    /// stage, which is usually a small difference on one part. The sky is the case where it is not: a
-    /// dynamic skybox IS its fragment shader (sow-topdata's <c>fst_sky</c> is ~1900 lines of procedural
-    /// gradient, clouds, stars, sun and moon over a near-black night texture), so drawing it flat sends the
-    /// diffuse alone and the sky comes out black.</summary>
+    /// <summary>Does this material's SharedMaterial name a custom shader the Alloy pass does not implement? World
+    /// geometry is owned anyway and drawn with the plain stage, usually a small difference on one part. The sky is
+    /// where it is not: a dynamic skybox IS its fragment shader, so drawn flat it comes out black.</summary>
     internal static bool HasUnportedShader(IntPtr mat)
     {
         if (mat == IntPtr.Zero) return false;
         SharedRef s = new MaterialRef(mat).Shared;
         if (s.IsNull) return false;
-        // The VS name decides when there is one -- that is #123's model, and a recognised feature covers
-        // its fragment half by construction. What the VS test alone MISSES is a .mtr that names only
-        // customShaderFS (+0x199, the next resref slot after +0x188 per SharedMaterial::ParseField
-        // @0x4c6760): none of the seven features is authored that way, so an FS with no VS is a custom
-        // program by definition -- and the black sky is a fragment shader.
+        // An FS with no VS is a custom program by definition: none of the seven features is authored that way.
+        // customShaderFS is +0x199, the resref slot after customShaderVS's +0x188 (SharedMaterial::ParseField
+        // @0x4c6760).
         byte* vs = s.VsName;
         if (*vs != 0) return Classify(vs) == 0;
         return s.HasFs;
     }
 
-    /// <summary>#123: match a SharedMaterial's <c>customShaderVS</c> resref against the seven the owned
+    /// <summary>Match a SharedMaterial's <c>customShaderVS</c> resref against the seven the owned
     /// program reproduces as feature switches. Case-insensitive over the whole NUL-terminated name, so
     /// <c>shd_roofkn_vs</c> cannot swallow <c>shd_roofknm_vs</c>. Cold: one call per shared-material part per
     /// enrollment scan.</summary>

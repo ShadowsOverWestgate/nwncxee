@@ -5,30 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-113 (parser review A1): <b>what makes a cached compile the PARSE's output and not a session's
-/// render state.</b>
-/// <para>The payload <see cref="MdlCache"/> stores is the engine's own serialisation of a live <c>Model</c>,
-/// produced by <c>compilemodelsinternal</c>. By the time a cold point comes round to compile one, the engine
-/// has instantiated it -- and instantiation MUTATES the model's shared <c>MdlNodeTriMesh</c>, which every
-/// instance points at:</para>
-/// <list type="bullet">
-/// <item><c>CombineParts</c> @0x473d30 grows <see cref="EngineLayout.MdlRadius"/> on the host node of each
-/// merge (<c>max(r, |dp| + r_merged)</c>).</item>
-/// <item><c>SetPartTextureRotate</c> @0x461670 writes 1 into <see cref="EngineLayout.MdlTextureRotate"/> when
-/// the part's material has a bumpy-shiny map, and nothing ever writes it back to 0.</item>
-/// </list>
-/// <para>Serialised, both travel to disk and a later session loads them back as if the FILE had said so: a
-/// radius too large for its geometry (so the model culls and LODs late) and a rotate flag set on content that
-/// never asked for one. A payload is written once per (resref, source hash, build), so it does not compound --
-/// it is one session's state, frozen and replayed for every session after it.</para>
-/// <para><b>The fix is a snapshot taken where the model is provably pristine.</b>
-/// <c>IODispatcher::ReadSync</c> @0x4bf670 returns the freshly parsed <c>MaxTree*</c>: the parse is complete
-/// (<c>beginmodelgeom</c>'s synchronise and every post-process have run) and NOTHING has instantiated it yet,
-/// because the caller that will do so has not been returned to. Chaining that one funnel -- 43 calls on a real
-/// area, against the 1730 <c>FindModel</c> calls behind it -- is cheap and needs no new symbol.</para>
-/// <para>At compile time the snapshot is written back over the live fields, the engine compiles, and the live
-/// values go back. A model with NO snapshot is refused rather than cached: nothing is ever written from a
-/// model this did not see pristine.</para></summary>
+/// <summary>What makes a cached compile the PARSE's output and not a session's render state. Instantiation MUTATES
+/// the shared <c>MdlNodeTriMesh</c> every instance points at -- <c>CombineParts</c> grows
+/// <see cref="EngineLayout.MdlRadius"/>, <c>SetPartTextureRotate</c> latches <see cref="EngineLayout.MdlTextureRotate"/>
+/// to 1 and never back -- so a payload serialised after it freezes that state on disk. No snapshot, no cache.</summary>
 internal static unsafe class MdlCachePristine
 {
     /// <summary>One node's pristine pair. The pointer is only ever dereferenced after
@@ -73,8 +53,9 @@ internal static unsafe class MdlCachePristine
         return _armed;
     }
 
-    /// <summary>A model the engine has just finished parsing. Records the two mutable fields of every trimesh
-    /// node, keyed by the resref the compile will ask for.</summary>
+    /// <summary>A model the engine has just finished parsing -- the one point it is provably pristine, because
+    /// <c>IODispatcher::ReadSync</c> returns before the caller that will instantiate it. Records the two mutable
+    /// fields of every trimesh node, keyed by the resref the compile will ask for.</summary>
     internal static void Took(string resref, IntPtr model)
     {
         if (!_armed || model == IntPtr.Zero || resref.Length == 0) return;
@@ -98,8 +79,8 @@ internal static unsafe class MdlCachePristine
         for (int i = 0; i < count; i++) Walk(kids[i], shot, depth + 1);
     }
 
-    private static ref float Radius(IntPtr node) => ref *(float*)(node + EngineLayout.MdlRadius);
-    private static ref byte Rotate(IntPtr node) => ref *(byte*)(node + EngineLayout.MdlTextureRotate);
+    private static ref float Radius(IntPtr node) => ref new MdlNodeTriMesh(node).Radius;
+    private static ref byte Rotate(IntPtr node) => ref new MdlNodeTriMesh(node).TextureRotate;
 
     /// <summary>Is there a snapshot for <paramref name="resref"/> whose model is still the one the engine has?
     /// <paramref name="live"/> comes back holding the values to put back after the compile.</summary>

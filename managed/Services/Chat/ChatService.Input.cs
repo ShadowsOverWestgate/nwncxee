@@ -16,7 +16,7 @@ public sealed unsafe partial class ChatService
     private static volatile int _lastMx, _lastMy;   // latest pointer pos, for wheel hit-testing
     private static bool _mdiag;                      // one-shot: log first click coords + rect
     private static int _hoverIndex = -1;             // window under the pointer (-1 = none), for grip visibility
-    private static bool _anyTabDrag;                 // true while any window has an active tab drag (#42)
+    private static bool _anyTabDrag;                 // true while any window has an active tab drag
 
     /// <summary>A press in the edit text is ours until its release (<see cref="_editDrag"/>: the caret follows the
     /// pointer until then); the click counter tells a double / triple press by time and place.</summary>
@@ -41,11 +41,10 @@ public sealed unsafe partial class ChatService
         return list.ToArray();
     }
 
-    /// <summary>Pointer press/release. Returns true when it lands on any chat window (the WM shell then
-    /// consumes it, so it doesn't fall through to the 3D world). Focused window is checked first (it owns
-    /// the popped-out strip/dropdown outside its frame rect); then other windows in reverse draw order (#41).
-    /// Wired as this service's framework Window mouse-button delegate (#64). A press that moved the typing to
-    /// another tab or window swaps the unsent lines (<c>chat.drafts</c>).</summary>
+    /// <summary>The framework Window mouse-button delegate: pointer press/release, true when it lands on any chat
+    /// window so the WM shell consumes it instead of the 3D world. The focused window is checked first (it owns
+    /// the popped-out strip/dropdown outside its frame rect), then the rest in reverse draw order. A press that
+    /// moves typing to another tab or window swaps the unsent lines (<c>chat.drafts</c>).</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
     {
         bool consumed = MouseButton(down, button, x, y);
@@ -97,7 +96,7 @@ public sealed unsafe partial class ChatService
                 // The shared knob and a window font pick apply here, on the input thread (the face bakes cold).
                 if (_settings.TellOpenPicked >= 0) { ChatKnobs.TellOpen.Set(_settings.TellOpenPicked); _settings.TellOpenPicked = -1; }
                 if (_settings.FontChanged) { _settings.FontChanged = false; EnsureFace(fwin); }
-                // #46: TellsHere exclusivity — clear all other windows when one turns it on.
+                // TellsHere exclusivity — clear all other windows when one turns it on.
                 if (_settings.TellsHereChanged)
                 {
                     _settings.TellsHereChanged = false;
@@ -126,7 +125,7 @@ public sealed unsafe partial class ChatService
             }
             return false;
         }
-        // Up: an edit-text press, then settings, then tab-drag cross-window drop (#42), then generic grabs.
+        // Up: an edit-text press, then settings, then tab-drag cross-window drop, then generic grabs.
         if (_editPress) { _editPress = _editDrag = false; return true; }
         if (_settings.MouseUp()) { SaveConfig(); Rebuild(); return true; }
         // Cross-window tab drop: resolve before MouseUp clears the grab state.
@@ -238,9 +237,8 @@ public sealed unsafe partial class ChatService
         return false;
     }
 
-    /// <summary>Create a new chat window, offset from Main, and focus it.</summary>
-    /// <summary>Open a new window: <paramref name="copyFrom"/>'s look (the panel's "Copy this window", CX-683) or
-    /// the defaults (<c>/newwin</c>), one All tab, offset from Main.</summary>
+    /// <summary>Open a new window: <paramref name="copyFrom"/>'s look (the panel's "Copy this window") or the
+    /// defaults (<c>/newwin</c>), one All tab, offset from Main, and focus it.</summary>
     private static void CreateWindow(ChatWindow? copyFrom = null)
     {
         if (_layout == null) return;
@@ -289,7 +287,7 @@ public sealed unsafe partial class ChatService
         }
         // Topmost window under the pointer (reverse draw order = focused last = checked first).
         // During a tab drag, don't let the source's Dragging pin the hover -- the pointer may be over
-        // a target window whose header must stay visible for the drop (#42).
+        // a target window whose header must stay visible for the drop.
         int newHover = -1;
         int fi = _layout.FocusedIndex;
         bool tabDrag = false;

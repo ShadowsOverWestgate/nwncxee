@@ -10,14 +10,14 @@ a guess -- which is what EngineLayout rows for `vtbl.*` need (#433, docs/engine-
     tools/abi/vtable-slots.py Part                  # both platforms, paired
     tools/abi/vtable-slots.py CAurTexture --n 30
 
-Env: NWN_BIN / NWN_WIN_EXE override the default Steam paths.
+Env: NWN_BIN / NWN_WIN_EXE (tools/paths.py) name the binaries.
 """
 import argparse, os, pathlib, re, struct, subprocess, sys
 
-LINUX = os.environ.get("NWN_BIN",
-    "~/gry/steam/Neverwinter Nights/bin/linux-x86/nwmain-linux")
-WIN = os.environ.get("NWN_WIN_EXE",
-    "~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import paths  # noqa: E402  tools/paths.py: env, local.env, then the Steam library
+LINUX = paths.require("NWN_BIN")
+WIN = paths.require("NWN_WIN_EXE")
 
 
 def undname(names):

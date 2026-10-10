@@ -7,25 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 (seam-scene): the <c>CAurScene</c> interface, implemented by CX. 51 slots, measured off
-/// <c>_ZTV9CAurScene</c> @0x186c510 and the Windows vftable at rva 0xd8db98
-/// (CX-183, tools/seam/aurora-seam-vtables.tsv). <see cref="Table"/> is the slot array seam-obj's facade
-/// machinery builds a vtable from -- indexed by LINUX slot index, because that is the index the TSV and this
-/// file are written in; the Windows order is the same list with the two destructor slots collapsed, which is
-/// the facade's job (rule 1 of the three cross-OS mapping rules) and not expressed here.
-/// <para>Every entry is an <see cref="UnmanagedCallersOnlyAttribute"/> static: the game calls it through the
-/// vtable with the shell as <c>this</c>, the entry resolves the handle through <see cref="Facade.SceneId"/>
-/// and works on <see cref="SceneDb"/> columns. The one by-value return
-/// (<c>GetLightingValueAtFocus</c>, slot 39) is declared per OS -- SysV returns the 12-byte all-float
-/// <c>Vector</c> in xmm0:xmm1 with NO hidden pointer, Win64 takes <c>(this=rcx, sret=rdx, ...)</c> and returns
-/// the buffer in rax -- so the two differ in their whole parameter list, not just in an <c>sret</c> position
-/// (CX-183 §4).</para>
-/// <para>The 37 Scene-only slots beyond the interface are deliberately absent: they are the engine renderer's
-/// own entry points (<c>RenderSinglePass</c>, <c>DoBinBucket</c>, <c>AddFacesToBins</c>, ...) and
-/// §3 of the direct-access note proves the game layer never reaches them -- every one of their callers is
-/// inside the renderer module, which in DB mode does not run. The FIVE that the game-side glue and the GUI
-/// layer do reach -- <c>AddObject</c>, <c>ChildAdd</c>, <c>ChildRemove</c>, <c>IsAnimating</c> and
-/// <c>GetShadowGob</c> -- are answered by <see cref="SceneOnlySlots"/>.</para></summary>
+/// <summary>The <c>CAurScene</c> interface, implemented by CX: 51 slots measured off <c>_ZTV9CAurScene</c>
+/// @0x186c510 and the Windows vftable at rva 0xd8db98, <see cref="Table"/> indexed by LINUX slot, each an
+/// <see cref="UnmanagedCallersOnlyAttribute"/> static resolving <c>this</c> via <see cref="Facade.SceneId"/>.
+/// Slot 39 returns a <c>Vector</c> by value: SysV in xmm0:xmm1, Win64 <c>(this=rcx, sret=rdx, ...)</c>.</summary>
 internal static unsafe class SceneSlots
 {
     /// <summary>Slots in the <c>CAurScene</c> interface.</summary>
@@ -159,21 +144,10 @@ internal static unsafe class SceneSlots
         return ObjectBridge.ObjectAdjustedScale is { } f ? f(o) : SceneDb.ObjScale[o.Index];
     }
 
-    /// <summary>Slot 4, <c>Scene::Render</c>. In DB mode a scene does NOT draw itself: the camera's
-    /// <c>RenderScene</c> has already recorded the view (<see cref="CameraSlots"/>), and the renderer draws
-    /// every view from the frame's snapshot at the present boundary (ADR 0028 section 5). So this is the
-    /// no-op that keeps the engine's own call order intact -- the game reaches it through
-    /// <c>Camera::RenderScene</c> and through <c>CGuiPanel</c>'s view walk, and either way the view is already
-    /// in the frame's list.
-    /// <para>Not quite a no-op: <c>Scene::Render</c> @0x5762d0 is the ONLY caller of
-    /// <c>RenderInterface::CheckAndUpdateUniformDirtyDataForFrame(DeltaT)</c>, which is what refills
-    /// <c>GLRender::m_shaderExposedRuntimeData</c> -- the world clock every owned stage animates on
-    /// (<c>CxClock()</c>: rain impact ripples, the water wave phase, the grass sway), the area wind, the area
-    /// flags and the player and camera positions. Dropping it froze that struct at its boot zero, so DB mode
-    /// ran a still world under falling rain. It is a CPU-side read-and-compare -- no GL -- so it is made on
-    /// the game thread, where the engine made it. The game reaches it through
-    /// <c>Camera::RenderScene</c>, whose own body DB mode replaces too, so
-    /// <see cref="CameraSlots"/> makes the same call for the views that never come through here.</para></summary>
+    /// <summary>Slot 4, <c>Scene::Render</c>. A scene does not draw itself -- the camera recorded the view and
+    /// the renderer draws it from the frame's snapshot -- but it is no no-op: @0x5762d0 is the ONLY caller of
+    /// <c>RenderInterface::CheckAndUpdateUniformDirtyDataForFrame(DeltaT)</c>, which refills the world clock,
+    /// wind and area flags every owned stage animates on. CPU-side, so it is made here, on the game thread.</summary>
     [UnmanagedCallersOnly]
     private static void Render(nint self)
     {
@@ -181,12 +155,9 @@ internal static unsafe class SceneSlots
         if (!id.IsNull) UniformsForFrame(SceneDb.SceneFacade[id.Index]);
     }
 
-    /// <summary>The refresh itself, with the <c>currentscene</c> latch the engine holds around it.
-    /// <para>The latch is load-bearing, not decoration: the body reads the global's <c>WindManager</c>
-    /// (<c>currentscene+0x160</c>) and three scene floats with NO null check, so calling it unlatched
-    /// segfaults on the first GUI view (measured). <c>Scene::Render</c> sets the global before the call and
-    /// clears it after; a DB scene's shell carries a real <c>WindManager</c> (<c>SceneFns</c>), so the engine
-    /// reads the same shape it would from one of its own.</para></summary>
+    /// <summary>The refresh itself, with the <c>currentscene</c> latch the engine holds around it: the body
+    /// reads the global's <c>WindManager</c> (<c>currentscene+0x160</c>) and three scene floats with NO null
+    /// check, so calling it unlatched segfaults on the first GUI view.</summary>
     /// <inheritdoc cref="Render"/>
     internal static void UniformsForFrame(nint shell)
     {
@@ -220,13 +191,10 @@ internal static unsafe class SceneSlots
     /// <inheritdoc cref="UniformsForFrame"/>
     private static bool _uniformsReady;
 
-    /// <summary>Slot 5, <c>Scene::Animate(float)</c> -> the animation runtime over this scene's records.
-    /// <para>It does NOT gate on the scene's animate flag, because <c>Scene::Animate</c> @0x469810 does not
-    /// either -- the flag appears nowhere in its 2574 bytes. <c>Scene+0xb9</c> is written only by
-    /// <c>EnableAnimations</c>/<c>DisableAnimations</c> and read only by <c>Scene::IsAnimating</c>: it is a
-    /// QUESTION the game layer asks, not a switch the engine animates behind. Gating here was an invention,
-    /// and it is why the world's creatures never animated and the camera sat where the behaviour had not
-    /// moved it.</para></summary>
+    /// <summary>Slot 5, <c>Scene::Animate(float)</c> -> the animation runtime over this scene's records. It
+    /// does NOT gate on the scene's animate flag, because <c>Scene::Animate</c> @0x469810 does not either:
+    /// <c>Scene+0xb9</c> is written only by <c>EnableAnimations</c>/<c>DisableAnimations</c> and read only by
+    /// <c>Scene::IsAnimating</c> -- a question the game layer asks, not a switch the engine animates behind.</summary>
     [UnmanagedCallersOnly]
     private static void Animate(nint self, float dt)
     {
@@ -291,19 +259,10 @@ internal static unsafe class SceneSlots
     /// <inheritdoc cref="InitBSP"/>
     private static bool _initBspSaid;
 
-    /// <summary>Slot 7, <c>Scene::SpawnTile(char const*, Vector const&amp;, int, int, Quaternion*)</c>.
-    /// <para><b>A non-null <c>Quaternion*</c> is not a grid tile.</b> It is a STATIC PLACEABLE
-    /// (<c>AddPlaceableObjectStatic</c> / <c>RespawnStaticPlaceablesForTile</c>): off the grid, several can
-    /// share a cell, and filing one as a tile would have it overwrite the cell's real tile.
-    /// <see cref="TileBuild.SpawnTile"/> forks on exactly that, so the pointer is passed through rather than
-    /// defaulted to the identity -- which is what would have lost the distinction here.</para>
-    /// <para>The engine stores a quaternion as <c>(w, x, y, z)</c> and <see cref="Quaternion"/> is
-    /// <c>(x, y, z, w)</c>; <see cref="Quat"/>'s conversion is the swizzle, and it belongs at the facade
-    /// (here) and nowhere deeper.</para>
-    /// <para>The slot returns a <c>CAurObject*</c>. A grid tile is a TILE slot, not an object record, so it
-    /// answers 0; a static placeable IS an object record and answers its shell, which is why the placeable
-    /// branch goes to <see cref="TileBuild.PlaceStatic"/> here rather than through
-    /// <see cref="TileBuild.SpawnTile"/> -- that one forks the same way but discards the handle.</para></summary>
+    /// <summary>Slot 7, <c>Scene::SpawnTile(char const*, Vector const&amp;, int, int, Quaternion*)</c>. <b>A
+    /// non-null <c>Quaternion*</c> is a STATIC PLACEABLE, not a grid tile</b>: off the grid, several can share
+    /// a cell, and filing one as a tile overwrites the cell's real tile. The engine orders a quaternion
+    /// <c>(w, x, y, z)</c> and <see cref="Quat"/> swizzles here; the return is 0 for a tile, else its shell.</summary>
     [UnmanagedCallersOnly]
     private static nint SpawnTile(nint self, byte* model, Vec3* at, int orientation, int border, Quat* rot)
     {
@@ -391,7 +350,7 @@ internal static unsafe class SceneSlots
         return s.IsNull || at == null ? 0 : TileBuild.NumTileLights(s, V(at));
     }
 
-    /// <summary>Slot 25, <c>Scene::FinishSceneGeometry</c>: the area's tiles are all in. CX-116's build is
+    /// <summary>Slot 25, <c>Scene::FinishSceneGeometry</c>: the area's tiles are all in. The build is
     /// incremental -- every tile is merged and filed as it spawns, and its ring is placed with it -- so there
     /// is nothing left to seal; the slot marks the scene so the visible-set index refiles once and the bake
     /// sees a complete area.</summary>
@@ -532,8 +491,8 @@ internal static unsafe class SceneSlots
     }
 
     /// <summary>Slots 13/14, <c>CAurScene::ComputeStaticLighting</c> / <c>ComputeStaticProjections</c>: the
-    /// engine's own static-light and decal bake. Alloy owns both (the lightmap bake, CX-105, keyed on
-    /// CONTENT), so these mark the scene's static set stale and the bake picks it up at its own edge -- the
+    /// engine's own static-light and decal bake. Alloy owns both (the lightmap bake, keyed on CONTENT), so
+    /// these mark the scene's static set stale and the bake picks it up at its own edge -- the
     /// one thing they must not do is run a bake synchronously inside a seam call.</summary>
     [UnmanagedCallersOnly]
     private static void ComputeStaticLighting(nint self)
@@ -586,10 +545,9 @@ internal static unsafe class SceneSlots
     // ---- highlight ----------------------------------------------------------------------------------
 
     /// <summary>Slot 36, <c>Scene::AddHighlightGob(CAurObject*, Vector&amp;)</c>. Two records, because the two
-    /// consumers want different shapes: the feed's <see cref="SceneDb.Highlight"/> SET is what the glow and
-    /// outline passes walk, and <see cref="DbScene.AddHighlight"/>'s list carries the per-object COLOUR the
-    /// set has no room for. A full set is a loud refusal, said once -- an un-highlighted selection is a
-    /// player-visible hole.</summary>
+    /// consumers want different shapes: <see cref="SceneDb.Highlight"/>'s SET is what the glow and outline
+    /// passes walk, and <see cref="DbScene.AddHighlight"/>'s list carries the per-object COLOUR. A full set is
+    /// a loud refusal, said once -- an un-highlighted selection is a player-visible hole.</summary>
     [UnmanagedCallersOnly]
     private static void AddHighlightGob(nint self, nint obj, Vec3* colour)
     {
@@ -657,13 +615,9 @@ internal static unsafe class SceneSlots
     }
 
     /// <summary>Slot 44, <c>Scene::SetSkyAlpha(float, int)</c> @0x55f100 -- a three-field state machine, not a
-    /// setter, and reproduced branch for branch:
-    /// <list type="bullet">
-    /// <item>already showing this mode (<c>cur == mode</c>) -&gt; nothing to do;</item>
-    /// <item>a negative alpha zeroes the blend;</item>
-    /// <item>an alpha at or past 1 COMPLETES the transition: <c>cur = mode</c>, blend back to 0, done;</item>
-    /// <item>otherwise the mode becomes the DESIRED one and the blend is where it got to.</item>
-    /// </list></summary>
+    /// setter, reproduced branch for branch: the mode already showing does nothing, a negative alpha zeroes the
+    /// blend, an alpha at or past 1 COMPLETES the transition (<c>cur = mode</c>, blend back to 0), and anything
+    /// else makes the mode the DESIRED one with the blend where it got to.</summary>
     [UnmanagedCallersOnly]
     private static void SetSkyAlpha(nint self, float alpha, int mode)
     {
@@ -755,10 +709,9 @@ internal static unsafe class SceneSlots
 #endif
 
     /// <summary>The light at the scene's focus. <b>The engine's own body @0x562aa0 does something else</b>: it
-    /// REGISTERS the object as <c>m_pFocusObject</c> and returns a single global <c>focuslighting</c> value --
-    /// one colour for the whole scene, sampled wherever the focus last was, not a per-object answer. CX keeps
-    /// the per-object answer deliberately (it is strictly better and the three callers only tint a GUI
-    /// portrait), and that choice is listed as a difference from vanilla rather than hidden here.</summary>
+    /// REGISTERS the object as <c>m_pFocusObject</c> and returns one global <c>focuslighting</c> value for the
+    /// whole scene. CX answers per object instead -- a listed difference from vanilla, and the three callers
+    /// only tint a GUI portrait.</summary>
     private static Vector3 LightingAtFocus(DbId scene, nint obj)
     {
         if (scene.IsNull) return Vector3.Zero;
@@ -769,10 +722,9 @@ internal static unsafe class SceneSlots
     // ---- debug lines --------------------------------------------------------------------------------
 
     /// <summary>Slot 40, <c>Scene::AddLinesToRender(List&lt;Vector&gt;, List&lt;unsigned int&gt;,
-    /// List&lt;int&gt;)</c>. The three arguments are <c>List</c> OBJECTS passed by value; each is a pointer
-    /// pair (array, count) in the engine's own <c>List</c>, which <c>Scene::AddLinesToRender</c> reads through
-    /// <c>List::operator[]</c>. Taken as three opaque pointers and read through <see cref="DbLineList"/>,
-    /// whose layout is the engine's measured one.</summary>
+    /// List&lt;int&gt;)</c>. The three arguments are <c>List</c> OBJECTS passed by value, each an (array,
+    /// count) pair; taken as three opaque pointers and read through <see cref="DbLineList"/>, whose layout is
+    /// the engine's measured one.</summary>
     [UnmanagedCallersOnly]
     private static void AddLinesToRender(nint self, nint points, nint colours, nint strips)
     {
@@ -821,13 +773,10 @@ internal static unsafe class SceneSlots
         => $"scene slots: {_calls} calls" + (_nullScene > 0 ? $", {_nullScene} on a DEAD scene handle" : "");
 }
 
-/// <summary>The engine's <c>List&lt;T&gt;</c> as the three <c>AddLinesToRender</c> arguments carry it: an
-/// array pointer at +0 and an element count at +8.
-/// <para>Measured in <c>Scene::AddLinesToRender</c> @0x573200 itself, which reads all three: the points list
-/// as a pointer at +0 and an int count at +8 of its argument, and the colour and strip lists the same way
-/// through an 8-byte-element view -- the same +0 and +8. The
-/// capacity word after the count is not read here. Each list arrives by invisible reference on both OSes
-/// (a non-trivial destructor puts the aggregate in MEMORY class), so one signature serves.</para></summary>
+/// <summary>The engine's <c>List&lt;T&gt;</c> as the three <c>AddLinesToRender</c> arguments carry it: an array
+/// pointer at +0 and an element count at +8, measured in <c>Scene::AddLinesToRender</c> @0x573200, which reads
+/// all three that way. Each list arrives by invisible reference on both OSes (a non-trivial destructor puts the
+/// aggregate in MEMORY class), so one signature serves.</summary>
 internal readonly unsafe struct DbLineList
 {
     private readonly nint _p;

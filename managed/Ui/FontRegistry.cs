@@ -5,21 +5,16 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>
-/// The typefaces the UI may ask for by short name (#470). <c>font.&lt;name&gt;=&lt;path&gt;</c> in
-/// <c>cx.cfg</c>; <c>default</c> is the embedded DejaVuSans unless <c>font.default=</c> overrides it. A
-/// relative path is looked up beside the extender (the process directory: nwmain sits next to
-/// <c>version.dll</c> / the <c>.so</c>, #474) and then in the user directory beside <c>cx.cfg</c> -- the
-/// form that survives Proton, where an absolute Linux path names nothing. A name that fails to load is a
-/// logged refusal and resolves to the default face; it never yields a missing-text frame. The fonts installed on
-/// the machine (#681) are choices too, under their full name from the <c>name</c> table, read on first use;
-/// <c>ui.typeface</c> picks which of them <c>default</c> is bound to (<see cref="Bind"/>), the same rebinding
-/// <c>font.default=</c> does from the file.
+/// The typefaces the UI may ask for by short name: <c>font.&lt;name&gt;=&lt;path&gt;</c> in <c>cx.cfg</c>, plus
+/// every font installed on the machine under its full name from the <c>name</c> table. <c>default</c> is the
+/// embedded DejaVuSans unless <c>font.default=</c> in the file or <c>ui.typeface</c> (<see cref="Bind"/>) rebinds
+/// it. A name that fails to load is a logged refusal resolving to the default face, never a missing-text frame.
 /// </summary>
 public static class FontRegistry
 {
     public const string DefaultName = "default";
     /// <summary>The embedded DejaVuSans under its own reserved name: always loaded, never overridable from the
-    /// cfg, because it is the chrome's icon source whatever <c>default</c> is bound to (#425).</summary>
+    /// cfg, because it is the chrome's icon source whatever <c>default</c> is bound to.</summary>
     public const string EmbeddedName = "embedded";
     /// <summary>The system's monospace face, the console's (<see cref="SystemMonospace"/>); <c>font.monospace=</c>
     /// in the cfg overrides it like any declared name.</summary>
@@ -293,6 +288,9 @@ public static class FontRegistry
         catch (Exception) { return null; }   // no fontconfig: the console keeps the UI face
     }
 
+    /// <summary>A rooted path as given; a relative one beside the extender (the process directory, where nwmain
+    /// sits next to the proxy DLL or the <c>.so</c>) and then in the user directory beside <c>cx.cfg</c> -- the
+    /// form that survives Proton, where an absolute Linux path names nothing. Null when neither exists.</summary>
     private static string? Resolve(string path)
     {
         if (Path.IsPathRooted(path)) return File.Exists(path) ? path : null;
@@ -323,7 +321,7 @@ public static class FontRegistry
         check.Expect(Bytes("no-such-face") == Bytes(DefaultName), "unknown-name bytes are the default's");
         check.Expect(_entries.ContainsKey(EmbeddedName), "the embedded font is always declared");
 
-        // #681: the name-table read on the embedded DejaVu, the choice list, and the default rebinding.
+        // the name-table read on the embedded DejaVu, the choice list, and the default rebinding.
         if (Bytes(EmbeddedName) is byte[] emb)
             check.Expect(FullName(new MemoryStream(emb)) == "DejaVu Sans", $"the embedded font's full name reads back ({FullName(new MemoryStream(emb))})");
         check.Expect(FullName(new MemoryStream(Encoding.ASCII.GetBytes("not a font, not at all"))) == null, "a non-sfnt stream has no name");

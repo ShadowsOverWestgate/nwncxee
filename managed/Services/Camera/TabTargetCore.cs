@@ -4,14 +4,10 @@ using CX.Framework;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// The tab-target mode's two pure decisions (CX-636): which candidate the cycle key lands on, and what a
-/// target-asking quickbar button does under each cast mode. No native reads; the shell
-/// (<see cref="TabTargetService"/>) fills the candidate list and acts on the verdicts. Nothing here allocates:
-/// the filter and sort work in caller-supplied or stack buffers.
-/// <para>The cycle order is a <b>ring</b>: the candidates sorted by screen distance the moment a ring is
-/// (re)built, kept across presses so a fight that moves does not bounce the lock between two creatures. It is
-/// rebuilt when the lock is not on it (no lock, a click-lock, a cleared lock); newcomers are appended, and ids
-/// that stopped being candidates are skipped, so the ring only ever grows until it is rebuilt.</para>
+/// The tab-target mode's two pure decisions: which candidate the cycle key lands on, and what a target-asking
+/// quickbar button does under each cast mode. No native reads; <see cref="TabTargetService"/> fills the candidate
+/// list and acts on the verdicts, and nothing here allocates. The cycle order is a ring -- candidates sorted by
+/// screen distance when it is built, kept across presses, rebuilt only when the lock is not on it.
 /// </summary>
 internal static class TabTargetCore
 {
@@ -111,7 +107,7 @@ internal static class TabTargetCore
         return -1;
     }
 
-    /// <summary>The spec's cases (CX-636 Testing Decisions), run from the service's Initialize.</summary>
+    /// <summary>The cycle and cast-verdict cases off-device, run from the service's Initialize.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);

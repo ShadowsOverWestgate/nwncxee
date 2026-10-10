@@ -6,23 +6,17 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52 step 4: the DDS files the engine's reader cannot answer -- a <c>DX10</c> header (BC7, BC6H, SNORM
-/// RGTC, sRGB, DX10-wrapped BC1-BC5), a DXT3 or BC4U/BC5U-style FourCC, a real cube map. <c>GetCompressedRaster</c>
-/// @0x1125990 still demands such a file and returns 1: <c>GetChannelCount</c> @0x1135520 gives 0 channels for any
-/// other FourCC and the data pointer is <c>header + 128</c> even behind the 20-byte DX10 extension, so vanilla
-/// uploads garbage. Here the parse is Alloy's alone: level 0 (or the chain) is copied into a tagged buffer of
-/// ours, the engine's buffer released, and the out params written with the channel count whose block size
-/// matches (<see cref="ChannelsOf"/>), so <c>AurGetImageWrapper</c> @0x484cc0 picks a format of the right size.
-/// <para>A format the engine's table can name (BC1/BC3/BC4/BC5) the engine then uploads as always. Any other only
-/// Alloy can upload (<see cref="OwnedTextures"/> replaces the engine's same-sized upload), so it is accepted only
-/// while Alloy owns the upload and the driver's probe said yes; otherwise the engine's buffer is released and
-/// the getter answers nothing, counted and logged (CX-45) -- the texture stays unloaded rather than garbage.</para>
-/// <para>A cube is read as a cube only for the forced-uncompressed path (<see cref="ForUnpack"/>), which packs its
-/// faces into the engine's strip (<see cref="CubeStrip"/>); anywhere else the engine sees face 0, as it would.</para></summary>
+/// <summary>
+/// The DDS files the engine's reader cannot answer -- a <c>DX10</c> header, a DXT3 or BC4U/BC5U-style FourCC, a
+/// real cube map. <c>GetCompressedRaster</c> still demands such a file and returns 1, with 0 channels and the
+/// data pointer at <c>header + 128</c> even behind the 20-byte DX10 extension, so vanilla uploads garbage. Here
+/// the parse is Alloy's alone, and a format only Alloy uploads is served only while it owns the upload.
+/// </summary>
 internal static unsafe partial class DdsReader
 {
     /// <summary>Set by <see cref="RasterReader"/> around its getter call: the answer is decoded on the CPU and
-    /// released at once, so it is never padded, a cube keeps all six faces, and no upload has to be owned.</summary>
+    /// released at once, so it is never padded, a cube keeps all six faces (packed into the engine's strip by
+    /// <see cref="CubeStrip"/>; anywhere else the engine sees face 0), and no upload has to be owned.</summary>
     internal static bool ForUnpack;
     /// <summary>What each live answer that needs it was parsed as, keyed by the pointer handed out; dropped by the release.</summary>
     private static readonly Dictionary<nint, Info> _answers = new();
@@ -82,7 +76,7 @@ internal static unsafe partial class DdsReader
     /// <summary>Once, main thread, engine context, after the first Alloy frame has probed VRAM: ask the driver
     /// about every format only Alloy uploads -- supported, stored compressed, block shape -- and, for BC7, measure
     /// the free-VRAM drop across a 2048x2048 chain, since no query can tell a driver that decompresses behind the
-    /// enum (CX-52 spec constraints). Logged, both rigs; a format refused here is refused at the getter.</summary>
+    /// enum. A format refused here is refused at the getter.</summary>
     private static void Probe()
     {
         if (_probed >= 0 || !GlContextService.Available || !AlloyRenderer.VramProbed || Gl.GetInternalformativ == null) return;

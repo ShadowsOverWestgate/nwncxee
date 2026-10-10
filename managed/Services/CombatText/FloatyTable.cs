@@ -109,7 +109,7 @@ public sealed class FloatyTable
         /// the same fallback rule the chat renderer applies to a channel tint.</summary>
         public float BaseR = 1f, BaseG = 1f, BaseB = 1f;
         /// <summary>Cached text width in the measured face's px at scale 1, invalidated by an atlas re-bake or by
-        /// the peak face changing height (#471: a lowered ceiling can hand back an already-baked face, no epoch bump).</summary>
+        /// the peak face changing height (a lowered ceiling can hand back an already-baked face, no epoch bump).</summary>
         public float MeasuredW = -1f;
         public int MeasureEpoch = -1;
         public float MeasurePx;

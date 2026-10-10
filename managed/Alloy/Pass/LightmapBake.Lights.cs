@@ -9,17 +9,16 @@ using CX.Alloy.Db;
 
 namespace CX.Alloy;
 
-/// <summary>The static-light side of the bake (#674): the three-branch rule (#654/#664/#659) classified once
-/// per <c>PartLight</c> identity, the per-frame static snapshot the bake reads, the static-set fingerprint
-/// that is the one re-key edge (#668), and the <c>CAurScene::ComputeStaticLighting</c> hook that voids the
-/// classification. Every reader here runs on the light walk (the shadow bracket) and allocates nothing.</summary>
+/// <summary>The static-light side of the bake: the three-branch rule classified once per light identity, the
+/// per-frame static snapshot the bake reads, the static-set fingerprint that is the one re-key edge, and the
+/// <c>CAurScene::ComputeStaticLighting</c> hook that voids the classification. Every reader here runs on the
+/// light walk (the shadow bracket) and allocates nothing.</summary>
 internal static unsafe partial class LightmapBake
 {
-    /// <summary>The static set is ONE walk: CX-56 makes it the first walk after <c>CNWCArea::LoadArea</c>
-    /// returned non-zero (<see cref="_loadArmed"/>), where it used to be the first walk 30 past the AreaLoaded send and 60 past the
-    /// last light to appear -- a second of frame counting for an answer the load's own message already has.
-    /// Closed, the set is final for the area: a light that appears later is dynamic, whatever its shape, and a
-    /// server tile change reopens it (<see cref="OnTileChanged"/>).</summary>
+    /// <summary>The static set is ONE walk: the first walk after <c>CNWCArea::LoadArea</c> returned non-zero
+    /// (<see cref="_loadArmed"/>), rather than a second of frame counting for an answer the load's own message
+    /// already has. Closed, the set is final for the area: a light that appears later is dynamic, whatever its
+    /// shape, and a server tile change reopens it (<see cref="OnTileChanged"/>).</summary>
     private static bool _closed, _reopen;
     private static int _walks;
     /// <summary>The area under the walk changed since the last close: the pages are the previous area's and
@@ -27,13 +26,10 @@ internal static unsafe partial class LightmapBake
     /// area's rects resident under the next one and halved its density for them).</summary>
     private static bool _areaChanged;
 
-    /// <summary>CX-56: <c>CNWCArea::LoadArea</c> @0x70e010 has RETURNED non-zero, so every light of this area
-    /// is in the master list -- its tile loop, <c>SetSourceLightColor</c>'s gobs and both placeable blocks are
-    /// all synchronous, and the AreaLoaded send comes from a later message
-    /// (CX-131). Lowered at the call's ENTRY, because a walk that runs inside
-    /// <c>LoadArea</c> (its own <c>UpdateScreen</c> ticks) sees a half-spawned area. It stays raised for the
-    /// whole area, so a reopen -- the area edge's <see cref="Revoke"/>, a tile change -- costs the close one
-    /// walk instead of the 90 the walk counts used to.</summary>
+    /// <summary><c>CNWCArea::LoadArea</c> @0x70e010 has RETURNED non-zero, so every light of this area is in
+    /// the master list -- its tile loop, <c>SetSourceLightColor</c>'s gobs and both placeable blocks are all
+    /// synchronous. Lowered at the call's ENTRY, because a walk that runs inside <c>LoadArea</c> (its own
+    /// <c>UpdateScreen</c> ticks) sees a half-spawned area. It stays raised for the whole area.</summary>
     private static volatile bool _loadArmed;
     /// <summary>...and its refusal: <c>LoadArea</c> returned 0. Its error paths destroy the tile array, so
     /// there is no set to close and none is closed on the old walk-count path either -- the bake stays
@@ -41,17 +37,16 @@ internal static unsafe partial class LightmapBake
     private static volatile bool _loadRefused;
     /// <summary>How many area loads the engine has refused this session; <see cref="Describe"/>'s honesty.</summary>
     internal static int LoadRefusals;
-    /// <summary>Walks the close may spend waiting for a static light's gob to finish blending its animation in
+    /// <summary>Walks the close may spend waiting for a static light's gob to blend its animation in
     /// (<see cref="Settled"/>). <c>Gob::Animate</c> advances a weight by <c>dt/blendTime</c> from 0, so a
-    /// settle is one blend time -- run 26 measured 0.2 s, a dozen walks. Past this the set closes WITHOUT the
-    /// lights that are still blending (they stay dynamic) and the line is loud: a blend that never finishes
-    /// would otherwise hold the loading screen to its cap.</summary>
+    /// settle is one blend time, about a dozen walks. Past this the set closes WITHOUT the still-blending
+    /// lights and says so loudly: a blend that never finishes would hold the loading screen to its cap.</summary>
     private const int BlendCeiling = 60;
     private static int _regCountSeen = -1;
     private static IntPtr _clsArea;
 
-    /// <summary>The area's static set over the UNCUT master list, accumulated across walks (#654: the
-    /// fingerprint must not fold the culled set): position, LIT radius, the same colour the light SSBO carries.</summary>
+    /// <summary>The area's static set over the UNCUT master list, accumulated across walks (the fingerprint
+    /// must not fold the culled set): position, LIT radius, the same colour the light SSBO carries.</summary>
     private static Vector4[] _stPosR = new Vector4[256];
     private static Vector3[] _stCol = new Vector3[256];
     private static int _stN;
@@ -59,7 +54,7 @@ internal static unsafe partial class LightmapBake
     /// per frame.</summary>
     internal static int CensusStatic, CensusAnimated, CensusDynamic, CensusTile, CensusPlaceable;
     /// <summary>The part of <see cref="CensusAnimated"/> that the gob's RUNNING animation drives rather than
-    /// its model node (<see cref="AnimationDrives"/>) -- the flickering torches CX-56 was baking.</summary>
+    /// its model node (<see cref="AnimationDrives"/>) -- the flickering torches.</summary>
     internal static int CensusAnimRun;
     /// <summary>Static lights this walk refused because their gob is still blending: the close waits on it.</summary>
     internal static int CensusUnsettled;
@@ -75,13 +70,13 @@ internal static unsafe partial class LightmapBake
     internal static ulong SetHash { get => _setHash; private set { _setHash = value; _setIdxPtr.Clear(); } }
     private static ulong _setHash;
 
-    /// <summary>CX-56: the static lights a baked surface holds a mover share for -- page C's four bytes, one per
-    /// light of the surface's own pick (<see cref="PickLights"/>). Past them a light falls to the live estimate.</summary>
+    /// <summary>The static lights a baked surface holds a mover share for -- page C's four bytes, one per
+    /// light of the surface's own pick (<see cref="PickLights"/>). Past them a light falls to the estimate.</summary>
     internal const int Channels = 4;
     /// <summary>A live light's index in <see cref="_setPosR"/> by object, -1 = none; resolved once per set.</summary>
     private static readonly Dictionary<IntPtr, int> _setIdxPtr = new(512);
 
-    /// <summary>CX-56: the set index of a static light the walk just recorded -- the set entry within
+    /// <summary>The set index of a static light the walk just recorded -- the set entry within
     /// <see cref="Near"/> of it, cached by object; -1 before the set closes or when it has no entry. The index
     /// is what a surface's pick names, so the lit stage can tell whose share a byte of page C is. Hot (every
     /// walk), allocation-free once each light is cached.</summary>
@@ -96,12 +91,10 @@ internal static unsafe partial class LightmapBake
         return c;
     }
 
-    /// <summary>CX-56: the <see cref="Channels"/> static lights that light the sphere (<paramref name="c"/>,
+    /// <summary>The <see cref="Channels"/> static lights that light the sphere (<paramref name="c"/>,
     /// <paramref name="r"/>) most -- estimated luminance at the sphere's nearest point through the loop's own
-    /// curve -- as set indices, strongest first, -1 past the lights that touch it. Ties break on the light's
-    /// position, never its index, so the pick is the lights' own and the rect's key (which holds every touching
-    /// light and the sphere) names the same pick in every session. Channel k of the rect's page C texels is
-    /// pick k's share.</summary>
+    /// curve -- as set indices, strongest first. Ties break on the light's position, never its index, so the
+    /// rect's key names the same pick in every session; channel k of its page C texels is pick k's share.</summary>
     private static void PickLights(Vector3 c, float r, Span<int> pick)
     {
         Span<float> best = stackalloc float[Channels];
@@ -148,15 +141,10 @@ internal static unsafe partial class LightmapBake
     /// object or one of the set that moved or changed reach (the drift diagnostic, 24 lines an area).</summary>
     private static readonly Dictionary<IntPtr, int> _seenPtr = new(512);
 
-    /// <summary>An area edge: the next walk is a NEW area, whatever the area pointer says -- run 31's server
-    /// transition freed one CNWCArea and malloc handed the next one the same address, so the pointer compare
-    /// below saw nothing, the plaza was baked against the harbour's set and the harbour's pages and charts
-    /// stayed resident under it. Raised by <c>LoadArea</c>'s entry (CX-56: the area really does change there),
-    /// by the AreaLoaded send and again by <see cref="EndAreaEdge"/> after that send's <see cref="Revoke"/>.
-    /// <para>ORDER: the LoadArea edge lands first and the send's lands second, on the SAME area. They do not
-    /// fight, because what closes the set is <see cref="_loadArmed"/> and not a walk count: the send's edge
-    /// (and the revoke inside it, which rewinds the pages anyway) costs the close exactly one walk, and the
-    /// set it re-closes is the same set -- every light was there at <c>LoadArea</c>'s return.</para></summary>
+    /// <summary>An area edge: the next walk is a NEW area, whatever the area pointer says -- a server
+    /// transition freed one CNWCArea and malloc handed the next one the same address, so a pointer compare saw
+    /// nothing and the new area was baked against the old one's set. Raised by <c>LoadArea</c>'s entry, by the
+    /// AreaLoaded send and again by <see cref="EndAreaEdge"/> after that send's <see cref="Revoke"/>.</summary>
     internal static void OnAreaLoaded() => _edgePending = true;
     private static volatile bool _edgePending;
     /// <summary><c>CNWCArea::SetTile</c>: one tile's model and lights re-spawn -- the set is walked again.</summary>
@@ -165,10 +153,7 @@ internal static unsafe partial class LightmapBake
     /// <summary>Restart the per-frame snapshot: the area edge, the re-open, and the per-walk clear of the
     /// seen sets. Takes the area's IDENTITY and its placeable-light count as VALUES rather than a live
     /// <c>CNWCArea</c> -- the walk runs inside the per-view draw, which with <c>alloy.renderthread=1</c> is
-    /// not the game thread. Called from the walk's top, beside <c>BeginAreaLights</c>.
-    /// <para>The placeable-light registry itself is not walked: the database hands <see cref="RecordDb"/> its
-    /// own static verdict (<c>LitDynamic</c>/<c>ObjStatic</c>), so the three-branch classification the
-    /// registry served is not asked. The count is carried so the close line can name it.</para></summary>
+    /// not the game thread. The placeable registry is not walked: the database hands over its own verdict.</summary>
     internal static void BeginWalkDb(nint areaPtr, int placeableLights)
     {
         CensusStatic = CensusDynamic = CensusUnsettled = 0;
@@ -194,13 +179,10 @@ internal static unsafe partial class LightmapBake
     // (#675) is what covers the gap between it and the first landed page.
     internal static bool Produces => _rectN > 0 || MeshChart.Offered > 0;
 
-    /// <summary>One database light, and -- when static -- folded into the snapshot. Called for every light
-    /// the walk admits, BEFORE its fade and cull, with the lightmap on or off (GI keys its cache on the same
-    /// fingerprint). Returns the static verdict for the SSBO bit.
-    /// <para>CX-188: the engine arm is gone with the walk that drove it. A light's identity here is its own
-    /// database record rather than a <c>PartLight*</c> -- it is only ever a KEY below, and unlike the
-    /// engine's it is not recycled by an allocator -- and the static VERDICT is handed in, because the
-    /// database already knows it (a tile light's <c>LitDynamic</c>, an object's <c>ObjStatic</c>).</para></summary>
+    /// <summary>One database light, and -- when static -- folded into the snapshot. Called for every light the
+    /// walk admits, BEFORE its fade and cull, with the lightmap on or off (GI keys its cache on the same
+    /// fingerprint). A light's identity here is its own database record, which unlike a <c>PartLight*</c> is
+    /// not recycled by an allocator, and the static VERDICT is handed in, because the database knows it.</summary>
     internal static bool RecordDb(IntPtr id, Vector3 pos, float adjR, Vector3 color, bool ambient,
                                   bool isStatic, out int setIndex)
     {
@@ -332,7 +314,7 @@ internal static unsafe partial class LightmapBake
         }
     }
 
-    /// <summary>The per-instance half of the bake key (#666): an order-independent xor over the static lights
+    /// <summary>The per-instance half of the bake key: an order-independent xor over the static lights
     /// whose sphere touches the instance's bounds -- position and range at 5 cm, full colour at 1/255.
     /// Zero when nothing touches (a bake of black, still a bake).</summary>
     private static ulong TouchingLights(Vector3 c, float r)
@@ -361,10 +343,10 @@ internal static unsafe partial class LightmapBake
 
     private static ComputeStaticLightingFn _origCsl;
 
-    /// <summary>The edges the static set is built on: <c>LoadArea</c> (CX-56, the one that CLOSES the set),
+    /// <summary>The edges the static set is built on: <c>LoadArea</c> (the one that CLOSES the set),
     /// <c>SetTile</c> (a tile re-spawns, the set is walked again), the AreaLoaded send (the hold) and the
-    /// engine's own "the static lighting changed" signal (#664 §A.6, counted on the period line). All cold
-    /// hooks; none allocates.</summary>
+    /// engine's own "the static lighting changed" signal (counted on the period line). All cold hooks; none
+    /// allocates.</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _loadAreaSlot = hooks.ChainAreaLoadArea(&OnLoadArea, EdgePriority);

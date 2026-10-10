@@ -4,14 +4,10 @@ using CX.Graphics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-119: the glyph geometry of a text object, built ONCE per change instead of once per frame.
-/// <para>This is <c>CAurFont::TextOut</c> @0x496220 with <c>StringGob::Render</c> @0x4933a0's translate chain
-/// folded in, so one list covers the whole visible document in the object's own local space: 5 floats a vertex
-/// (x, y, z, u, v), 6 vertices a glyph, non-indexed triangles -- byte-for-byte the engine's stream format 0x804.
-/// The engine rebuilds all of it every frame, re-parsing the markup and re-reading the glyph table per byte, and
-/// then <c>GuiCapture</c> copies the result back out of the stream pool and reads <c>m_aurMtxStack</c> per draw.
-/// Here the list is a pure function of (bytes, visible length, font, atlas epoch, width, scale, colours) and the
-/// draw is a span.</para></summary>
+/// <summary>The glyph geometry of a text object, built ONCE per change rather than per frame: a pure function of
+/// (bytes, visible length, font, atlas epoch, width, scale, colours), drawn as a span. This is
+/// <c>CAurFont::TextOut</c> @0x496220 with <c>StringGob::Render</c> @0x4933a0's translate chain folded in: one list
+/// for the whole document in local space, 6 vertices a glyph of (x, y, z, u, v) -- stream format 0x804.</summary>
 public static class TextQuads
 {
     /// <summary>Lists issued while still stale -- an ordering bug in the caller, never a silent hole.</summary>

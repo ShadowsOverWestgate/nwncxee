@@ -2,14 +2,10 @@ using System;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-119: the engine's in-string markup, <c>CAurFont::ProcessTextMarkup</c> @0x496070. Exactly two
-/// tokens exist in this build -- <c>&lt;c</c> + three raw bytes + <c>&gt;</c> (6 bytes) and <c>&lt;/c</c>
-/// (4 bytes, and it does NOT require the closing <c>&gt;</c>). Anything else is not markup and the <c>&lt;</c> is
-/// a glyph. Markup consumes no width.
-/// <para>The colour stack is a PROCESS-WIDE 16-entry ring with a global index, shared by every string and mutated
-/// by measuring as well as drawing, so an unbalanced token leaks colour into the next string. That is the engine's
-/// behaviour and this is a faithful port of it: a per-document stack would diverge visibly on the panels that
-/// rely on the leak.</para></summary>
+/// <summary>The engine's in-string markup, <c>CAurFont::ProcessTextMarkup</c> @0x496070: exactly two tokens,
+/// <c>&lt;c</c> + three raw bytes + <c>&gt;</c> (6 bytes) and <c>&lt;/c</c> (4 bytes, closing <c>&gt;</c>
+/// optional); anything else is a literal glyph, and markup consumes no width. The colour stack is the engine's
+/// own PROCESS-WIDE 16-entry ring, mutated by measuring too, so an unbalanced token leaks into the next.</summary>
 public static class TextMarkup
 {
     private const int Depth = 16;

@@ -76,8 +76,8 @@ internal static class Hotkeys
         _log?.Info($"Hotkeys: revoked all {all.Count} approved key(s)");
     }
 
-    /// <summary>Today's Revoke-all for the server in session, then every token section wiped (no packet: #418's
-    /// fail-closed rule -- a server never told is a server that re-asks).</summary>
+    /// <summary>Today's Revoke-all for the server in session, then every token section wiped (no packet: by the
+    /// fail-closed rule, a server never told is a server that re-asks).</summary>
     private static void ForgetAll()
     {
         RevokeAll();

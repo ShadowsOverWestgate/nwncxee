@@ -7,26 +7,14 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-88: the sky's own fragment shader, compiled as an ALLOY program. A dynamic sky IS its fragment stage
-/// -- SoW's <c>fst_sky</c> and its ~1900 lines of procedural cloud, star, sun and moon -- and #136 drew it by
-/// borrowing the program object the ENGINE had compiled, captured inside the swallowed sky draw. That capture
-/// is gone: the stage is spliced off the resource chain into <c>cx_sky_fs</c> (the environment ahead of it
-/// stands in for <c>inc_common</c>/<c>inc_uniforms</c>/<c>inc_standard</c> under the engine's own names, so
-/// stock text drops in unedited), linked against Alloy's own sky vertex stage, and drawn from Alloy's own
-/// per-draw record.
-/// <para><b>What that buys beyond deleting a capture window.</b> The dome takes <c>uVP</c> like every other
-/// Alloy draw, so it renders correctly into the environment probe's cube faces, which the engine program
-/// could not (its matrices were the main view's). The display-to-linear decode is one line in the stage
-/// instead of a fullscreen pass with a <c>glTextureBarrier</c> (#136's <c>SkyDecodeFs</c>, deleted). And no
-/// engine program object is bound on an Alloy frame, which is the CX-81 bar.</para>
-/// <para><b>Textures stay the ENGINE's objects.</b> An owned copy shares the texels but not the object state
-/// the engine sets on its own name at bind time (filter, anisotropy), and the dome's polar fan is the most
-/// anisotropic footprint in the frame -- the difference showed as radial spokes off the zenith (#136, live).
-/// Bound through DSA, so the active unit the engine caches (#237) is never touched.</para>
+/// The sky's own fragment shader, compiled as an ALLOY program: a dynamic sky IS its fragment stage, spliced
+/// off the resource chain into <c>cx_sky_fs</c> (whose environment stands in for the engine's own includes,
+/// so stock text drops in unedited) and linked against Alloy's sky vertex stage -- so the dome takes
+/// <c>uVP</c> like any Alloy draw and renders into the probe's cube faces. Its textures stay the ENGINE's.
 /// </summary>
 internal static unsafe class SkyStage
 {
-    /// <summary>The stage's resref (#92 override point): the environment plus the <c>// $VANILLA-MAIN</c>
+    /// <summary>The stage's resref (an override point): the environment plus the <c>// $VANILLA-MAIN</c>
     /// region the content sky stage is spliced into. An author overriding this replaces the environment, not
     /// the content's sky.</summary>
     internal const string ShdFs = "cx_sky_fs";
@@ -37,7 +25,7 @@ internal static unsafe class SkyStage
 
     /// <summary>A sky has three gobs and they share one material in every module measured; four distinct
     /// custom fragment stages is a ceiling, not a sizing decision. Past it the sky is refused for the frame
-    /// (loudly, once), and since CX-87 nothing else draws it, so the frame has no sky.</summary>
+    /// (loudly, once), and nothing else draws it, so the frame has no sky.</summary>
     private const int MaxProgs = 4;
 
     private struct Entry
@@ -69,7 +57,7 @@ internal static unsafe class SkyStage
     }
 
     /// <summary>Module change: the spliced text came off THAT module's resource chain, so it has a module
-    /// lifetime (the server-switch trap -- a program built from SoW's chain running on Arelith). Rebuilds
+    /// lifetime (the server-switch trap -- a program built from one server's chain running on another's). Rebuilds
     /// lazily on the next sky frame.</summary>
     internal static void DropPrograms()
     {
@@ -172,9 +160,8 @@ internal static unsafe class SkyStage
 
     /// <summary>Everything a sky program needs that does not vary per draw, uploaded once per program per
     /// pass: the view-projection, the sampler units, the camera's world matrix (stock reads its translation
-    /// column as the eye) and the engine's calendar and weather scalars, from
-    /// <c>m_shaderExposedRuntimeData</c> -- the same values <c>GLRender::SetUniforms</c> @0x4ccbf0 feeds the
-    /// engine's own copy of this stage. Hot: allocates nothing.</summary>
+    /// column as the eye) and the engine's calendar and weather scalars from
+    /// <c>m_shaderExposedRuntimeData</c> -- the same values the engine feeds its own copy. Hot.</summary>
     internal static void Prepare(uint prog, Matrix4x4* vp, int* viewport)
     {
         int at = -1;

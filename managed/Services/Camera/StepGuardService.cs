@@ -7,21 +7,10 @@ using CX.Framework;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Client step guard (CX-682; CX-140 §4 fix A). Pre-hooks
-/// <c>CNWCCreature::WalkUpdateLocation</c>, the per-frame walk step, for the player creature alone: the desired
-/// position (<see cref="EngineLayout.CreatureDesiredPos"/>) is snapshotted, the engine steps it, and the step is
-/// re-run through the engine's own door-aware swept test, <c>CNWCArea::TestDirectLine</c> with closed doors solid
-/// (the test a click and a drive segment already get -- only from wherever the avatar already is, which is why a
-/// waypoint walk crosses a door untested). A refused step puts the desired position and the model back where they
-/// were, so no drive packet (or anything else reading the displayed position) can ever claim the far side of a
-/// closed door, on any server, with no wire change. A step longer than <see cref="MaxStep"/>, or one across which the
-/// module's current area changed, is a teleport or transition rewrite, not a walk, and passes untested. The area is
-/// the module's current one (<see cref="EngineLayout.ModuleCurrentArea"/>), the same pointer ClientSideWalkCommand
-/// hands the engine's own drive-segment test. The pending waypoints are left alone on a refusal (research §6.5): the
-/// avatar pushes at the door until the server's update ends the walk, as the server's own creature does.
-/// <para>Hot: once per frame while the player walks, one line test over centimetres (one tile, one door-AABB
-/// prefilter, no allocation on pass or on door-blocked), pointer reads otherwise. Other creatures pass straight
-/// through on the id compare.</para>
+/// Client step guard: chains <c>CNWCCreature::WalkUpdateLocation</c>, the per-frame walk step, for the player
+/// creature alone -- the desired position is snapshotted, the engine steps it, and the step is re-run through the
+/// engine's own door-aware swept test, <c>CNWCArea::TestDirectLine</c> with closed doors solid. A refused step puts
+/// the desired position and the model back, so no packet claims the far side of a closed door. Hot, no allocation.
 /// </summary>
 public sealed unsafe class StepGuardService : IExtenderService
 {
@@ -100,7 +89,7 @@ public sealed unsafe class StepGuardService : IExtenderService
     }
 
     /// <summary>The /knobs note: the refusal ledger split by the driving flag, which answers
-    /// whether refusals ever fire on a drive segment (§6.2) or only on waypoint steps.</summary>
+    /// whether refusals ever fire on a drive segment or only on waypoint steps.</summary>
     internal static string Report()
         => FormattableString.Invariant(
             $"step guard: {(_live ? _probeOk ? "live" : "probe failed" : "no player step yet")} | {_steps} step(s) passed, {_walkRefusals} walk + {_driveRefusals} drive step(s) refused");

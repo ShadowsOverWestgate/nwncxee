@@ -6,7 +6,7 @@ using CX.Framework;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Eased animation crossfades (CX-27, <c>anim.crossfade</c>). The engine fades one animation into the next with a weight
+/// Eased animation crossfades (<c>anim.crossfade</c>). The engine fades one animation into the next with a weight
 /// that rises in a straight line (<see cref="SymbolMap.AnimateHierarchy"/>), so every change starts and stops with a
 /// jolt in velocity. The weight is remapped by smoothstep on its way into the hierarchy, and only there: the run keeps
 /// its own linear weight, so the engine's timing and its removal of the old runs at 1 are unchanged.
@@ -43,10 +43,9 @@ public sealed unsafe class CrossfadeService : IExtenderService
     /// <summary>Smoothstep inside (0, 1); the weights the engine sets outright (0, 1) pass unchanged.</summary>
     internal static float Ease(float w) => w > 0f && w < 1f ? w * w * (3f - 2f * w) : w;
 
-    /// <summary>CX-106 re-seat: the weight the hierarchy walk should be handed, knob included. The owned
-    /// animation runtime never calls <see cref="SymbolMap.AnimateHierarchy"/>, so the chain above cannot fire
-    /// on that path; it applies this once, exactly where the engine's outermost call would have been eased.
-    /// The chain stays for <c>anim.owned 0</c>.</summary>
+    /// <summary>The weight the hierarchy walk should be handed, knob included. The owned animation runtime never
+    /// calls <see cref="SymbolMap.AnimateHierarchy"/>, so the chain above cannot fire on that path; it applies this
+    /// once, where the engine's outermost call would have been eased. The chain stays for <c>anim.owned 0</c>.</summary>
     internal static float Weight(float w) => AnimKnobs.Crossfade.V ? Ease(w) : w;
 
     /// <summary>The remap keeps the ends, never falls, starts and ends level (a step at either end smaller than the

@@ -63,11 +63,10 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
     }
 
     /// <summary>
-    /// Apply a proposed armed set. The set is a PROPOSAL measured against what the player has
-    /// CONSENTED to, not against what is currently captured: capture shrinks silently, but a server
-    /// asking for fewer keys never un-consents the rest. It is the same server across a character
-    /// swap, and the character being swapped to may have no bindings at all - taking that as a
-    /// revocation wiped the stored consent and re-prompted on the way back.
+    /// Apply a proposed armed set. The set is a PROPOSAL measured against what the player has CONSENTED to,
+    /// not against what is currently captured: capture shrinks silently, but a server asking for fewer keys
+    /// never un-consents the rest -- it is the same server across a character swap, and a character with no
+    /// bindings taken as a revocation wipes the stored consent and re-prompts on the way back.
     /// </summary>
     private static void HandleArmSet(byte* data, uint size)
     {

@@ -5,11 +5,10 @@ using Microsoft.Win32.SafeHandles;
 
 namespace CX.Alloy;
 
-/// <summary>CX-54 step 1, the pure half: a resource's <b>location</b> and the read of it. No engine memory, no
-/// engine call, no GL -- everything here runs on the <c>cx-load</c> worker off a record the main thread filled
-/// in for it, which is what makes the read safe to take off the main thread at all (<c>CExoResMan</c> is not
-/// thread-safe: its <c>Malloc</c> evicts from a shared budget and every container shares one seekable
-/// <c>CExoFile*</c>).</summary>
+/// <summary>A resource's <b>location</b> and the read of it, the pure half: no engine memory, no engine call, no
+/// GL. It all runs on the <c>cx-load</c> worker off a record the main thread filled in for it, which is what
+/// makes the read safe off the main thread at all -- <c>CExoResMan</c> is not thread-safe: its <c>Malloc</c>
+/// evicts from a shared budget and every container shares one seekable <c>CExoFile*</c>.</summary>
 internal static class TexLoadRead
 {
     /// <summary><c>RESID[0]</c>, the source kind the engine's own <c>Demand</c> and <c>ReadRaw</c> switch on.
@@ -81,7 +80,7 @@ internal static class TexLoadRead
         }
 
         /// <summary>The resource's bytes (valid until the next read), or false with <paramref name="why"/> set.
-        /// Every refusal is a reason a caller logs and counts: nothing here falls back quietly (CX-45).</summary>
+        /// Every refusal is a reason a caller logs and counts: nothing here falls back quietly.</summary>
         internal bool Read(in TexLocation loc, out ReadOnlySpan<byte> bytes, out string? why)
         {
             bytes = default;

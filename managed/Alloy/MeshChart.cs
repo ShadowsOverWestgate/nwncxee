@@ -8,8 +8,8 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>The <c>lightmap</c> group (#649): baked static lighting. Build 2/4 (#673) declares it and charts;
-/// the bake and the lit-stage read are #674, the loading-screen hold #675.</summary>
+/// <summary>The <c>lightmap</c> group: baked static lighting -- the charter, the bake and the
+/// loading-screen hold.</summary>
 internal static class Lightmap
 {
     internal static readonly KnobGroup G;
@@ -29,9 +29,7 @@ internal static class Lightmap
                            changed: LightmapBake.RekeyAll);
         Pages = G.Slider("pages", "Lightmap pages", 0, LightmapBake.MaxPages, 1, 0, tier: Tier.ChatOnly,
                          help: "4096x4096 pages the area may hold (128 MiB each), allocated as the area needs them. 0 sizes it from the card's memory: a quarter of it in pages, at most 32. An area that would overflow the cap bakes at a lower density instead.");
-        // CX-102: 192 MiB a layer over three planes, and the pages live in ONE immutable array, so a page more
-        // means allocate-copy-delete. Doing that in the frame that needs it cost 86 / 458 / 573 / 733 ms for
-        // 1 / 2 / 3 / 4 layers copied (2026-09-30), which is the only thing the bake ever froze the client for.
+        // the pages live in ONE immutable array, so one more page means allocate-copy-delete of them all
         GrowSlice = G.Slider("growslice", "Page growth slice", 0, 8, 1, 1, "pages", tier: Tier.ChatOnly,
                              help: "Lightmap pages the client may move into a larger page array in one frame when an area needs another page. Each page is 192 MiB, so moving them all at once costs a visible freeze; 0 does exactly that, for comparison.");
         Near = G.Slider("near", "Full-density radius", 10, 200, 5, 40, "m", tier: Tier.ChatOnly,
@@ -45,8 +43,6 @@ internal static class Lightmap
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
         MoverTaps = G.Toggle("movertaps", "movertaps", true, Tier.ChatOnly,
                              help: "Diagnostic: 0 keeps creature-hot baked lights in the light loop (the ray test) but skips their light body and shadow reads, so /alloy bench splits the creature-shadow cost.");
-        // CX-188 step 4: the per-mover budget. A creature under four lamps casts four shadows; the two
-        // strongest are the ones anybody sees, and each costs a tile and a pixel's worth of debt.
         MoverLights = G.Slider("moverlights", "Baked lights per creature", 0, 4, 1, 2, tier: Tier.ChatOnly,
                                help: "Baked lights a creature may cast a shadow from, strongest first, while deferred lighting is on. Each one gets a small shadow map of its own instead of the creature's shadow riding a whole depth cube. 0 is no creature shadows from baked lights on that path.");
         PairSize = G.Slider("pairsize", "Creature tile size", 32, 512, 32, 128, "px", tier: Tier.ChatOnly,
@@ -55,36 +51,25 @@ internal static class Lightmap
         PairCount = G.Slider("paircount", "Creature tiles", 16, global::CX.Alloy.PairShadows.MaxPairs, 16, 256,
                              tier: Tier.ChatOnly, effect: Effect.Restart,
                              help: "Creature-and-light tiles the atlas holds. A light whose creatures do not all fit keeps its depth cube, nearest lights first. A restart knob: it sizes the atlas.");
-        // 2048: one area's bake at density 10 is ~500 MiB of .lmp blobs, and a 512 MiB budget pruned the
-        // live files of the area being walked (4890 of 7425 hit, live)
+        // 2048: a smaller budget prunes the live files of the area being walked
         Disk = G.Slider("disk", "Chart cache size", 64, 8192, 64, 2048, "MiB", tier: Tier.ChatOnly,
                         help: "Disk the chart and bake caches may hold; the oldest files go first. One area's lightmap is roughly 500 MiB.");
     }
 }
 
 /// <summary>
-/// The charter (#656/#655): every static mesh gets a lightmap UV chart, cut by the vendored xatlas on a
-/// background worker and cached on disk by mesh CONTENT, so the second load of any area is a file read.
-/// <para><b>MeshLod's sibling, with its own vertices.</b> A chart splits vertices wherever a seam falls, so
-/// a charted mesh cannot ride the engine's vertex pool: the worker emits the whole mesh -- position, normal,
-/// UV, chart UV -- and it is filed in <see cref="CX.Alloy.Db.MeshArena"/>, the ONE model-space arena every
-/// Alloy part draws from (CX-114; the storage, the uploads, the VAO and the compaction are all its, and a
-/// charted mesh is simply a range in it whose chart columns are filled). A charted part draws that range
-/// under <see cref="AlloyRenderer.ChartVaoBit"/>. Chart BEFORE simplify:
-/// <see cref="MeshSimplify"/> runs on the charted mesh, so every LOD level carries chart UVs and the far
-/// field is lightmapped too. The engine's own range stays untouched -- an entry that never lands, a refusal,
-/// or the master off simply draws the engine's geometry, which is vanilla.</para>
-/// <para><b>Worker rule</b> (MeshLod's): no GL, no engine memory. Everything it reads was copied by
-/// <see cref="Offer"/>; its only calls out are xatlas (pure) and the ledger files.</para>
-/// <para><b>Windows:</b> xatlas is linked into version.dll exactly as into cx_managed.so; no engine read.</para>
+/// The charter: every static mesh gets a lightmap UV chart, cut by the vendored xatlas on a background worker and
+/// cached on disk by mesh CONTENT, so the second load of an area is a file read. A chart splits vertices at every
+/// seam, so the worker emits the WHOLE mesh -- pos, normal, UV, chart UV -- as a <see cref="CX.Alloy.Db.MeshArena"/>
+/// range with its chart lane filled; a mesh with no chart keeps drawing its own range, unlit by the bake.
 /// </summary>
 internal static unsafe partial class MeshChart
 {
     /// <summary>The mesh atlas's own density: charts are cut once at unit scale and the per-instance record
-    /// (#668's <c>s</c>) folds the density knob and the transform in at bake time. Chart UVs are in these
+    /// folds the density knob and the transform in at bake time. Chart UVs are in these
     /// texel units; changing this invalidates every chart file (see <see cref="LedgerVersion"/>).</summary>
     internal const float AtlasTexelsPerUnit = 8f;
-    /// <summary>Texels xatlas leaves between charts inside the mesh atlas (#656: 2-texel gutter).</summary>
+    /// <summary>Texels xatlas leaves between charts inside the mesh atlas: a two-texel gutter.</summary>
     internal const uint Padding = 2;
     /// <summary>Floats per arena vertex in <see cref="CX.Alloy.Db.MeshArena.Fmt.Static"/>: pos3 nrm3 uv2 chart2.
     /// The charted interleave below writes exactly this layout, which is why a charted mesh needs no format of
@@ -133,12 +118,12 @@ internal static unsafe partial class MeshChart
     private static Dictionary<long, Entry> _table => _jobs.Entries;
 
     /// <summary>Bumped by every edit that can change a <see cref="Range"/> answer (file, drop, compaction, the
-    /// world edge): a <see cref="RangeMemo"/> stamped with an older one re-probes (CX-12). Starts at 1 so a
+    /// world edge): a <see cref="RangeMemo"/> stamped with an older one re-probes. Starts at 1 so a
     /// zeroed memo is stale.</summary>
     private static int _epoch = 1;
 
     /// <summary>One caller slot's cached <see cref="Range"/> answer, valid while the table epoch, the key and
-    /// the asked LOD all match: the per-part draw skips the dictionary probe and its Entry copy (CX-12).</summary>
+    /// the asked LOD all match: the per-part draw skips the dictionary probe and its Entry copy.</summary>
     internal struct RangeMemo
     {
         internal long Key;
@@ -168,9 +153,9 @@ internal static unsafe partial class MeshChart
         internal ushort[] Out0 = Array.Empty<ushort>(), Out1 = Array.Empty<ushort>(), Out2 = Array.Empty<ushort>();
         internal float[] OutPos = Array.Empty<float>();
         /// <summary>Positions rebased to the mesh's min corner and quantised to <see cref="Grid"/> -- what the
-        /// key and xatlas see. Tile parts sit in WORLD space in the engine's pools (identity matrix, #655), so
-        /// without this every placement of one tile model was its own content and no area shared a chart
-        /// with another; a chart is translation-invariant, so the rebased mesh's chart is the placed mesh's.</summary>
+        /// content key and xatlas see. Tile geometry arrives in WORLD space, so without the rebase every placement
+        /// of one tile model is its own content; a chart is translation-invariant, so the rebased mesh's chart is
+        /// the placed mesh's.</summary>
         internal float[] Local = Array.Empty<float>();
         internal Vector3 Bmin, Bmax;
         internal Refusal Refused;
@@ -188,7 +173,7 @@ internal static unsafe partial class MeshChart
     private static int _lodBig, _lodKept;
     private static readonly int[] _refusedBy = new int[RefusalName.Length];
 
-    /// <summary>#675: meshes offered, meshes answered (hit or built), and the difference still on the worker.</summary>
+    /// <summary>Meshes offered, meshes answered (hit or built), and the difference still on the worker.</summary>
     internal static int Offered => _offered;
     internal static int Done => _hit + _missed;
     internal static int InFlight => _offered - _hit - _missed;
@@ -197,8 +182,8 @@ internal static unsafe partial class MeshChart
     internal static void Skip(Refusal why) { _refused++; _refusedBy[(int)why]++; }
     private static int _drawn;
 
-    /// <summary>Is a charted range available to pick this frame? False leaves every draw on the engine's own
-    /// geometry -- the stand-down, not a second code path.</summary>
+    /// <summary>Is a charted range available to pick this frame? False leaves every draw on its own uncharted
+    /// arena range -- the stand-down, not a second code path.</summary>
     internal static bool Armed => Vao != 0 && Lightmap.G.Master is { V: true };
 
     /// <summary>The arena's static-format VAO, zero until the first mesh lands in this context.</summary>
@@ -215,18 +200,15 @@ internal static unsafe partial class MeshChart
 
     internal static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
 
-    /// <summary>CX-120: the slot half of a DB mesh's chart key. A scene-database part has no VDO slot (the
-    /// engine's vertex objects are what a slot indexes, and in DB mode there are none), so every DB mesh
-    /// shares this reserved one and takes the ARENA RANGE as its item -- which is an identity the arena
-    /// already dedups by content, so one range is one distinct mesh and two instances of it share a chart.
-    /// Negative, so it can never collide with a real slot index.</summary>
+    /// <summary>The slot half of a mesh's chart key, shared by every scene-DB mesh: the item half is the ARENA
+    /// RANGE, an identity the arena already dedups by content, so one range is one distinct mesh and two
+    /// instances of it share a chart. Negative, so it can never collide with a real VDO slot index.</summary>
     internal const int DbSlot = -1;
 
-    /// <summary>CX-120: offer the arena's unoffered static ranges, a few per frame, from the GAME thread's
-    /// frame fold. The draw cannot be the only offer site: the bake's loading-screen hold waits for charts
-    /// and holds back the frames the batch build would have offered from, which is a 45 s cap hold on the
-    /// first area (measured). The arena has the geometry as soon as the area is built, so this is the
-    /// creation edge the offers belong on.</summary>
+    /// <summary>Offer the arena's unoffered static ranges, a few per frame, from the GAME thread's frame fold.
+    /// The draw cannot be the only offer site: the bake's loading-screen hold waits for charts while holding back
+    /// the very frames the batch build would offer from, so it would wait out its whole cap. The arena has the
+    /// geometry as soon as the area is built, which is the creation edge the offers belong on.</summary>
     internal static void DripDb(int budget)
     {
         if (!_jobs.Running || !Lightmap.G.Master!.V) return;
@@ -242,14 +224,10 @@ internal static unsafe partial class MeshChart
     /// <inheritdoc cref="DripDb"/>
     private static int _dripCursor;
 
-    /// <summary>CX-120: offer an arena range to the charter, reading its geometry off the arena's own host
-    /// mirror. The engine path's <see cref="Offer"/> copies out of the engine's VBO shadows through a
-    /// <see cref="VertexStream"/> descriptor and re-indexes densely; an arena range is already dense and
-    /// already interleaved in the layout the chart files back into, so this is the same offer with the
-    /// copying it does not need taken out.
-    /// <para>Returns false when there is nothing to do -- no room, already charted, charted output, skinned
-    /// or dead. Cold: once per mesh, on the enrolment path, and it allocates (job arrays) like
-    /// <see cref="Offer"/> does.</para></summary>
+    /// <summary>Offer an arena range to the charter, reading its geometry off the arena's own host mirror --
+    /// already dense and already interleaved in the layout the chart files back into, so nothing is re-indexed.
+    /// False = nothing to do (no room, already charted, skinned or dead). Cold: once per mesh, on the enrolment
+    /// path, and it allocates the job's arrays.</summary>
     internal static bool OfferDb(int range)
     {
         if (!CX.Alloy.Db.MeshArena.HostMeshSize(range, out int nv, out int ni, out ulong content, out uint gen))
@@ -277,13 +255,12 @@ internal static unsafe partial class MeshChart
     }
 
 
-    /// <summary>Charts on file, claimed or landed -- the area edge's tally (CX-19).</summary>
+    /// <summary>Charts on file, claimed or landed -- the area edge's tally.</summary>
     internal static int TableCount => _table.Count;
 
     /// <summary>Asked before anything is read: a mesh on file, queued or past a budget costs one probe.
-    /// <paramref name="later"/> = not now but not refused either: the worker's queue is full (an area's
-    /// whole tile set enrols in one walk), and the caller re-offers when it drains -- an offer that fell
-    /// through here used to be lost for good, which left most of an area uncharted (#674 live).</summary>
+    /// <paramref name="later"/> = not now but not refused either: the worker's queue is full (an area's whole
+    /// tile set enrols in one walk). The caller MUST re-offer when it drains, or the mesh stays uncharted.</summary>
     internal static bool Wanted(int slot, int item, int idxCount, ulong sig, out bool later)
     {
         later = false;
@@ -360,9 +337,10 @@ internal static unsafe partial class MeshChart
     private static void Grow(ref ushort[] a, int n) { if (a.Length < n) a = new ushort[n]; }
     private static void Grow(ref float[] a, int n) { if (a.Length < n) a = new float[n]; }
 
-    /// <summary>A worker: content key, ledger probe, xatlas on a miss, then the two LOD runs over the charted
-    /// mesh. One mesh per worker at a time, byte-identical across runs (each xatlas call single-threaded on its
-    /// own atlas, fixed options); results file in completion order, which nothing downstream depends on.</summary>
+    /// <summary>A worker: content key, ledger probe, xatlas on a miss, then the two LOD runs over the charted mesh.
+    /// No GL and no engine memory -- everything it reads was copied at the offer, and its only calls out are xatlas
+    /// (pure, one single-threaded atlas per mesh, so byte-identical across runs) and the ledger files. Results file
+    /// in completion order, which nothing downstream depends on.</summary>
     private static void Work(Job j)
     {
         try { Chart(j); }
@@ -492,8 +470,9 @@ internal static unsafe partial class MeshChart
         }
     }
 
-    /// <summary>MeshLod's two levels over the charted mesh: same targets, same error budgets, same "kept only
-    /// if it saves enough" rule. Chart seams are attribute discontinuities, which the simplifier locks.</summary>
+    /// <summary>MeshLod's two levels over the CHARTED mesh -- simplify runs after the chart, so every level carries
+    /// chart UVs -- with MeshLod's targets, error budgets and "kept only if it saves enough" rule. Chart seams are
+    /// attribute discontinuities, which the simplifier locks.</summary>
     private static void Simplify(Job j)
     {
         int tris = j.Out0N / 3;
@@ -577,7 +556,7 @@ internal static unsafe partial class MeshChart
     }
 
     /// <summary>This mesh's charted range at <paramref name="lod"/> (falling back to the finer level that
-    /// exists). False = draw the engine's own geometry, which every caller must be able to do.</summary>
+    /// exists). False = no chart; the caller draws the mesh's own uncharted range, which it must be able to do.</summary>
     internal static bool Range(int slot, int item, int lod, out int baseVertex, out nint off, out int count, out int level)
     {
         baseVertex = 0; off = 0; count = 0; level = 0;
@@ -610,7 +589,7 @@ internal static unsafe partial class MeshChart
     }
 
     /// <summary>The atlas size a charted mesh's UVs are in, its content key and its own-space bounds, for the
-    /// bake (#674). False = not charted (yet, or refused).</summary>
+    /// bake. False = not charted (yet, or refused).</summary>
     internal static bool Atlas(int slot, int item, out int w, out int h, out ulong content, out Vector3 bmin, out Vector3 bmax)
     {
         w = h = 0; content = 0; bmin = bmax = default;
@@ -630,10 +609,9 @@ internal static unsafe partial class MeshChart
         _epoch++;
     }
 
-    /// <summary>Drop every entry no enrolled part keys (the engine frees a pool item without a word, and an
-    /// in-module area change is no world edge: run 31 carried 42k entries over three areas and compacted 5k
-    /// vertices out of 2M). Their arena bytes count as dead; the next Pump compacts. Cold: once per area.
-    /// An entry a not-yet-enrolled part will want is offered again at its enrolment.</summary>
+    /// <summary>Drop every entry no enrolled part keys: an in-module area change is no world edge, so without
+    /// this the table carries the last areas' entries. Their arena bytes count as dead; the next Pump compacts.
+    /// Cold, once per area -- an entry a not-yet-enrolled part will want is offered again at its enrolment.</summary>
     internal static void Sweep(HashSet<long> live)
     {
         if (_table.Count == 0) return;
@@ -660,8 +638,7 @@ internal static unsafe partial class MeshChart
     {
         foreach (var kv in _table) Drop(kv.Value);
         _jobs.Revoke();
-        // CX-120: and the DB offer marks, or the next area charts nothing -- the mark says a range is the
-        // charter's already, and this call is the moment that stops being true.
+        // and the offer marks, or the next area charts nothing: the mark says a range is the charter's already
         CX.Alloy.Db.MeshArena.ClearOfferMarks();
         _epoch++;
         _offered = _hit = _missed = _built = _refused = _stale = _lodBig = _lodKept = 0; Array.Clear(_refusedBy);

@@ -5,15 +5,10 @@ using CX.Framework;
 
 namespace CX.Services.Radial;
 
-/// <summary>CX-120: a PLT icon layer CX resolves itself.
-/// <para>Every icon layer here is normally the engine's: <c>AurTextureFind(pltName, scheme)</c> answers the
-/// texture <c>Material::ReplaceTexturePLT</c> @0x4c7a10 composited under that (resref, scheme) pair, and CX
-/// draws its GL id. In DB mode the engine's render layer is never constructed, so no such texture is ever
-/// built, the find misses, and the layer drew NOTHING -- every PLT item icon missing from CX's own inventory
-/// window. Mode 0 is untouched: the fallback runs only where the engine answered zero.</para>
-/// <para>What CX does instead is what the world already does for a PLT creature (CX-117): the PAIR texture
-/// comes from the registry once per resref and the master-palette lookup happens in the fragment stage, with
-/// this item's scheme as the rows. No composite, so a second item in different colours costs no pixels.</para></summary>
+/// <summary>A PLT icon layer CX resolves itself. Such a layer is normally the engine's -- <c>AurTextureFind(pltName,
+/// scheme)</c> answers the texture <c>Material::ReplaceTexturePLT</c> @0x4c7a10 composited under that (resref, scheme)
+/// pair -- but the engine's render layer is never constructed, so that find always misses. CX does what the world does
+/// for a PLT creature: the PAIR texture from the registry once per resref, the palette lookup in the fragment stage.</summary>
 internal static partial class RadialIconsPlt
 {
     /// <summary>Pair textures acquired for an icon resref. One reference each, for the session: an item icon
@@ -52,7 +47,7 @@ internal static partial class RadialIconsPlt
         return 0;
     }
 
-    /// <summary>The master palette CX-117 built, 0 before it exists (mode 0 never does).</summary>
+    /// <summary>The master palette, 0 before it exists.</summary>
     internal static uint Palette => PltPalettes.Texture;
 
     /// <summary>Every texture this holds goes back; the registry's references are ours.</summary>

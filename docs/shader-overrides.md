@@ -1,6 +1,6 @@
 # The shader override contract
 
-sow-client-extender draws most of the world with its own GLSL. Every stage of that
+NWNCX:EE draws most of the world with its own GLSL. Every stage of that
 pipeline ships **embedded in the extender binary**, and every one of them can be
 replaced at runtime by a `.shd` resource of the same name — a customization surface
 for people who want the look to be theirs.
@@ -137,7 +137,7 @@ These are the stage resrefs. The libraries they include are listed by the dump; 
 | `cx_snow_fs` | fragment | The snowflake: a soft disc, the same contact fade. Alpha over the linear frame. |
 | `cx_splash_vs` | vertex | CX-102: rain splashes -- one instanced quad per crown part, the crown's landing point read out of the cover map's own depth (`uCoverDepth`, the plain-depth view of the layer `cx_weather_vs` only compares against), so an impact lands on a roof, a ledge or the ground and never under shelter. `gl_InstanceID / CX_SPLASH_PARTS` is the crown, the remainder its part: index 0 the ring, the rest ballistic droplet streaks. The ring is strictly world-sized and fades with its screen size; a sub-pixel droplet widens to about a pixel and gives the area back as scatter. Same per-vertex light rig as the drops. No buffer, no attributes. |
 | `cx_splash_fs` | fragment | One crown part: a thin expanding ring or a droplet streak, as premultiplied scatter over the linear frame. No contact fade -- a splash sits ON the surface, and the depth test is what hides it behind an occluder. |
-| `cx_sky_fs` | fragment | CX-88: the sky, as the ENVIRONMENT a content sky stage runs in -- the names `inc_common`/`inc_uniforms`/`inc_standard` give a sky fragment stage, from Alloy's values and under the engine's own names. The `// $VANILLA-MAIN $SKYFS$` region is replaced at build with the material's own `customShaderFS` (SoW: `fst_sky`), main renamed; `$SKYFS$` is expanded by the extender, so leave it a token. The wrapper samples the diffuse, calls the stage, and takes its DISPLAY-space result to linear -- which is why there is no decode pass. The vertex half is `cx_own_vs`. |
+| `cx_sky_fs` | fragment | CX-88: the sky, as the ENVIRONMENT a content sky stage runs in -- the names `inc_common`/`inc_uniforms`/`inc_standard` give a sky fragment stage, from Alloy's values and under the engine's own names. The `// $VANILLA-MAIN $SKYFS$` region is replaced at build with the material's own `customShaderFS` (e.g. a content `fst_sky`), main renamed; `$SKYFS$` is expanded by the extender, so leave it a token. The wrapper samples the diffuse, calls the stage, and takes its DISPLAY-space result to linear -- which is why there is no decode pass. The vertex half is `cx_own_vs`. |
 
 One more file appears in the dump: `cx_ownlit_bl_ref.shd`. It is **reference
 only** — the lit stage after the extender's own bindless rewrite. The extender never asks

@@ -5,30 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-55 step 2: the non-tile models of an area load.
-/// <para><b>At <c>LoadArea</c> entry the client knows nothing about the area's objects.</b>
-/// <c>CNWCArea::LoadArea</c> @0x70e010 IS the area message's parser: the tileset resref, every tile id, the map
-/// pins, the sound objects, the placeable lights and the static placeables are all read out of
-/// <c>CNWCMessage</c> inside it, in that order. Its one caller,
-/// <c>CNWCMessage::HandleServerToPlayerArea</c> @0x7a79b0, runs <c>CGameObjectArray::Delete(area id)</c> and
-/// <c>CNWCArea::UnloadArea</c> @0x709fc0 immediately before the call, so the area's own id lists -- creatures
-/// <see cref="EngineLayout.AreaObjectIds"/>, static placeables <see cref="EngineLayout.AreaStaticPlaceables"/>,
-/// placeable lights <see cref="EngineLayout.AreaPlaceableLights"/> -- are empty on entry. Creatures, doors,
-/// dynamic placeables, items and visual effects arrive later still, by GameObjUpdate. So
-/// <see cref="OfferObjects"/> offers nothing: it resets this file's state and prints the three counts it found,
-/// once, which is the claim above stated as a runtime measurement rather than a decompile.</para>
-/// <para>What IS available early is the message: the whole area sits in the read buffer while LoadArea walks
-/// it. The static-placeable block is the biggest non-tile model consumer of the load -- one
-/// <c>CNWCArea::AddPlaceableObjectStatic</c> @0x7091c0 per record, each looking the appearance's
-/// <c>ModelName</c> up in placeables.2da and handing it straight to the scene, which reads and parses the model
-/// inside the call -- and its records are a fixed-shape array. The offers are therefore made from the FIRST
-/// record's call, where the rest of the block is still unread message bytes: every distinct model after the
-/// first gets the lead time of the reads ahead of it, which is exactly what the worker needs.</para>
-/// <para>Nothing here loads or demands anything: the peek is loads out of the message buffer and
-/// <c>C2DA::GetCExoStringEntry</c>, which is <c>GetColumnIndex</c> plus a cell read on a table already in
-/// memory. The read-ahead is proved against the engine as it goes -- the shape is only accepted when the
-/// appearance the hook was handed reads back at the cursor, and every later record is checked against what was
-/// peeked. A mismatch stands the block down loudly rather than offering names nobody asked for.</para></summary>
+/// <summary>The non-tile models of an area load. At <c>LoadArea</c> entry the area's own id lists are still empty
+/// -- <c>LoadArea</c> IS the area message's parser -- so nothing can be offered there. The offers are made from
+/// the FIRST static-placeable record's call instead, where the rest of the fixed-shape block is still unread
+/// message bytes. The shape is proved against the engine as it goes, and a mismatch stands the block down.</summary>
 internal static unsafe partial class ModelLoad
 {
     private static ExtenderLog? _objLog;
@@ -44,11 +24,10 @@ internal static unsafe partial class ModelLoad
     /// <summary>A CExoString: <c>{char* buf@0; uint len@8; uint cap@0xc}</c>. not-an-offset: the size of the
     /// caller-owned value the engine writes its cell into.</summary>
     private const int ExoSize = 16;
-    /// <summary>The static-placeable record, exactly as <c>LoadArea</c> reads it: the id
-    /// (<c>ReadOBJECTIDClient</c>, never type-tagged), the appearance (<c>ReadWORD</c>) and six
-    /// <c>ReadFLOAT</c>s -- position then orientation. 30 bytes, or 37 when the connection type-tags every
-    /// typed read (<c>CNWMessage::ExpectType</c> prefixes one byte per read, off a global the client sets
-    /// once), which also moves the appearance's own bytes one along.</summary>
+    /// <summary>The static-placeable record, exactly as <c>LoadArea</c> reads it: the id (never type-tagged), the
+    /// appearance (<c>ReadWORD</c>) and six <c>ReadFLOAT</c>s -- position then orientation. 30 bytes, or 37 when
+    /// the connection type-tags every typed read (<c>CNWMessage::ExpectType</c> prefixes one byte per read),
+    /// which also moves the appearance's own bytes one along.</summary>
     private const int PlainStride = 4 + 2 + 6 * 4, PlainAppearanceAt = 4;
     /// <inheritdoc cref="PlainStride"/>
     private const int TypedStride = 4 + (1 + 2) + 6 * (1 + 4), TypedAppearanceAt = 5;
@@ -56,7 +35,7 @@ internal static unsafe partial class ModelLoad
     /// whichever shape the stream has -- a type byte, if any, precedes them.</summary>
     private const int CountBytes = 2;
     /// <summary>A block longer than this is not a static-placeable block; the shape is refused instead of
-    /// walked. ponytail: the biggest SoW areas run to a few thousand static placeables.</summary>
+    /// walked. ponytail: the biggest persistent-world areas run to a few thousand static placeables.</summary>
     private const int MaxRecords = 20000;
     /// <summary>How many times a refusal is written before it goes quiet.</summary>
     private const int StandDownLogCap = 4;
@@ -100,9 +79,9 @@ internal static unsafe partial class ModelLoad
                  + "the rest out of the message and offers their models ahead of the engine");
     }
 
-    /// <summary>CX-55 step 2: called at <c>LoadArea</c> entry. There is nothing here to offer (see the class
-    /// summary); this resets the block state for the area about to be parsed and, the first time, logs what the
-    /// area actually holds at entry so the claim is measured and not merely decompiled.</summary>
+    /// <summary>Called at <c>LoadArea</c> entry. There is nothing here to offer (see the class summary); this
+    /// resets the block state for the area about to be parsed and, the first time, logs what the area actually
+    /// holds at entry so the claim is measured and not merely decompiled.</summary>
     static partial void OfferObjects(nint area)
     {
         Reset();
@@ -225,12 +204,10 @@ internal static unsafe partial class ModelLoad
                             + "static placeable models on the main thread, as it does without CX");
     }
 
-    /// <summary>Off-device, no engine: a message buffer is built in each of the two shapes the stream can
-    /// have -- <c>ReadWORD</c> count then fixed records, with and without <c>ExpectType</c>'s type byte ahead
-    /// of every typed read -- and <see cref="Shape"/> is asked to recognise it from the cursor and the
-    /// appearance the hook would have been handed, as it is at the first record. Then the refusals: a cursor
-    /// whose record does not carry that appearance, a count that would run past the buffer, and a count of
-    /// zero. This is the whole read-ahead: get the shape wrong and the offers are noise.</summary>
+    /// <summary>Off-device, no engine: a message buffer is built in each of the two shapes the stream can have --
+    /// <c>ReadWORD</c> count then fixed records, with and without <c>ExpectType</c>'s type byte -- and
+    /// <see cref="Shape"/> must recognise it from the cursor and the first record's appearance. Then the refusals:
+    /// a wrong appearance, a count running past the buffer, and a count of zero.</summary>
     internal static bool SelfCheckObjects(ExtenderLog log)
     {
         var check = new Checker(log, "ModelLoad.Objects.SelfCheck");
@@ -267,8 +244,8 @@ internal static unsafe partial class ModelLoad
     }
 }
 
-/// <summary>CX-55 step 2's one install. Its own service because step 1 owns <c>ModelLoad</c>'s file and its
-/// install site; fold it into that one on merge.</summary>
+/// <summary>The static-placeable read-ahead's one install, in its own service: <c>ModelLoad</c>'s own install
+/// site belongs to the model read.</summary>
 internal sealed class ModelObjectLoadService : IExtenderService
 {
     public void Initialize(ExtenderLog log, HookService hooks) => ModelLoad.InstallObjects(log, hooks);

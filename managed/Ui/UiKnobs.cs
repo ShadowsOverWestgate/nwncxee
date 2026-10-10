@@ -2,21 +2,20 @@ using CX.Framework;
 
 namespace CX.Ui;
 
-/// <summary>The <c>ui</c> group (spec §4.2 Windows &amp; text): the knobs every CX window shares. <see cref="Font"/>
-/// is the text size in design px before GUI scale (was chat's <c>font</c>); <see cref="UiHostService"/> bakes
-/// the one atlas at <c>font × GUI scale</c> and sets <see cref="Metrics.Scale"/> from it, on a set and on the
-/// GUI-scale edge; every window re-lays out from the atlas epoch. <see cref="Typeface"/> (#681) picks the face
-/// <c>default</c> is bound to, from <see cref="FontRegistry.Names"/>. Both are the base every element's own
-/// <see cref="TextStyle"/> rows follow until set. <see cref="HoverFocus"/> is read by <see cref="UiHost"/>
-/// (was <c>cx-ui.cfg</c>'s <c>hoverToFocus</c>); the three snapping knobs (were <c>cx-quickbar.cfg</c>'s grid
-/// keys) are applied to <c>ChatWindow</c>'s snap statics by the quickbar tick. Declared through
-/// <see cref="UiCategory.Declare"/> from every UI service's Initialize.</summary>
+/// <summary>The <c>ui</c> group: the knobs every CX window shares. <see cref="Font"/> is the text size in design px
+/// before GUI scale; <see cref="UiHostService"/> bakes the one atlas at <c>font × GUI scale</c>, sets
+/// <see cref="Metrics.Scale"/> from it on a set and on the GUI-scale edge, and every window re-lays out from the
+/// atlas epoch. <see cref="Typeface"/> picks the face <c>default</c> is bound to, from <see cref="FontRegistry.Names"/>.</summary>
 internal static class UiKnobs
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<int> Font, GridPx;
     internal static readonly Knob<float> ConsoleScale;
+    /// <summary>The face <c>default</c> binds to; with <see cref="Font"/> it is the base every element's own
+    /// <see cref="TextStyle"/> rows follow until set.</summary>
     internal static readonly Knob<string> Typeface;
+    /// <summary><see cref="HoverFocus"/> is read by <see cref="UiHost"/>; the two snapping toggles and
+    /// <see cref="GridPx"/> are applied to <c>ChatWindow</c>'s snap statics by the quickbar tick.</summary>
     internal static readonly Knob<bool> HoverFocus, Snap, EdgeSnap, TextEdit, Streaming;
 
     static UiKnobs()
@@ -62,8 +61,8 @@ internal static class UiCategory
     }
 
     /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the eleven groups
-    /// declare in the fixed order above, the typeface row offers the registry's names, the font ladder is 6-32, and the
-    /// rows the spec re-keyed from the retired files bind under their new names with the old defaults.</summary>
+    /// declare in the fixed order above, the typeface row offers the registry's names, the font ladder is 6-32, and
+    /// every re-keyed row binds under its current name with its stated default.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "UiCategory.SelfCheck");

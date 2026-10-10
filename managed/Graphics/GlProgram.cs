@@ -5,7 +5,7 @@ using CX.Alloy;   // ShaderResource: override lookup + $TOKEN$ expansion, both c
 
 namespace CX.Graphics;
 
-/// <summary>Shader-object plumbing shared by the Alloy pass's programs (#83): compile, link, uniform lookup.
+/// <summary>Shader-object plumbing shared by the Alloy pass's programs: compile, link, uniform lookup.
 /// Alloc-free apart from the log strings on the failure paths, which are cold by construction -- a program
 /// either builds once at first use or is disabled for the session.</summary>
 internal static unsafe class GlProgram
@@ -83,13 +83,9 @@ internal static unsafe class GlProgram
     }
 
     /// <summary>Link a vertex+fragment program whose stages a content author may override as
-    /// <c>&lt;resref&gt;.shd</c> (#92). An override that fails to compile or link rebuilds from the embedded
-    /// default, so a malformed .shd costs a log line, not the frame. Returns 0 on failure.
-    /// <para><paramref name="vsSource"/> and <paramref name="fsSource"/> hand back the sources actually
-    /// compiled into the returned program, embedded or content. #119's depth prepass reads the vertex one to
-    /// confirm the stage still carries the clip expression whose depth it re-tests, and #120 reads both to
-    /// confirm they still declare the per-draw record the CPU stages -- contracts an override can silently
-    /// break, so they are checked on what RAN rather than on what shipped.</para></summary>
+    /// <c>&lt;resref&gt;.shd</c>. An override that fails to compile or link rebuilds from the embedded default,
+    /// so a malformed .shd costs a log line, not the frame; 0 on failure. <paramref name="vsSource"/> and
+    /// <paramref name="fsSource"/> hand back what actually compiled, so contracts check what RAN, not what shipped.</summary>
     internal static uint Graphics(string vsRef, string vs, string fsRef, string fs, ExtenderLog? log, string what,
                                   out string vsSource, out string fsSource, bool host = true)
     {
@@ -212,7 +208,7 @@ internal static unsafe class GlProgram
         => Compile(type, rawSrc, Text(rawSrc, log, what, host), log, what, host, out _);
 
     /// <summary>A stage's first-try text: the vanilla bridge first, sizing tokens second -- spliced stock text is
-    /// subject to the same token expansion as everything else (#346). What <see cref="ProgramBinary"/> keys on.</summary>
+    /// subject to the same token expansion as everything else. What <see cref="ProgramBinary"/> keys on.</summary>
     private static string Text(string rawSrc, ExtenderLog? log, string what, bool host) =>
         ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, true, host));
 
@@ -232,7 +228,7 @@ internal static unsafe class GlProgram
             LastStubbed = true;
             if (sh != 0) return sh;
         }
-        // #346: a content .shd that renamed a function the stage calls would otherwise take the WHOLE
+        // a content .shd that renamed a function the stage calls would otherwise take the WHOLE
         // program down -- and for the lit stage that means the world reverts to engine drawing over one
         // edit in a hak. The stub is what that retry is for: the feature off, the world still rendering.
         log?.Info($"{what}: WARN the spliced vanilla text did not compile -- retrying with the fallback stub, "

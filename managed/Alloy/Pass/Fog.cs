@@ -4,9 +4,8 @@ namespace CX.Alloy;
 
 /// <summary>The <c>fog</c> group (spec §4.3): the storage <see cref="SceneFog"/> and the cull's fog gate
 /// read. The master is live: off, every dial reads as 0 through <see cref="SceneFog"/>'s accessors, which is
-/// the area author's flat fog exactly as vanilla draws it. <see cref="Cull"/> was <c>/draw fogcull</c>.
-/// Touched from <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main
-/// thread.</summary>
+/// the area author's flat fog exactly as vanilla draws it. Touched from
+/// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.</summary>
 internal static class Fog
 {
     internal static readonly KnobGroup G;

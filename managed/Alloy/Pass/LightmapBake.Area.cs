@@ -9,23 +9,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-56 step 3: an area's whole bake, keyed by the area itself and read while <c>LoadArea</c> runs.
-/// <para>The area key is folded at <c>LoadArea</c> out of the read-aheads CX-55 already runs
-/// (<see cref="ModelLoad"/>): the tileset resref, every tile's id / orientation / height, every static
-/// placeable's appearance and quantised place, the area's flag word, and the settings the bake's look derives
-/// from. It is NOT the server's area object id (the server assigns it per session) and not the model bytes
-/// (every rect carries its chart content in its own key). The plan a visit writes is therefore a hint about
-/// an area's SHAPE, and every rect it names is still key-checked by the walk and by
-/// <see cref="LightmapBake.Enrol(int,int,int)"/>.</para>
-/// <para>The plan holds the closed static set, the page plan, the unions the page blobs (<c>.lmp</c>) hold and
-/// the rect table. Reading it hands the area edge the whole packing at once: the set is restored (so Sweep and
-/// Enrol are armed from the first post-edge frame instead of a second of walks), the rects go in already
-/// placed (so <see cref="LightmapBake.Pack"/> never runs for them) and each union uploads whole -- two
-/// <c>TextureSubImage3D</c> per page rather than two per rect.</para>
-/// <para>Refusals are named and counted, never silent: a plan of another version or another settings hash, one
-/// whose page blobs are gone or moved, or one that arrives after the live walk already closed the set is
-/// refused with its reason and the area bakes as on a first visit. The live walk always closes its own set and
-/// its hash is compared with the adopted one -- a drift re-keys everything and says so.</para></summary>
+/// <summary>An area's whole bake, keyed by the area itself and read while <c>LoadArea</c> runs: the key is
+/// folded out of the read-aheads (tileset resref, each tile's id/orientation/height, each static placeable's
+/// appearance and quantised place, the flag word, the settings the look derives from), never the server's
+/// per-session area id. A plan is a HINT about an area's shape; every rect it names is still key-checked.</summary>
 internal sealed class LightmapAreaPlan
 {
     /// <summary>"CXLA" little-endian.</summary>
@@ -167,7 +154,7 @@ internal sealed class LightmapAreaPlan
 
 internal static unsafe partial class LightmapBake
 {
-    /// <summary>The key of the area <c>LoadArea</c> just read, handed over from the game thread (CX-55's
+    /// <summary>The key of the area <c>LoadArea</c> just read, handed over from the game thread (the
     /// read-aheads fold it); 0 = no key, which the edge logs and counts.</summary>
     private static long _areaKeyPending;
     /// <summary>The key of the area the edge is installing for, the plan once it arrives, and whether the
@@ -190,7 +177,7 @@ internal static unsafe partial class LightmapBake
     /// this is a stutter ceiling, not a pacing budget: a heavy area is one or two frames under the backdrop.</summary>
     private const long AreaUploadBytesPerFrame = 256L << 20;
 
-    /// <summary>CX-55's read-aheads have folded this area at <c>LoadArea</c>'s return: post the plan read to
+    /// <summary>The read-aheads have folded this area at <c>LoadArea</c>'s return: post the plan read to
     /// <c>cx-lmcache</c> now, so the inflate runs in the seconds before the AreaLoaded send rather than
     /// serially after the set closes. Game thread; 0 = the peeks could not name the area.</summary>
     internal static void OnAreaKey(ulong key)
@@ -251,17 +238,17 @@ internal static unsafe partial class LightmapBake
     /// was adopted at all.</summary>
     private static bool AreaUploadsIn => _areaPlan == null || _areaUpDone;
 
-    /// <summary>Once a frame while an answer is outstanding: take the plan and install it, or take the miss.
-    /// Refuses -- by name, counted -- a plan for another area, one whose settings moved under it, and one that
-    /// arrives after the live walk has already closed the set or minted a rect.</summary>
     /// <summary>The latest plan answer off <c>cx-lmcache</c>, kept until an edge wants it: frames that run
-    /// between <c>LoadArea</c>'s return and the send used to drain it with nobody asking, and the edge then
-    /// waited on an answer that never came (2026-09-27: "300 rects were already minted").</summary>
+    /// between <c>LoadArea</c>'s return and the send would otherwise drain it with nobody asking, and the edge
+    /// then waits on an answer that never comes.</summary>
     private static ulong _answerKey;
     private static LightmapAreaPlan? _answerPlan;
     private static bool _answerIn;
 
     /// <summary>Move every queued answer into the stash; one for the load's own key is never displaced by a stale one.</summary>
+    /// <summary>Once a frame while an answer is outstanding: take the plan and install it, or take the miss.
+    /// Refuses -- by name, counted -- a plan for another area, one whose settings moved under it, and one
+    /// that arrives after the live walk has already closed the set or minted a rect.</summary>
     private static void TakeAnswers()
     {
         ulong want = (ulong)Interlocked.Read(ref _areaKeyPending);
@@ -329,10 +316,9 @@ internal static unsafe partial class LightmapBake
     }
 
     /// <summary>Install a plan: the static set (which arms Sweep and Enrol at once), the page plan, every rect
-    /// as already placed, and the pages to hold them. The unions upload over the next frames
-    /// (<see cref="AreaUpload"/>); until one lands its rects sit Probing, exactly as a freshly packed rect
-    /// does, so nothing reads a page that holds no bake. The pages are resident before this runs:
-    /// <see cref="InstallAreaCache"/> asks for them while the answer is still armed.</summary>
+    /// as already placed, and the pages to hold them. The unions upload over the next frames; until one lands
+    /// its rects sit Probing, exactly as a freshly packed rect does, so nothing reads a page that holds no
+    /// bake. The pages are resident before this runs.</summary>
     private static void AdoptPlan(LightmapAreaPlan plan)
     {
         _setPosR = plan.SetPosR; _setCol = plan.SetCol; _setN = plan.SetPosR.Length;
@@ -617,13 +603,9 @@ internal static unsafe partial class LightmapBake
     }
 
     /// <summary>Write the plan, but only for a visit that bakes the whole area and whose set the walk closed
-    /// and confirmed: a skipped, capped or refusing hold would write a partial packing that the next visit
-    /// would adopt whole. <paramref name="complete"/> is the release's own verdict.
-    /// <para>A page holding a rect no union of this visit covers does not go out with the plan yet: it is read
-    /// back whole first (<see cref="AreaSnap"/>), so every rect the plan places is inside a union laid out
-    /// where the plan places it. Without that a visit whose rects were all per-rect cache hits -- blobs of an
-    /// older packing, which cannot be uploaded whole -- wrote a plan with no union at all, and the next visit
-    /// probed all 7453 of them one by one (2026-09-27).</para></summary>
+    /// and confirmed: a skipped, capped or refusing hold would write a partial packing the next visit would
+    /// adopt whole. A page holding a rect no union of this visit covers is read back whole first
+    /// (<see cref="AreaSnap"/>), so every rect the plan places is inside a union laid out where it places it.</summary>
     private static void AreaWrite(bool complete)
     {
         if (_areaKey == 0 || _areaWritten || !Enabled || SetHash == 0) return;

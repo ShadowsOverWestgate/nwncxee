@@ -5,9 +5,9 @@ crash-prevention document: the gaps at the end of each part were found by writin
 
 **There is one scene layer.** Alloy draws the CX scene database (ADR 0028, part 1): CX produces every record
 through the Aurora seam, so it produces every lifetime edge and there is nothing to infer. Until 2026-10-07 the
-tree also carried an engine-scene path ("mode 0", `alloy.scenedb=0`) that observed engine objects and inferred
-their lifetimes; part 2 is the inventory its deletion worked from, kept as the record of why each piece went.
-`git log --grep "Engine-scene path"` has the commits; the mode-0 contract itself is in this file's history.
+tree also carried an engine-scene path that observed engine objects and inferred their lifetimes; part 2 is
+the inventory its deletion worked from, kept as the record of why each piece went.
+`git log --grep "Engine-scene path"` has the commits, and that path's contract is in this file's history.
 
 Line references are to the commit that touched them; treat them as a starting point, not as an address.
 

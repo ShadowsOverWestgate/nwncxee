@@ -5,20 +5,10 @@ using System.Runtime.CompilerServices;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: the model post-process -- what the engine derives after a node's fields are parsed, ported
-/// from <c>MdlNodeTriMesh::InternalPostProcess</c> and its helpers so that an ASCII model's
-/// <see cref="ModelDef"/> comes out the same as the engine's compiled binary of that same source.
-/// <para>Order, from <c>MdlNodeTriMesh.c:993-1017</c>: <c>ProcessVerts</c> (per-corner normal indices, derived
-/// smooth normals, bounds/centre/radius), <c>InternalGenVertices</c> (the weld -- one output vertex per
-/// distinct corner tuple), the degenerate-face purge, <c>BuildNeighborLists</c> (edge adjacency and face
-/// planes), <c>BuildVertexIndices</c> (the triangle list), <c>GenerateVertexData</c> (the per-vertex streams),
-/// <c>CalculateTangentSpaceBasis</c>, then <c>ComputeLocalSurfaceArea</c>.</para>
-/// <para>The engine's float quirks are ported literally where they change a result:
-/// <c>Vector::Normalize</c> leaves a length already within 1e-5 of one alone and turns the zero vector into
-/// <c>(1,0,0)</c>; smooth normals are an AREA-weighted (raw cross-product) sum normalised once; the weld key is
-/// exact float equality; and the degenerate-face purge compacts the face list without compacting the scratch
-/// array the adjacency pass reads, so adjacency on a mesh that HAS degenerate faces is built from mismatched
-/// face records -- an engine bug, reproduced because the compiled files carry it.</para></summary>
+/// <summary>The model post-process -- what the engine derives after a node's fields are parsed, ported from
+/// <c>MdlNodeTriMesh::InternalPostProcess</c> so an ASCII model's <see cref="ModelDef"/> matches the engine's
+/// compiled binary of that source: <c>ProcessVerts</c>, the weld, the degenerate-face purge (whose uncompacted
+/// scratch builds mismatched adjacency, an engine bug the files carry), adjacency, streams, tangents, area.</summary>
 internal static class MdlPost
 {
     /// <summary>Run the post-process over every node that needs it. A binary model arrives already
@@ -85,10 +75,9 @@ internal static class MdlPost
     // ---- the weld key ----
 
     /// <summary>One <c>NodeVertex</c> as the engine compares it: exact float equality on the position, the
-    /// normal, the mirror flag, the stream-presence mask, and each PRESENT stream. Absent streams are left
-    /// zero, so they cannot affect the comparison. The dangly subclass adds its constraint and the skin's weld
-    /// adds the bone slots and weights; the animmesh subclass compares its three per-frame lists, which CX
-    /// keys on their indices instead (see the summary of <see cref="MdlPost"/>).</summary>
+    /// normal, the mirror flag, the stream-presence mask, and each PRESENT stream (absent ones stay zero, so
+    /// they cannot affect the comparison). Dangly adds its constraint, skin the bone slots and weights, and
+    /// animmesh its three per-frame lists, which CX keys on their indices instead.</summary>
     private readonly struct VKey : IEquatable<VKey>
     {
         public readonly Vector3 P, N, C, T0, T1, T2, T3;
@@ -467,12 +456,10 @@ internal static class MdlPost
         }
     }
 
-    /// <summary><c>CalculateTangentSpaceBasis</c> + <c>FUN_00556190</c>: a per-triangle tangent from the UV
-    /// gradient, accumulated per vertex, DUPLICATING a vertex whose triangles disagree on handedness, then
-    /// Gram-Schmidt against the normal.
-    /// <para>The engine also reaches this through the <c>.mtr</c> material's own render hint when the model
-    /// states none. The parser is engine-free and cannot read a <c>.mtr</c>, so only the model's own
-    /// <c>renderhint</c> gates it here -- a documented difference.</para></summary>
+    /// <summary><c>CalculateTangentSpaceBasis</c> (+ @0x556190): a per-triangle tangent from the UV gradient,
+    /// accumulated per vertex, DUPLICATING a vertex whose triangles disagree on handedness, then Gram-Schmidt
+    /// against the normal. Only the model's own <c>renderhint</c> gates it -- the engine also reads the
+    /// <c>.mtr</c>'s hint, which this engine-free parser cannot: a documented difference.</summary>
     private static void Tangents(MeshDef md, NodeDef n)
     {
         if (md.Tangents.Length != 0) return;                 // the file supplied them
@@ -642,12 +629,9 @@ internal static class MdlPost
         s.Influences = in2;
     }
 
-    /// <summary>Reshape the authored flat animmesh arrays into one array per frame, against the welded
-    /// vertices (the engine's <c>0x300</c>/<c>0x308</c> streams).</summary>
     /// <summary>Split the authored flat <c>animverts</c>/<c>animtverts</c> arrays into one array per frame,
     /// still indexed by the AUTHORED vertex and tvert. The engine's two frame counts are the array lengths
-    /// over those two counts (<c>MdlNodeAnimMesh.c:281-284</c>) -- the UV one is the TVERT count, not the
-    /// vertex count.</summary>
+    /// over those two counts -- the UV one is the TVERT count, not the vertex count.</summary>
     private static void Reshape(AnimMeshDef a, int preVerts, int preTverts)
     {
         if (a.Positions.Length == 1 && preVerts > 0)

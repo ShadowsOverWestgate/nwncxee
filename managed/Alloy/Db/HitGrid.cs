@@ -5,25 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118: <b>the hit test's spatial index over the scene database</b> -- a uniform hash grid in XY
-/// over each object's world bounds, so a cast visits the objects near its segment instead of every record.
-/// <para>It is the DB-mode counterpart of <c>CX.Alloy.AreaGrid</c>, which cannot answer a pick: that one is
-/// keyed on the RENDERER's ownership slots and holds static parts only. It is also not <see cref="DbGrid"/>,
-/// seam-feed's visible-set index: that one answers a FRUSTUM from merged, grow-only cell boxes and walks
-/// every mover on every query, which is right for a per-frame view and wrong for a segment. The two could be
-/// folded if DbGrid grew a segment query, per-object rectangles and a mover filing -- noted, not done.</para>
-/// <para><b>Why a grid and not the engine's BSP.</b> The engine files a gob into a kd grid of 10 m tile cells
-/// by its PIVOT and the model's unscaled radius, which is the one real vanilla culling hole
-/// (a wide object whose pivot column leaves the view is dropped). A grid filed by the object's actual world
-/// bounds has no such hole, costs one integer rectangle per move, and is rebuilt per object rather than per
-/// area -- which is what "change-driven, no per-frame rebuild" (ADR 0028 §4) requires.</para>
-/// <para><b>Change-driven.</b> <see cref="File"/> is called once at creation and again whenever the object's
-/// bounds move (the transform step's <c>Dirty.Xform</c> / <c>Dirty.Tree</c> consumer). An object whose cell
-/// rectangle did not change is not re-filed at all, so a creature walking inside one cell costs nothing. An
-/// object spanning more cells than <see cref="MaxCellsPerObject"/> goes on the OVERSIZE list, visited by every
-/// query: a tile's parts and a cathedral are a handful of records, and filing them into hundreds of cells
-/// would cost more than visiting them.</para>
-/// <para>Allocation-free after the first reservation; one cell is one vanilla BSP cell, see <see cref="CellSize"/>.</para></summary>
+/// <summary><b>The hit test's spatial index over the scene database</b>: a uniform hash grid in XY over each
+/// object's world BOUNDS -- not the engine's pivot-keyed BSP, whose wide-object hole it therefore lacks -- so a
+/// cast visits the objects near its segment. Change-driven and allocation-free after the first reservation:
+/// <see cref="File"/> runs at creation and on a bounds move, and an unchanged cell rectangle is not re-filed.</summary>
 public static class HitGrid
 {
     /// <summary>Cell edge, metres. 10 m is the engine's own tile-cell size (the float <c>LoadArea</c> hands
@@ -33,7 +18,8 @@ public static class HitGrid
     /// <summary>Hash buckets. A power of two so the modulo is a mask; sized for an area's worth of cells
     /// with room to spare, because a collision costs a longer chain, never a wrong answer.</summary>
     private const int Buckets = 1 << 14;
-    /// <summary>Cells one object may be filed into before it goes on the oversize list.</summary>
+    /// <summary>Cells one object may be filed into before it goes on the oversize list, which every query
+    /// visits: filing a cathedral into hundreds of cells costs more than visiting the handful of them.</summary>
     public const int MaxCellsPerObject = 32;
     /// <summary>Cells one query may walk, and the ceiling on the candidate span a caller must provide.</summary>
     public const int MaxQuery = 4096;
@@ -261,9 +247,8 @@ public static class HitGrid
 
     /// <summary>How object <paramref name="o"/> sits in the INDEX: whether it has cell entries at all, the
     /// cell rectangle they cover, and whether cell (<paramref name="cx"/>,<paramref name="cy"/>) is inside it.
-    /// <para>A record the database holds with a sound world box, which the index then does not hand back, is a
-    /// FILING fault -- and nothing about the record itself tells that apart from a placement fault, which is
-    /// why the floor-miss dump prints this beside the box (CX-120).</para></summary>
+    /// A record with a sound world box that the index does not hand back is a FILING fault, which nothing about
+    /// the record distinguishes from a placement fault -- so the floor-miss dump prints this beside the box.</summary>
     public static string Describe(int o, int cx, int cy)
         => $"ent={(_objEnt[o] >= 0 ? "yes" : "NONE")}{(_objOversize[o] ? " oversize" : "")}"
          + $" rect=({_objX0[o]},{_objY0[o]})..({_objX1[o]},{_objY1[o]})"

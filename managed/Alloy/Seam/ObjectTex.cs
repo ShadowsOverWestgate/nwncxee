@@ -5,21 +5,15 @@ using CX.Alloy.Mdl;
 namespace CX.Alloy.Seam;
 
 /// <summary>The per-object texture overrides behind <c>Gob::ReplaceTexture</c> / <c>RestoreTexture</c> /
-/// <c>SetEnvironmentMap</c>. The engine swapped the <c>CAurTexture*</c> on the part's material, which every
-/// instance of that model shared -- CX writes <see cref="SceneDb.PartTexId"/>, which is per PART, so one
-/// creature's swapped armour no longer repaints every creature wearing the same model.
-/// <para>The feed's stage uses <c>PartTexId</c> when it is non-zero and the recipe's texture otherwise, so an
-/// override is one column write plus <see cref="Dirty.Texture"/>, and restoring is zeroing it.</para></summary>
+/// <c>SetEnvironmentMap</c>. The override lives in <see cref="SceneDb.PartTexId"/>, which is per PART rather than
+/// on a material every instance of the model shares; the feed's stage uses it when non-zero and the recipe's
+/// texture otherwise, so an override is one column write plus <see cref="Dirty.Texture"/>.</summary>
 internal static class ObjectTex
 {
-    /// <summary>Point every part of <paramref name="obj"/> whose current texture in slot
-    /// <paramref name="slot"/> is named <paramref name="from"/> at <paramref name="to"/>; a null or empty
-    /// <paramref name="from"/> matches every part, which is what the engine's whole-object form does. Returns
-    /// how many parts changed -- the engine's non-zero "it worked".
-    /// <para><paramref name="rows"/>, when given, are the PLT layer rows the swapped parts are coloured with.
-    /// The engine's <c>AurTextureReplaceSingleReference</c> layers only the texture that matched, and
-    /// <c>CNWCAnimBaseParts::ReplaceTexture</c> @0xad8b10 issues one call per body part with that part's own
-    /// rows (per-part armour colours), so the rows go on the matched parts, not on the whole creature.</para></summary>
+    /// <summary>Point every part of <paramref name="obj"/> whose current texture in slot <paramref name="slot"/> is
+    /// named <paramref name="from"/> at <paramref name="to"/>; a null or empty <paramref name="from"/> matches every
+    /// part. Returns how many parts changed -- the engine's non-zero "it worked". <paramref name="rows"/> are PLT
+    /// layer rows and go on the MATCHED parts, per <c>CNWCAnimBaseParts::ReplaceTexture</c> @0xad8b10.</summary>
     internal static int Replace(DbId obj, string? from, string? to, int slot = 0, bool subtree = false,
                                 ReadOnlySpan<int> rows = default)
     {
@@ -31,10 +25,8 @@ internal static class ObjectTex
     /// bound is a cycle guard, not a budget.</summary>
     private const int MaxGraft = 8;
 
-    /// <summary>The object's own parts, then every piece <c>Gob::Append</c> grafted onto it. The engine had
-    /// ONE part tree per creature, so its ReplaceTexture reached the torso, the arms and the cloak; CX makes
-    /// each of those a child object, and a walk of the base range alone left them wearing the model's own
-    /// texture -- a character in her DEFAULT body where the armour should be.</summary>
+    /// <summary>The object's own parts, then every piece <c>Gob::Append</c> grafted onto it. A creature's torso,
+    /// arms and cloak are each a child object, so the base range alone is not the whole wardrobe.</summary>
     private static int ReplaceIn(DbId obj, string? from, string? to, int slot, int depth, ReadOnlySpan<int> rows)
     {
         if (depth > MaxGraft || !SceneDb.Objects.Valid(obj)) return 0;
@@ -62,15 +54,10 @@ internal static class ObjectTex
         return hits;
     }
 
-    /// <summary><c>Material::Refresh(material, MdlNodeTriMesh::GetMaterialName(mesh))</c>, the step
-    /// <c>Gob::ReplaceTexture</c> @0x43eb30 runs on a part that ALREADY shows the texture being asked for:
-    /// the material goes back to the model's own name, and only then is <paramref name="slot"/> matched
-    /// again. It is what lets the same <c>(from, to)</c> pair be issued twice and mean something -- the load
-    /// panel issues <c>ReplaceTexture("gui_replace02", "Screen")</c> for every save the player picks, and the
-    /// file behind <c>Screen</c> is a different one each time (the panel swaps the save's resource directory
-    /// first). Without it the second selection matched nothing and the preview and portrait never changed.
-    /// <para>The released texture is also FORGOTTEN, because the engine's would have died with its last
-    /// reference and been re-read; CX's registry would otherwise re-serve the previous save's pixels.</para></summary>
+    /// <summary>The step <c>Gob::ReplaceTexture</c> @0x43eb30 runs on a part that ALREADY shows the texture being
+    /// asked for: drop back to the model's own name, then match <paramref name="slot"/> again. That is what lets
+    /// the same <c>(from, to)</c> pair mean something twice -- the load panel re-issues one pair per save while
+    /// swapping the file behind <c>to</c>. The texture is also FORGOTTEN, or the registry re-serves its pixels.</summary>
     private static void Refresh(int p, int slot)
     {
         int at = p * 4 + slot;
@@ -122,16 +109,9 @@ internal static class ObjectTex
     internal static void Free(DbId obj) => Restore(obj);
 
     /// <summary>Point every part of <paramref name="obj"/> whose RESOLVED texture name in slot
-    /// <paramref name="slot"/> is <paramref name="from"/> at <paramref name="to"/>, or -- when
-    /// <paramref name="to"/> is null or empty -- back at its own texture. Returns how many parts changed.
-    /// <para><see cref="Matches"/> cannot serve the tile swap: it reads the MODEL NODE's mesh, and a tile's
-    /// nodes are merged away into one <see cref="SceneDb.PartMeshDef"/> per draw state, so a merged floor
-    /// part matched nothing and the swap never reached it. <see cref="SceneDb.PartTexName"/> is the part's
-    /// own resolved name, merged or not, with the <c>.mtr</c> winning exactly as
-    /// <c>Material::GetTexture</c> @0x5c5810 has it.</para>
-    /// <para>The reference is held in <see cref="SceneDb.PartTexId"/> like every other override, so a
-    /// re-swap releases through <see cref="TexRegistry.Swap"/> and the tile's death releases through
-    /// <see cref="Free"/> -- there is no second lifetime to get wrong.</para></summary>
+    /// <paramref name="slot"/> is <paramref name="from"/> at <paramref name="to"/>, or -- <paramref name="to"/> null
+    /// or empty -- back at its own texture; returns how many parts changed. The tile swap needs the resolved
+    /// <see cref="SceneDb.PartTexName"/>, not <see cref="Matches"/>, whose model-node mesh a tile merges away.</summary>
     internal static int ReplaceByTexName(DbId obj, string from, string? to, int slot = 0)
     {
         if (string.IsNullOrEmpty(from) || (uint)slot >= 4 || !SceneDb.Objects.Valid(obj)) return 0;
@@ -157,11 +137,8 @@ internal static class ObjectTex
 
     /// <summary>Is part <paramref name="p"/> a mesh of the graft MODEL named <paramref name="from"/>?
     /// <c>CreateBodyParts</c> @0x834440 issues <c>ReplaceTexture(from = the part's model resref, to = its PLT)</c>,
-    /// and many body models declare a different bitmap (<c>pfh0_chest003</c>'s mesh says
-    /// <c>pfh0_chest001</c>, the naked torso). The engine draws <c>to</c> on that piece; matching the texture
-    /// name alone left every such torso and pelvis on the default body. Verified by the result (the PLTs
-    /// decoded offline, the user's vanilla vs DB screenshots), not by the match key: the decompile's
-    /// <c>Gob::ReplaceTexture</c> path compares names this reading does not reconcile.</summary>
+    /// and many body models declare a different bitmap (<c>pfh0_chest003</c>'s mesh says <c>pfh0_chest001</c>), so
+    /// the model name has to match too or those torsos and pelvises stay on the default body.</summary>
     private static bool GraftNamed(int p, int slot, string? from)
     {
         if (slot != 0 || string.IsNullOrEmpty(from)) return false;
@@ -172,11 +149,9 @@ internal static class ObjectTex
     }
 
     /// <summary>Is part <paramref name="p"/>'s slot <paramref name="slot"/> the model's texture named
-    /// <paramref name="from"/>? Matched on the MODEL's name whatever override is in place: the engine's
-    /// <c>AurTextureReplaceSingleReference</c> @0x48d960 compares against CAurTextureBasic+0x88, and
-    /// <c>AurTextureGet</c> keys the replacement by that same name and loads only its file from <c>to</c>.
-    /// <c>CGuiInvbox::SetObjectHilite</c> @0x691d50 un-highlights with ("gui_boxes_ingame", "gui_boxes_ingame")
-    /// over a part showing "gui_inv_hilite"; matched on the override, that left the slot lit for good.</summary>
+    /// <paramref name="from"/>? Matched on the MODEL's name whatever override is in place, as the engine's
+    /// <c>AurTextureReplaceSingleReference</c> @0x48d960 does: <c>CGuiInvbox::SetObjectHilite</c> @0x691d50
+    /// un-highlights with ("gui_boxes_ingame", "gui_boxes_ingame") over a part showing "gui_inv_hilite".</summary>
     private static bool Matches(int p, int slot, string? from)
     {
         if (string.IsNullOrEmpty(from)) return true;

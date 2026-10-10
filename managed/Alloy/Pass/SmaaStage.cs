@@ -4,17 +4,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>Anti-aliasing as a post-stack stage (ADR 0020). The client's anti-aliasing option
-/// (settings.tml <c>graphics.video.anti-aliasing.mode</c>, nwn.ini "AntiAliasing Mode", values 0/2/4/8/16 =
-/// MSAA samples, global <c>g_nMSAA</c>) sizes the ENGINE's subframe renderbuffers
-/// (Camera::RefreshRenderSubframeResources @0x5a6610 -> CreateRenderBuffer(fmt, w, h, samples) from the
-/// copy at Camera+0xe3c), which the Alloy frame never lands in -- under Alloy the option was inert. Alloy
-/// answers it with SMAA 1x on the resolved display-space frame: luma edges, blend weights against the
-/// precomputed area/search tables, then the neighbourhood blend, which is the stack stage proper. The
-/// option's sample count picks the SMAA preset: 2 MEDIUM, 4 HIGH, 8 and 16 ULTRA.
-/// <para>Not MSAA: it multiplies every owned attachment and leaves the alpha-tested cutouts (grass, foliage)
-/// aliased. Not TAA: it needs a jittered projection in every owned vertex stage under the invariant
-/// gl_Position constraint, plus motion vectors -- its own ticket.</para></summary>
+/// <summary>Anti-aliasing as a post-stack stage (ADR 0020). The client's anti-aliasing option sizes the
+/// ENGINE's subframe renderbuffers (<c>Camera::RefreshRenderSubframeResources</c> @0x5a6610), which the Alloy
+/// frame never lands in, so under Alloy the option was inert. Alloy answers it with SMAA 1x on the resolved
+/// display-space frame, and the option's sample count picks the preset: 2 MEDIUM, 4 HIGH, 8 and 16 ULTRA.</summary>
 internal static unsafe class SmaaStage
 {
     private static ExtenderLog? _log;
@@ -23,15 +16,23 @@ internal static unsafe class SmaaStage
     /// <summary>The preset compiled in (0 none, 1 MEDIUM, 2 HIGH, 3 ULTRA): the <c>$AA$</c> token
     /// <see cref="ShaderResource.Tokens"/> expands, so an override reads the same preset as the embedded text.</summary>
     internal static int Level { get; private set; }
-    private static uint _fbo, _edges, _blend, _area, _search, _progEdge, _progWeight, _stageProg;
-    /// <summary>LINEAR/clamp sampler for uSrc in the aa passes: the stack's ping-pong textures are NEAREST,
-    /// and SMAA's searches and final blend both lean on bilinear fetches at half-texel offsets.</summary>
-    private static uint _sampler;
-    private static int _locEdgeSrc, _locEdgeRt, _locWgtRt, _locWgtEdges, _locWgtArea, _locWgtSearch, _locStageRt, _locStageBlend;
-    private static int _w, _h, _builtLevel = -1;
-    private static bool _failed;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name or
+    /// uniform location from the dead context survives as a field nobody remembered to zero.</summary>
+    private sealed class SmaaState
+    {
+        public uint Fbo, Edges, Blend, Area, Search, ProgEdge, ProgWeight, StageProg;
+        /// <summary>LINEAR/clamp sampler for uSrc in the aa passes: the stack's ping-pong textures are
+        /// NEAREST, and SMAA's searches and final blend both lean on bilinear fetches at half-texel
+        /// offsets.</summary>
+        public uint Sampler;
+        public int LocEdgeSrc, LocEdgeRt, LocWgtRt, LocWgtEdges, LocWgtArea, LocWgtSearch, LocStageRt, LocStageBlend;
+        public int W, H, BuiltLevel = -1;
+        public bool Failed;
+    }
 
-    /// <summary>The three passes' resrefs (#92 override points), same rules as every post-chain stage.</summary>
+    private static SmaaState _gl = new();
+
+    /// <summary>The three passes' resrefs (override points), same rules as every post-chain stage.</summary>
     internal const string ShdEdgeFs = "cx_smaaedge_fs", ShdWeightFs = "cx_smaawgt_fs", ShdBlendFs = "cx_smaablend_fs";
     /// <summary>The reference tables, RG8 160x560 and R8 64x16, as the repo ships them (Textures/*.h upstream).</summary>
     internal const int AreaW = 160, AreaH = 560, SearchW = 64, SearchH = 16;
@@ -48,19 +49,18 @@ internal static unsafe class SmaaStage
     internal static int LevelFor(int samples) => samples >= 8 ? 3 : samples >= 4 ? 2 : samples >= 2 ? 1 : 0;
     /// <summary>The option as set right now, in MSAA samples; 0 when the global is unresolved.</summary>
     internal static int Samples => _msaa == null ? 0 : *_msaa;
-    /// <summary>The stage's per-frame gate: the option is on and nothing of ours failed to build.</summary>
-    /// <para>#389: off whenever TAA is on -- the two are exclusive; TAA smooths what SMAA smooths and more.</para>
-    internal static bool Active => !_failed && LevelFor(Samples) > 0 && !PostChain.TaaOn;
+    /// <summary>The stage's per-frame gate: the option is on, nothing of ours failed to build, and TAA is
+    /// off -- the two are exclusive, because TAA smooths what SMAA smooths and more.</summary>
+    internal static bool Active => !_gl.Failed && LevelFor(Samples) > 0 && !PostChain.TaaOn;
     internal static string PresetName(int level) => level switch { 3 => "ULTRA", 2 => "HIGH", 1 => "MEDIUM", _ => "off" };
     /// <summary>The /post and /knobs term: option, preset, and whether the stage is dropped.</summary>
     internal static string Describe()
-        => $"(aa option {Samples}x -> SMAA {PresetName(LevelFor(Samples))}{(_failed ? ", FAILED" : PostChain.TaaOn ? ", replaced by TAA" : "")})";
+        => $"(aa option {Samples}x -> SMAA {PresetName(LevelFor(Samples))}{(_gl.Failed ? ", FAILED" : PostChain.TaaOn ? ", replaced by TAA" : "")})";
 
     /// <summary>Context loss: forget every GL name; the next frame rebuilds.</summary>
     internal static void Forget()
     {
-        _fbo = 0; _edges = 0; _blend = 0; _area = 0; _search = 0; _sampler = 0; _progEdge = 0; _progWeight = 0;
-        _stageProg = 0; _w = 0; _h = 0; _builtLevel = -1; _failed = false;
+        _gl = new SmaaState();
     }
 
     /// <summary>Asked by <see cref="PostStack.Begin"/>: targets at this size and programs at this preset,
@@ -68,36 +68,36 @@ internal static unsafe class SmaaStage
     /// context). Cold after the first frame at a size and level.</summary>
     internal static bool Ready(int w, int h)
     {
-        if (_failed) return false;
+        if (_gl.Failed) return false;
         if (Gl.GenSamplers == null || Gl.ClearBufferfv == null)
         {
-            _failed = true;
+            _gl.Failed = true;
             _log?.Info("SmaaStage: no sampler objects or glClearBufferfv on this context -- the aa stage is DROPPED");
             return false;
         }
         int level = LevelFor(Samples);
-        if (level != _builtLevel && !Build(level)) return false;
-        return w == _w && h == _h || Size(w, h);
+        if (level != _gl.BuiltLevel && !Build(level)) return false;
+        return w == _gl.W && h == _gl.H || Size(w, h);
     }
 
     private static bool Build(int level)
     {
-        if (_progEdge != 0) { Gl.DeleteProgram(_progEdge); Gl.DeleteProgram(_progWeight); }
+        if (_gl.ProgEdge != 0) { Gl.DeleteProgram(_gl.ProgEdge); Gl.DeleteProgram(_gl.ProgWeight); }
         Level = level;
         string vs = ShaderStages.Source(PostChain.ShdPostVs);
-        _progEdge = GlProgram.Graphics(PostChain.ShdPostVs, vs, ShdEdgeFs, ShaderStages.Source(ShdEdgeFs), _log, "SMAA edges");
-        _progWeight = GlProgram.Graphics(PostChain.ShdPostVs, vs, ShdWeightFs, ShaderStages.Source(ShdWeightFs), _log, "SMAA weights");
-        if (_progEdge == 0 || _progWeight == 0)
+        _gl.ProgEdge = GlProgram.Graphics(PostChain.ShdPostVs, vs, ShdEdgeFs, ShaderStages.Source(ShdEdgeFs), _log, "SMAA edges");
+        _gl.ProgWeight = GlProgram.Graphics(PostChain.ShdPostVs, vs, ShdWeightFs, ShaderStages.Source(ShdWeightFs), _log, "SMAA weights");
+        if (_gl.ProgEdge == 0 || _gl.ProgWeight == 0)
         {
-            _failed = true;
+            _gl.Failed = true;
             _log?.Info("SmaaStage: a pass did not build -- the aa stage is DROPPED on this context; the frame "
                      + "resolves without anti-aliasing");
             return false;
         }
-        _locEdgeSrc = GlProgram.Loc(_progEdge, "uSrc"); _locEdgeRt = GlProgram.Loc(_progEdge, "uRt");
-        _locWgtRt = GlProgram.Loc(_progWeight, "uRt"); _locWgtEdges = GlProgram.Loc(_progWeight, "uEdges");
-        _locWgtArea = GlProgram.Loc(_progWeight, "uArea"); _locWgtSearch = GlProgram.Loc(_progWeight, "uSearch");
-        _builtLevel = level;
+        _gl.LocEdgeSrc = GlProgram.Loc(_gl.ProgEdge, "uSrc"); _gl.LocEdgeRt = GlProgram.Loc(_gl.ProgEdge, "uRt");
+        _gl.LocWgtRt = GlProgram.Loc(_gl.ProgWeight, "uRt"); _gl.LocWgtEdges = GlProgram.Loc(_gl.ProgWeight, "uEdges");
+        _gl.LocWgtArea = GlProgram.Loc(_gl.ProgWeight, "uArea"); _gl.LocWgtSearch = GlProgram.Loc(_gl.ProgWeight, "uSearch");
+        _gl.BuiltLevel = level;
         _log?.Info($"SmaaStage: built at SMAA {PresetName(level)} (option {Samples}x)");
         return true;
     }
@@ -105,33 +105,33 @@ internal static unsafe class SmaaStage
     private static bool Size(int w, int h)
     {
         if (w <= 0 || h <= 0) return false;
-        if (_area == 0)
+        if (_gl.Area == 0)
         {
             uint* t = stackalloc uint[2];
             Gl.CreateTextures(Gl.TEXTURE_2D, 2, t);
-            _area = t[0]; _search = t[1];
-            uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-            _sampler = Gl.LinearClampSampler();
-            if (!Table(_area, "SmaaArea", Gl.RG8, Gl.RG, AreaW, AreaH, Gl.LINEAR)
-                || !Table(_search, "SmaaSearch", Gl.R8, Gl.RED, SearchW, SearchH, Gl.NEAREST))
+            _gl.Area = t[0]; _gl.Search = t[1];
+            uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f;
+            _gl.Sampler = Gl.LinearClampSampler();
+            if (!Table(_gl.Area, "SmaaArea", Gl.RG8, Gl.RG, AreaW, AreaH, Gl.LINEAR)
+                || !Table(_gl.Search, "SmaaSearch", Gl.R8, Gl.RED, SearchW, SearchH, Gl.NEAREST))
             {
-                _failed = true;
+                _gl.Failed = true;
                 _log?.Info("SmaaStage: the area/search tables are missing from the build -- the aa stage is DROPPED");
                 return false;
             }
         }
-        RenderTarget.AllocColor(ref _edges, false, w, h, Gl.LINEAR);
-        RenderTarget.AllocColor(ref _blend, false, w, h, Gl.LINEAR);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _edges, 0);
+        RenderTarget.AllocColor(ref _gl.Edges, false, w, h, Gl.LINEAR);
+        RenderTarget.AllocColor(ref _gl.Blend, false, w, h, Gl.LINEAR);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.Edges, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
-            _failed = true;
+            _gl.Failed = true;
             _log?.Info($"SmaaStage: the edge/weight target is incomplete (0x{status:x}) -- the aa stage is DROPPED");
             return false;
         }
-        _w = w; _h = h;
+        _gl.W = w; _gl.H = h;
         _log?.Info($"SmaaStage: edge + weight targets {w}x{h}");
         return true;
     }
@@ -158,40 +158,40 @@ internal static unsafe class SmaaStage
     internal static void Prepare(uint src, uint stageProg, int* viewport)
     {
         float* zero = stackalloc float[4];
-        float w = _w, h = _h;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _edges, 0);
+        float w = _gl.W, h = _gl.H;
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.Edges, 0);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         // the edge pass DISCARDS non-edges (the reference's stencil hook), so last frame's edges must go
         Gl.ClearBufferfv(Gl.COLOR, 0, zero);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.PostHdr);
         Gl.BindTexture(Gl.TEXTURE_2D, src);
-        Gl.BindSampler(TextureSlots.PostHdr, _sampler);
-        Gl.UseProgram(_progEdge);
-        Gl.Uniform1i(_locEdgeSrc, (int)TextureSlots.PostHdr);
-        Gl.Uniform4f(_locEdgeRt, 1f / w, 1f / h, w, h);
+        Gl.BindSampler(TextureSlots.PostHdr, _gl.Sampler);
+        Gl.UseProgram(_gl.ProgEdge);
+        Gl.Uniform1i(_gl.LocEdgeSrc, (int)TextureSlots.PostHdr);
+        Gl.Uniform4f(_gl.LocEdgeRt, 1f / w, 1f / h, w, h);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
 
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _blend, 0);
-        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaEdges); Gl.BindTexture(Gl.TEXTURE_2D, _edges);
-        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaArea); Gl.BindTexture(Gl.TEXTURE_2D, _area);
-        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaSearch); Gl.BindTexture(Gl.TEXTURE_2D, _search);
-        Gl.UseProgram(_progWeight);
-        Gl.Uniform1i(_locWgtEdges, (int)TextureSlots.AaEdges);
-        Gl.Uniform1i(_locWgtArea, (int)TextureSlots.AaArea);
-        Gl.Uniform1i(_locWgtSearch, (int)TextureSlots.AaSearch);
-        Gl.Uniform4f(_locWgtRt, 1f / w, 1f / h, w, h);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.Blend, 0);
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaEdges); Gl.BindTexture(Gl.TEXTURE_2D, _gl.Edges);
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaArea); Gl.BindTexture(Gl.TEXTURE_2D, _gl.Area);
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaSearch); Gl.BindTexture(Gl.TEXTURE_2D, _gl.Search);
+        Gl.UseProgram(_gl.ProgWeight);
+        Gl.Uniform1i(_gl.LocWgtEdges, (int)TextureSlots.AaEdges);
+        Gl.Uniform1i(_gl.LocWgtArea, (int)TextureSlots.AaArea);
+        Gl.Uniform1i(_gl.LocWgtSearch, (int)TextureSlots.AaSearch);
+        Gl.Uniform4f(_gl.LocWgtRt, 1f / w, 1f / h, w, h);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
 
-        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaBlend); Gl.BindTexture(Gl.TEXTURE_2D, _blend);
-        if (stageProg != _stageProg)
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaBlend); Gl.BindTexture(Gl.TEXTURE_2D, _gl.Blend);
+        if (stageProg != _gl.StageProg)
         {
-            _stageProg = stageProg;
-            _locStageRt = GlProgram.Loc(stageProg, "uRt"); _locStageBlend = GlProgram.Loc(stageProg, "uBlend");
+            _gl.StageProg = stageProg;
+            _gl.LocStageRt = GlProgram.Loc(stageProg, "uRt"); _gl.LocStageBlend = GlProgram.Loc(stageProg, "uBlend");
         }
         Gl.UseProgram(stageProg);
-        Gl.Uniform1i(_locStageBlend, (int)TextureSlots.AaBlend);
-        Gl.Uniform4f(_locStageRt, 1f / w, 1f / h, w, h);
+        Gl.Uniform1i(_gl.LocStageBlend, (int)TextureSlots.AaBlend);
+        Gl.Uniform4f(_gl.LocStageRt, 1f / w, 1f / h, w, h);
     }
 
     /// <summary>Pass 2: blend weights from the edges, through the area and search tables.</summary>

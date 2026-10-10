@@ -5,17 +5,13 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>the stable half of a draw, interned per <c>(ModelDef, node)</c>.</b> Every
-/// term the renderer's record used to re-read off an engine <c>Part</c>, <c>MdlNode</c>, <c>Material</c> or
-/// <c>VertexPrimitive</c> is a property of the MODEL, not of the instance -- a thousand doors of one resref
-/// share one recipe -- so a part needs a single <c>int</c> (<see cref="SceneDb.PartRecipe"/>) where the engine
-/// path kept five pointers and re-chased them every frame.
-/// <para>Interned, not cached: a recipe is immutable and lives as long as its <see cref="ModelDef"/>, so the
-/// renderer may hold its index across frames and across threads with no identity test. That is what deletes
-/// <c>IdentityOk</c> and the recycled-address class of bug with it.</para></summary>
+/// <summary><b>The stable half of a draw, interned per <c>(ModelDef, node)</c>.</b> Every term in it is a
+/// property of the MODEL, not of the instance -- a thousand doors of one resref share one recipe -- so a part
+/// needs only <see cref="SceneDb.PartRecipe"/>. Interned, not cached: a recipe is immutable and lives as long as
+/// its <see cref="ModelDef"/>, so its index is safe to hold across frames and threads with no identity test.</summary>
 internal static partial class DrawRecipe
 {
-    /// <summary>Distinct recipes held at once. A heavy SoW area measured ~1,300 distinct drawn nodes across
+    /// <summary>Distinct recipes held at once. A heavy persistent-world area measured ~1,300 distinct drawn nodes across
     /// its tileset and its creatures; a session that visits many areas accumulates, so this is sized for the
     /// session rather than the area and the models' own release is what retires entries.</summary>
     internal const int Max = 1 << 14;
@@ -23,13 +19,25 @@ internal static partial class DrawRecipe
     /// <summary>The PBR floats a recipe stages verbatim into its record, matching
     /// <c>AlloyRenderer.ParamFloats</c>: the two stock vec4s then ADR 0026's three extension vec4s.</summary>
     internal const int ParamFloats = 20;
-    /// <summary>Texture slots a recipe names: diffuse, then the five map slots and the flow map.</summary>
-    internal const int TexSlots = 8;
+    /// <summary>Texture slots a recipe names: diffuse, then the seven map slots (five maps, flow, AO).</summary>
+    internal const int TexSlots = 1 + AlloyRenderer.MapSlots;
+    /// <summary>The map slot of <c>texture6</c>, the flow map / weather-ground overlay.</summary>
+    private const int FlowSlot = 5;
+    /// <summary>The recipe slot of the AO map, which reads <c>.mtr</c> <c>texture11</c>, not <c>texture7</c>.</summary>
+    private const int AoRecipeSlot = 1 + AlloyRenderer.AoSlot;
+
+    /// <summary>The <c>.mtr</c> <c>textureN</c> a recipe slot reads: its own index, except the AO slot.</summary>
+    internal static int MtrTextureOf(int s) => s == AoRecipeSlot ? AlloyRenderer.AoTexture : s;
+
+    /// <summary>The slot-mask bit a bound recipe slot sets: none for the diffuse, the flow slot only for the
+    /// features that read it (vanilla's own <c>texture6Bound</c> test), and AO on its own out-of-line bit.</summary>
+    internal static int MaskBitOf(int s, int feat)
+        => s == 0 || (s - 1 == FlowSlot && !ShaderFeatures.ReadsAuxSlot(feat)) ? 0 : AlloyRenderer.SlotBit(s - 1);
 
     private static readonly Dictionary<(ModelDef, int), int> _byNode = new();
     private static int _n;
     /// <summary>Recipes whose arena range was not resident at their last ask, as a drained list rather than a
-    /// walk of the whole table (R1-7). A range that lands leaves the list; nothing re-polls what is resident.</summary>
+    /// walk of the whole table. A range that lands leaves the list; nothing re-polls what is resident.</summary>
     private static readonly int[] _rangeWait = new int[Max];
     private static int _rangeWaitN;
     private static readonly bool[] _rangeQueued = new bool[Max];
@@ -46,13 +54,13 @@ internal static partial class DrawRecipe
     private static readonly float[] _param = new float[Max * ParamFloats];
     private static readonly int[] _slots = new int[Max];
     private static readonly string[] _tex = new string[Max * TexSlots];
-    /// <summary>CX-117: the registry slot each texture slot names (<c>TexId.Value</c>; 0 = no texture).
-    /// The bindless handle behind it is 64 bits, so the recipe keeps the HANDLE rather than an int id.</summary>
+    /// <summary>The registry slot each texture slot names (<c>TexId.Value</c>; 0 = no texture). The bindless
+    /// handle behind it is 64 bits, so the recipe keeps the HANDLE rather than an int id.</summary>
     private static readonly uint[] _texId = new uint[Max * TexSlots];
     /// <summary>1 while this texture slot's registry entry has not settled (arrived or failed).</summary>
     private static readonly byte[] _texWait = new byte[Max * TexSlots];
     /// <summary>How many of <see cref="_texWait"/> are still set. <see cref="Pump"/> skips its whole texture
-    /// half while this is zero, so a settled area costs no re-ask at all (CX-117).</summary>
+    /// half while this is zero, so a settled area costs no re-ask at all.</summary>
     private static int _texPending;
     private static readonly Vector4[] _amb = new Vector4[Max], _dif = new Vector4[Max];
     private static readonly float[] _cos = new float[Max], _sin = new float[Max];
@@ -65,14 +73,14 @@ internal static partial class DrawRecipe
     /// recipe every frame and resolving a <c>.mtr</c> there would be a dictionary lookup per recipe per
     /// frame.</summary>
     private static readonly bool[] _declWater = new bool[Max];
-    /// <summary>CX-189: the material's <c>NWN_ALPHA_MODE 2</c> -- draw this part through alpha-to-coverage
+    /// <summary>The material's <c>NWN_ALPHA_MODE 2</c> -- draw this part through alpha-to-coverage
     /// (<see cref="RecipeFlag.Coverage"/>) instead of blending it. Kept per recipe for <see cref="Reclassify"/>.</summary>
     private static readonly bool[] _coverage = new bool[Max];
 
     internal static int Count => _n;
 
-    /// <summary>CX-120: how many recipes actually have a resolved diffuse, and how many are drawing the white
-    /// stand-in. "Most surfaces are untextured" is a question about these two numbers and nothing else.</summary>
+    /// <summary>How many recipes actually have a resolved diffuse, and how many are drawing the white stand-in.
+    /// "Most surfaces are untextured" is a question about these two numbers and nothing else.</summary>
     internal static (int named, int resolved, int standIn) DiffuseCensus()
     {
         int named = 0, resolved = 0, standIn = 0;
@@ -95,14 +103,13 @@ internal static partial class DrawRecipe
     internal static int BoxGrown { get; private set; }
     internal static string BoxGrownFirst { get; private set; } = "";
 
-    /// <summary>Siblings past this many are not compared: the mode-0 gate's same bound.</summary>
+    /// <summary>Siblings past this many are not compared.</summary>
     private const int TwinMaxFanOut = 32;
 
-    /// <summary>#397's shield in DB mode: stock <c>ashlw_072.mdl</c> carries two sibling tri-meshes with the same
-    /// placement and vertices and different textures. Vanilla draws both in tree order under LEQUAL, so the LATER
-    /// one's pixels are all that survive; Alloy's culled batches have no stable order, so the twins z-fought.
-    /// Dropping the earlier twin gives vanilla's pixels. The door faces of #317 differ in their positions and both draw.
-    /// ponytail: a later twin that is blended or hidden at runtime should let the earlier show; stock content has none.</summary>
+    /// <summary>Stock content carries coincident sibling tri-meshes -- same placement and vertices, different
+    /// textures (<c>ashlw_072.mdl</c>). Vanilla draws both in tree order under LEQUAL so only the LATER one's
+    /// pixels survive; Alloy's culled batches have no stable order, so the earlier twin is dropped instead.
+    /// ponytail: a later twin that is blended or hidden at runtime should let the earlier show; stock has none.</summary>
     internal static bool TwinShadowed(ModelDef model, int node)
     {
         NodeDef nd = model.Nodes[node];
@@ -148,27 +155,13 @@ internal static partial class DrawRecipe
     internal static float Sin(int r) => _sin[r];
     internal static Vector3 Centre(int r) => _centre[r];
     internal static float Radius(int r) => _radius[r];
-    /// <summary>The mesh-arena range this recipe draws from (CX-114), -1 when the arena could not hold it.</summary>
+    /// <summary>The mesh-arena range this recipe draws from, -1 when the arena could not hold it.</summary>
     internal static int Range(int r) => _range[r];
     internal static float Param(int r, int k) => _param[r * ParamFloats + k];
 
-    /// <summary>ADR 0026's extension floats before any material is read -- the SAME seeding the engine path
-    /// does in <c>AlloyRenderer.ResetExt</c>. <b>-1 is "not declared"</b> for every term a 0 is a legal value
-    /// for (a dielectric, a mirror, an unlit emissive); the layer weights and the sheen colour are 0 = absent,
-    /// which is also their default.
-    /// <para>Without this the DB path wrote a DECLARED zero where mode 0 writes "undeclared" -- the frame
-    /// diff's <c>ext=0,0,0,0</c> against mode 0's <c>ext=-1,-1,0,-1</c> -- which tells the shader to use a
-    /// mirror-smooth dielectric instead of synthesising the term from the stock material.</para></summary>
-    private static void ResetExt(int r)
-    {
-        int x = r * ParamFloats + AlloyRenderer.ParamExt;
-        for (int k = 0; k < ParamFloats - AlloyRenderer.ParamExt; k++) _param[x + k] = 0f;
-        _param[x] = _param[x + 1] = _param[x + 3] = -1f;   // CxMetallic, CxRoughness, CxClearcoatRoughness
-        _param[x + 7] = _param[x + 8] = -1f;               // CxSheenRoughness, CxEmissiveStrength
-    }
     internal static float FeatF(int r, int k) => _featF[r * 4 + k];
-    /// <summary>The resident bindless handle for one texture slot, or 0 -- which the draw submits the
-    /// white stand-in for (CX-117: an explicit, counted state, never a hole).</summary>
+    /// <summary>The resident bindless handle for one texture slot, or 0 -- which the draw submits the white
+    /// stand-in for: an explicit, counted state, never a hole.</summary>
     internal static ulong TexHandle(int r, int s) => TexRegistry.Handle(new TexId(_texId[r * TexSlots + s]));
     /// <summary>The registry slot one texture slot names, so a record feed can register the part it is
     /// writing as a dependent (<c>TexRegistry.AddDependent</c>) and be TOLD when the texture lands
@@ -242,11 +235,10 @@ internal static partial class DrawRecipe
         return landed;
     }
 
-    /// <summary>This recipe's class from its content and its diffuse's measured coverage. Split out because
-    /// it is re-asked: the first ask happens while the texture is still loading.
-    /// <para>Water is read here and not taken from the caller because half of the term is the DIFFUSE's
-    /// (<see cref="TexRegistry.BumpyShiny"/>), which is not known until the texture lands -- the same
-    /// deferral the coverage below has, settled by the same <see cref="Reclassify"/>.</para></summary>
+    /// <summary>This recipe's class from its content and its diffuse's measured coverage. Split out because it
+    /// is re-asked: the first ask happens while the texture is still loading. Water is read here rather than taken
+    /// from the caller because half of the term is the DIFFUSE's (<see cref="TexRegistry.BumpyShiny"/>), unknown
+    /// until the texture lands -- the same deferral the coverage has, settled by the same <see cref="Reclassify"/>.</summary>
     private static AlloyClass ClassOf(int r, bool additive, bool declared)
     {
         var diffuse = new TexId(_texId[r * TexSlots]);
@@ -375,7 +367,7 @@ internal static partial class DrawRecipe
         // would punch the alpha out of every graded leaf and fringe in the game.
         _cls[r] = (byte)ClassOf(r, additive, declared);
         RecipeFlag f = RecipeFlag.None;
-        // R1-9. Engine mode reads the Material's blend flag (mat+0x98): set means the engine sends flat white
+        // R1-9. The engine reads the Material's blend flag (mat+0x98): set means it sends flat white
         // and the part is fullbright. `!Lightmapped` was plainly wrong -- a lightmapped tile is still SHADED
         // in vanilla (lightmap x diffuse), so that unlit every tile in the game. The model-side equivalent of
         // the blend flag is the additive renderhint, which is what the materials carrying it declare.
@@ -396,19 +388,23 @@ internal static partial class DrawRecipe
         if (mesh.TileFade != 0) f |= RecipeFlag.Fades;
         _flags[r] = f;
         _prim[r] = 0;
-        _feat[r] = 0;
-        for (int k = 0; k < 4; k++) _featF[r * 4 + k] = 0f;
-        // The two stock PBR vec4s: 0 means "not declared" and the shader synthesises it, exactly as the
-        // engine path's unparsed .mtr left them. NOT the MDL's shininess: the engine never turns it into a
-        // roughness, and declaring 1 - shininess/128 (0.8..0.99 on stock meshes) beat the env curve the
-        // palette's reflectivity drives -- PLT armour read metal and fully rough, i.e. matte.
-        for (int k = 0; k < ParamFloats; k++) _param[r * ParamFloats + k] = 0f;
-        ResetExt(r);
+        int feat = MtrParams.Feature(mtr?.ShaderVs ?? "");
+        _feat[r] = feat;
+        Span<float> featF = _featF.AsSpan(r * 4, 4);
+        featF.Clear();
+        featF[0] = feat;
+        // The stock PBR vec4s: 0 means "not declared" and the shader synthesises it. NOT the MDL's shininess:
+        // the engine never turns it into a roughness, and 1 - shininess/128 read PLT armour as rough metal.
+        Span<float> param = _param.AsSpan(r * ParamFloats, ParamFloats);
+        param.Clear();
+        MtrParams.ResetExt(param[AlloyRenderer.ParamExt..]);
+        MtrParams.Fold(mtr, param, featF);
         int mask = 0;
         for (int s = 0; s < TexSlots; s++)
         {
-            string name = mtr != null && mtr.Textures[s].Length > 0 ? mtr.Textures[s]
-                        : s < mesh.Textures.Length ? mesh.Textures[s] : "";
+            int src = MtrTextureOf(s);
+            string name = mtr != null && mtr.Textures[src].Length > 0 ? mtr.Textures[src]
+                        : src < mesh.Textures.Length ? mesh.Textures[src] : "";
             // "null" is the MDL's way of writing NO TEXTURE -- the same spelling the supermodel line uses,
             // and the one MdlPost already honours for the lightmap slot. Taken literally it becomes a resref
             // nothing can load, the slot fails, the record gets no handle, and the part draws BLACK: that is
@@ -420,7 +416,7 @@ internal static partial class DrawRecipe
             bool wait = !id.IsNull && !TexRegistry.Resident(id);
             _texWait[r * TexSlots + s] = wait ? (byte)1 : (byte)0;
             if (wait) _texPending++;
-            if (s > 0 && !string.IsNullOrEmpty(name)) mask |= 1 << (s - 1);
+            if (!string.IsNullOrEmpty(name)) mask |= MaskBitOf(s, feat);
         }
         if ((f & RecipeFlag.Env) != 0) mask |= EnvSlotBit;
         _slots[r] = mask;
@@ -495,27 +491,15 @@ internal static partial class DrawRecipe
         for (int k = 0; k < 6; k++) dst[k] = _box[r * 6 + k];
     }
 
-    /// <summary>Bit 5 of the slot mask: the material declares an env map, with no texture behind it (the
-    /// per-area probe replaces what it held). Mirrors <c>AlloyRenderer.EnvSlot</c>.</summary>
-    /// <summary>The env-map bit of the slot mask. It is <see cref="AlloyRenderer.EnvSlot"/> and nothing else:
-    /// that value is FROZEN at 64 because shipped <c>cx_ownlit_fs.shd</c> overrides carry a copy of it, so a
-    /// second definition here is a fact that can drift from content on disk.
-    /// <para>It drifted immediately. This read <c>1 &lt;&lt; 5</c> = 32, which in that mask means "map slot 6
-    /// is declared" -- the FLOW MAP. So every DB part whose mesh had any shininess told the lit stage to
-    /// resolve a flow map it does not have, and the stage distorted its UVs by an unbound RG texture. That is
-    /// what rendered the tiles of the first lit DB area black while the objects beside them came out fine:
-    /// the objects' meshes happened to declare no shininess.</para></summary>
+    /// <summary>The env-map bit of the slot mask: the material declares an env map with no texture behind it (the
+    /// per-area probe replaces what it held). It is <see cref="AlloyRenderer.EnvSlot"/> and nothing else -- that
+    /// value is FROZEN at 64 because shipped <c>cx_ownlit_fs.shd</c> overrides carry a copy of it, so any second
+    /// definition here is a fact that can drift from content on disk.</summary>
     internal const int EnvSlotBit = AlloyRenderer.EnvSlot;
     /// <summary><c>Aurora::AuroraBlendModes</c> values, which <see cref="Issue.BlendGl"/> translates to
-    /// <c>glBlendFunc</c> factors. These are INDICES into the engine's own <c>blendTranslationTable</c>
-    /// @0x12f5040, which <c>GLRender::SetBlendFunc</c> @0x5cb0c0 indexes with both arguments; read out of the
-    /// binary's .rodata the table is
-    /// <c>SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ZERO, DST_COLOR, SRC_COLOR, ONE_MINUS_DST_ALPHA</c>, and
-    /// <c>ResetRenderStates</c> @0x5d1810 restores the default pair as <c>SetBlendFunc(0, 1)</c>.
-    /// <para>These three read 4/5/1 until CX-120. That is not a different convention, it is three wrong
-    /// factors: a DB blended part blended <c>DST_COLOR x SRC_COLOR</c> and an "additive" one blended normally.
-    /// The engine path never had the bug -- its values come off the material through the census -- so it was
-    /// invisible in a mode-0 comparison.</para></summary>
+    /// <c>glBlendFunc</c> factors. These are INDICES into the engine's <c>blendTranslationTable</c> @0x12f5040,
+    /// which <c>GLRender::SetBlendFunc</c> @0x5cb0c0 indexes with both arguments; in .rodata that table is
+    /// <c>SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ZERO, DST_COLOR, SRC_COLOR, ONE_MINUS_DST_ALPHA</c>.</summary>
     internal const byte BlendSrcAlpha = 0, BlendInvSrcAlpha = 1, BlendOne = 2;
 
     /// <summary>Forget every recipe (a session edge: the model cache dropped everything). The arena ranges go
@@ -547,8 +531,8 @@ internal enum RecipeFlag : ushort
     Env = 1 << 1,
     /// <summary>The material's <c>twosided</c>: draws with face culling off.</summary>
     TwoSided = 1 << 2,
-    /// <summary>A graded-alpha cutout re-filed as blended, drawn with no depth write. ponytail: nothing sets it since
-    /// !797 retired the <c>gradedblend</c> reroute; the wash path behind it is dormant until something does.</summary>
+    /// <summary>A graded-alpha cutout re-filed as blended, drawn with no depth write.
+    /// ponytail: nothing sets it; the wash path behind it is dormant until something does.</summary>
     Wash = 1 << 3,
     /// <summary>A dangly mesh: a permanent shadow mover, posed by the solver.</summary>
     Dangly = 1 << 4,
@@ -564,6 +548,6 @@ internal enum RecipeFlag : ushort
     Fades = 1 << 9,
     /// <summary>The mesh's texture rotates (<c>rotatetexture</c>).</summary>
     RotateTexture = 1 << 10,
-    /// <summary>CX-189: a cutout whose material asks for alpha-to-coverage (<c>NWN_ALPHA_MODE 2</c>).</summary>
+    /// <summary>A cutout whose material asks for alpha-to-coverage (<c>NWN_ALPHA_MODE 2</c>).</summary>
     Coverage = 1 << 11,
 }

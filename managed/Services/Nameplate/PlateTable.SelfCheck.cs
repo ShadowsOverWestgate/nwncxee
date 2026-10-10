@@ -257,7 +257,7 @@ public sealed partial class PlateTable
         check.Expect(PlateLayout.LineX(20f, 50f, 20f) == 35f,
           "and a shorter one centres in the text column -- on a creature plate as on any other");
 
-        // ---- ObjectTextBubbleOverride: the module's own plate text (CX-179 §8.5) ----
+        // ---- ObjectTextBubbleOverride: the module's own plate text ----
         var ov = new Entry();
         string Para(int i)
         {
@@ -272,9 +272,9 @@ public sealed partial class PlateTable
         SetOverride(ov, 3, "");
         check.Expect(ov.ParaCount == 0, "an EMPTY override leaves the plate untouched whatever the mode says");
         SetOverride(ov, 0, " Poisoned");
-        check.Expect(ov.ParaCount == 0, "mode 0 with text is still no override -- the engine's default arm changes nothing");
+        check.Expect(ov.ParaCount == 0, "bubble mode 0 with text is still no override -- the engine's default arm changes nothing");
 
-        // The server end's own two test vectors (sow-codebase ComposeLabelsTests).
+        // The server end's own two test vectors (the reference server's ComposeLabels tests).
         SetOverride(ov, 3, " Poisoned Diseased\nSneaking Invisible");
         check.Expect(ov.ParaCount == 2 && Para(0) == " Poisoned Diseased" && Para(1) == "Sneaking Invisible",
           "append splits into the injury-line splice and the line below it, the server's leading space intact");

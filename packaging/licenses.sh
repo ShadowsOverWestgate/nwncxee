@@ -4,7 +4,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 {
-  echo "SoW client extender -- licenses"
+  echo "NWNCX:EE -- licenses"
   echo "==============================="
   echo
   echo "The extender itself is MIT licensed. It links funchook (GPLv2+ with a linking"

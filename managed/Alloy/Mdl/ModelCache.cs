@@ -7,29 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-113: the model cache over <see cref="MdlParser"/> -- the engine's <c>FindModel</c> /
-/// <c>BinarySearchModel</c> / <c>InsertModel</c>, refcounts, supermodel chains and animation lookup. Game-thread
-/// API; parses run on its worker.
-/// <para><b>The engine it replaces.</b> <c>FindModel</c> @0x44c2a0 refuses a null name and the literal
-/// <c>"NULL"</c>, asks <c>BinaryFindModel</c> @0x448190 (<c>BinarySearchModel</c> @0x448110: a
-/// <c>strcasecmp</c> binary search over the sorted global <c>Models</c> array, keyed on <c>Model+0x10</c>), and
-/// only on a zero reads the file through <c>IODispatcher::ReadSync</c>. A model inserts itself into that array
-/// from its own CONSTRUCTOR (<c>Model::Model</c> @0x43a850 calls <c>InsertModel</c> @0x4482f0), i.e. BEFORE it is
-/// parsed -- which is the whole reason a supermodel cycle terminates in the engine instead of recursing: the
-/// half-parsed model is already findable. <c>Model::AddRef</c> @0x43a940 increments <c>Model+0x90</c>,
-/// <c>Model::DelRef</c> @0x443da0 decrements it and DELETES at zero, and the destructor
-/// (<c>Model::InternalDestructor</c> @0x443de0) removes the model from <c>Models</c>, drops one reference on its
-/// supermodel (<c>Model+0xa8</c>, which <c>setsupermodel</c> @0x44cd20 took) and frees its animations.</para>
-/// <para><b>What CX does differently, deliberately.</b> Reaching zero references does not free the model: it
-/// enters a byte-budgeted resident set (<see cref="ModelKnobs.Budget"/>) and is evicted only past the budget, so
-/// area re-entry and a second area sharing a tileset HIT rather than re-parse. A supermodel cycle is CUT with a
-/// loud line instead of being left in place (the engine's own <c>FindAnimation</c> would spin on one forever).
-/// A model is filed under the resref it was ASKED for, and an internal name that disagrees is counted and named
-/// rather than becoming a key nothing looks up (the engine logs that case as "Model Names Differ" and then
-/// keeps the file's name, so every later <c>FindModel</c> of the requested resref misses and re-reads).</para>
-/// <para>Engine-free by contract, like everything under <c>Alloy/Mdl/</c>: the bytes arrive through
-/// <see cref="IModelSource"/>, which the engine feed (<see cref="CX.Alloy.ModelFeed"/>) implements for a session
-/// and <c>tools/mdlcheck</c> implements off-device.</para></summary>
+/// <summary>The model cache over <see cref="MdlParser"/> -- the engine's <c>FindModel</c> @0x44c2a0,
+/// refcounts, supermodel chains and animation lookup. Game-thread API, parses on its worker, bytes through
+/// <see cref="IModelSource"/> so it stays engine-free. Zero references does NOT free a model: it enters a
+/// byte-budgeted resident set (<see cref="ModelKnobs.Budget"/>), and a supermodel cycle is CUT, loudly.</summary>
 public static partial class ModelCache
 {
     /// <summary>The sorted model table: the engine's <c>Models</c> array, same key and same ordering.</summary>
@@ -101,9 +82,9 @@ public static partial class ModelCache
     /// <summary><see cref="Pump"/> calls, i.e. frames with a drip: the loader-reference clock.</summary>
     private static long _drip;
 
-    /// <summary>Fired just before a model leaves the cache, so whoever uploaded its meshes can let them go:
-    /// CX-114 points this at <c>MeshArena.Release</c>. Eviction, NOT refcount zero, is the edge
-    /// (ADR 0028 section 3) -- a model at zero references is still resident and still drawable.</summary>
+    /// <summary>Fired just before a model leaves the cache, so whoever uploaded its meshes can let them go --
+    /// <c>MeshArena.Release</c> subscribes. Eviction, NOT refcount zero, is the edge (ADR 0028 section 3): a
+    /// model at zero references is still resident and still drawable.</summary>
     public static Action<ModelDef>? Evicting;
 
     private static long _bytes, _idleBytes;
@@ -160,11 +141,10 @@ public static partial class ModelCache
         _bytes = _idleBytes = 0;
     }
 
-    /// <summary>The module edge (DB mode): the next module resolves every resref through its own haks and NWSync
-    /// manifest, so no model read for the previous one may answer a lookup. Idle models are evicted now; a model
-    /// still held (a menu object alive across the edge) leaves the name index and is evicted at its last release,
-    /// so <see cref="Clear"/>'s pulling of held models from under their objects is not repeated here. Parses in
-    /// flight are abandoned. Returns (evicted, detached).</summary>
+    /// <summary>The module edge: the next module resolves every resref through its own haks and NWSync
+    /// manifest, so no model read for the previous one may answer a lookup. Idle models are evicted now; one
+    /// still held leaves the name index and is evicted at its last release, so held models are never pulled
+    /// from under their objects. Parses in flight are abandoned. Returns (evicted, detached).</summary>
     public static (int Evicted, int Detached) ModuleEdge()
     {
         for (int i = 0; i < _table.Count && _loaders != 0; i++)
@@ -311,16 +291,15 @@ public static partial class ModelCache
     // ---- acquire ----
 
     /// <summary>The model named <paramref name="resref"/> with its supermodel chain resolved, one reference
-    /// added; null when no such model exists or it failed to parse (logged once per cause).
-    /// <para>Synchronous, because <c>NewCAurObject</c> wants its model now. A hit answers from the table; a
-    /// miss queues the parse on the worker and WAITS for it. The main thread never parses: a parse that cannot
-    /// be handed to the worker is a counted refusal, not a main-thread fallback.</para></summary>
+    /// added; null when no such model exists or it failed to parse (logged once per cause). Synchronous,
+    /// because <c>NewCAurObject</c> wants its model now: a miss queues the parse on the worker and WAITS. The
+    /// main thread never parses -- a parse that cannot be handed over is a counted refusal.</summary>
     public static ModelDef? Acquire(string resref) => Acquire(resref, out _);
 
     /// <inheritdoc cref="Acquire(string)"/>
-    /// <param name="why">Why a null answer is null. The caller decides what a refusal of ITS model means (CX-120:
-    /// the seam tells "no such model" from "CX could not read one the engine would have"), and the cache's own
-    /// log is capped per cause -- a refusal nobody can name is the one the next crash report cannot explain.</param>
+    /// <param name="why">Why a null answer is null. The caller decides what a refusal of ITS model means (the
+    /// seam tells "no such model" from "CX could not read one the engine would have"), and the cache's own log
+    /// is capped per cause.</param>
     public static ModelDef? Acquire(string resref, out string? why)
     {
         why = null;
@@ -473,13 +452,9 @@ public static partial class ModelCache
     // ---- supermodel chains ----
 
     /// <summary>Resolve <paramref name="s"/>'s chain as far as it goes, taking the reference a model holds on
-    /// its supermodel (the engine's <c>setsupermodel</c> @0x44cd20 does the same <c>AddRef</c>).
-    /// <para>Two marks, not one. <see cref="Slot.Chaining"/> goes up for the duration and is the cycle guard --
-    /// the thing the engine gets for free by inserting a model before parsing it. <see cref="Slot.Chained"/>
-    /// only latches on a SETTLED answer: a complete chain, a cut cycle, the chain cap, or
-    /// <see cref="MaxChainTries"/> failures. A supermodel that merely failed to load this time leaves the model
-    /// unlatched, so the next acquire tries again instead of the model being animation-less for the
-    /// session.</para></summary>
+    /// its supermodel (the engine's <c>setsupermodel</c> @0x44cd20 does the same <c>AddRef</c>). Two marks:
+    /// <see cref="Slot.Chaining"/> is the cycle guard, while <see cref="Slot.Chained"/> latches only on a
+    /// SETTLED answer -- a supermodel that merely failed this time leaves the model unlatched to retry.</summary>
     private static void Chain(Slot s)
     {
         if (s.Chained || s.Chaining) return;
@@ -552,10 +527,9 @@ public static partial class ModelCache
     // ---- the resident set ----
 
     /// <summary>Drop the read-ahead reference of anything nothing has asked for in
-    /// <see cref="LoaderGraceDrips"/> drips: a model offered by an area message that never became an object was
-    /// not going to be, and holding its reference would pin it past the budget for the session.
-    /// <para>Counted rather than scanned for: this runs on every drip, and a table walk per frame to find
-    /// nothing is the kind of cost the cache exists to remove.</para></summary>
+    /// <see cref="LoaderGraceDrips"/> drips: a model offered by an area message that never became an object
+    /// was not going to be, and its reference would pin it past the budget for the session. Counted rather
+    /// than scanned for, because this runs on every drip.</summary>
     private static void RetireLoaderRefs()
     {
         if (_loaders == 0) return;
@@ -612,9 +586,9 @@ public static partial class ModelCache
 
     private static long _misplaced;
 
-    /// <summary>Let one model go: the arena ranges first (CX-114's <c>MeshArena.Release</c> through
-    /// <see cref="Evicting"/>), then its bindings, then the reference it held on its supermodel -- which may put
-    /// the supermodel on the tail for the next pass.</summary>
+    /// <summary>Let one model go: the arena ranges first (<c>MeshArena.Release</c> through
+    /// <see cref="Evicting"/>), then its bindings, then the reference it held on its supermodel -- which may
+    /// put the supermodel on the tail for the next pass.</summary>
     private static void Evict(Slot s, int indexInTable)
     {
         if (indexInTable >= 0 && indexInTable < _table.Count && ReferenceEquals(_table[indexInTable], s))
@@ -832,8 +806,8 @@ public static partial class ModelCache
     }
 
     /// <summary>The engine-side comparison (<c>CX.Alloy.ModelVerify</c>), installed only in a session: the one
-    /// place CX-113 reads engine memory, kept out of <c>Alloy/Mdl/</c> so the cache and the parser still build
-    /// and run with no client at all. Null off-device, and then there is nothing to report.</summary>
+    /// place this stream reads engine memory, kept out of <c>Alloy/Mdl/</c> so the cache and the parser still
+    /// build and run with no client at all. Null off-device, and then there is nothing to report.</summary>
     internal static Func<string>? VerifyClause;
     /// <inheritdoc cref="VerifyClause"/>
     internal static Action? RunVerify;

@@ -4,13 +4,10 @@ using System.Numerics;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: the per-node-type half of the binary reader. Every offset below is the FILE offset inside
-/// the node block and was read off the engine's loader (<c>FUN_005bd400</c> / <c>FUN_005b9290</c>) and
-/// cross-checked against its writer (<c>FUN_005b8ec0</c> and friends), which pins the sizes and tells
-/// uninitialised padding from data.
-/// <para>A compiled binary mesh is ALREADY post-processed: it carries the welded per-vertex streams and the
-/// face records with welded indices, adjacency and planes. That is exactly what the ASCII post-process has to
-/// reproduce, which is what makes the two readable against each other.</para></summary>
+/// <summary>The per-node-type half of the binary reader. Every offset below is the FILE offset inside the node
+/// block, read off the engine's loader @0x5bd400 / @0x5b9290 and cross-checked against its writer, which pins
+/// the sizes and tells uninitialised padding from data. A compiled binary mesh is ALREADY post-processed --
+/// welded streams, face records with adjacency and planes -- which is what the ASCII post-process builds.</summary>
 internal static class MdlBinaryPayload
 {
     private const uint None = 0xFFFFFFFF;   // not-an-offset: the file format's "no such array" marker
@@ -252,13 +249,10 @@ internal static class MdlBinaryPayload
         s.BoneConstantIndices = IntArray(model, I(model, at + SConstIdx), I(model, at + SConstIdxCount));
     }
 
-    /// <summary>The two morph pools of an animmesh node. These are the node's GENERATED pools
-    /// (<c>MdlNodeAnimMesh+0x300</c> / <c>+0x308</c>, built by <c>InternalGenVertices</c> @0x555490 and read by
+    /// <summary>The two morph pools of an animmesh node: the node's GENERATED pools
+    /// (<c>MdlNodeAnimMesh+0x300</c> / <c>+0x308</c>, built by <c>InternalGenVertices</c> @0x555490, read by
     /// <c>InternalControl</c> @0x599320), not the <c>animverts</c>/<c>animtverts</c> lists the ASCII parse
-    /// fills: the generated ones are laid out VERTEX-major -- every frame of vertex 0, then every frame of
-    /// vertex 1 -- which is why the reads below stride by the FRAME count and not the vertex count. Read
-    /// frame-major they came out transposed, so a GUI plane drew the right rectangle with its texture smeared
-    /// across the atlas and a scrollbar's trough came out the wrong length.</summary>
+    /// fills. They are VERTEX-major -- every frame of vertex 0, then of vertex 1 -- so the reads stride by FRAMES.</summary>
     private static void AnimMesh(ReadOnlySpan<byte> model, int at, NodeDef n)
     {
         int verts = n.Mesh?.Positions.Length ?? 0;

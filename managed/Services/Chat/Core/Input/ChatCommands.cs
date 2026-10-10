@@ -3,11 +3,10 @@ using CX.Framework;
 namespace CX.Services.Chat.Core;
 
 /// <summary>
-/// Parses a leading channel slash-command off a submitted line (#25). Pure -- text in, (channel, rest)
-/// out, no native refs -- so it self-checks off-device. The token set mirrors vanilla's ParseChatString
-/// (research §4.2) MINUS <c>/dm</c>, which servers claim for their own DM tooling (SoW opens a panel with
-/// it); consuming it as a channel switch would swallow the command before the server ever saw it.
-/// An unrecognized slash is left intact and sent as-is on the current channel.
+/// Parses a leading channel slash-command off a submitted line. Pure -- text in, (channel, rest) out, no
+/// native refs -- so it self-checks off-device. The token set mirrors vanilla's ParseChatString MINUS
+/// <c>/dm</c>, which servers claim for their own DM tooling (some open a panel with it); consuming it as a
+/// channel switch would swallow the command before the server saw it. Any other slash is sent as-is.
 /// </summary>
 public static class ChatCommands
 {

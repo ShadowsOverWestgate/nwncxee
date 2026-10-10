@@ -6,15 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120 seam-feed: <b><c>StagePart</c> for a database slot.</b> The same job -- resolve this
-/// part's textures and draw arguments, write its persistent record, its two spheres and its batch row -- with
-/// every term a column or an interned recipe read instead of a pointer chase.
-/// <para>What is NOT here is the whole point. No <c>PartRef</c>, no <c>MaterialRef</c>, no <c>VdoRef</c>, no
-/// <c>CAurTexture*</c> re-fetch, no cadence deciding whether a re-fetch is due, no <c>CycleTextures</c>
-/// registration, no texture-staleness latch: a texture is a <see cref="TexId"/> whose arrival marks its
-/// dependent parts dirty (CX-117), and geometry is an arena range whose draw arguments are three integers
-/// (CX-114). The engine path's per-frame texture poll and its VDO item-table reads are the two costs this
-/// deletes outright.</para></summary>
+/// <summary><b><c>StagePart</c> for a database slot:</b> resolve this part's textures and draw arguments,
+/// write its persistent record, its two spheres and its batch row, with every term a column or an interned
+/// recipe read instead of a pointer chase. No <c>PartRef</c>, no <c>MaterialRef</c>, no <c>VdoRef</c>, no
+/// texture poll -- a texture is a <see cref="TexId"/> and geometry an arena range of three draw integers.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     private const int RecWhyModel = 0, RecWhyPrev = 1, RecWhyDissolve = 2, RecWhyAlpha = 3, RecWhyAmb = 4, RecWhyDif = 5,
@@ -132,7 +127,7 @@ public sealed unsafe partial class AlloyRenderer
         int tid = _recTid[i];
         if (_recTexStamp[i] != _stageTexSerial)
         {
-            // #128's own routing condition, which mode 0 reads off the engine as
+            // #128's own routing condition, which the engine answers as
             // `Engine.HasEnvMap(material) || GobHasEnvMap(gob)`: the part is environment-mapped when the
             // INSTANCE overrides the env map -- Gob::SetEnvironmentMap @0x43f530, which the seam stores in
             // texture slot 3, and which is how a creature gets the appearance's ENVMAP column and an area its
@@ -171,7 +166,7 @@ public sealed unsafe partial class AlloyRenderer
             // Standardmaterial -- docs/missing-parts-triage.md), and leaving it unsettled put every one of
             // them back on the per-frame re-resolve the skip exists to end.
             bool settled = (diffuseName != 0 && TexRegistry.StateOf(diffuse) != TexState.Loading) || TexRegistry.Final(diffuse);
-            // No diffuse (`bitmap null`) or one still in flight draws on the white texel, as the engine and mode 0 do
+            // No diffuse (`bitmap null`) or one still in flight draws on the white texel, as the engine does
             // (OwnedTextures.WhiteTid): handle 0 and GL name 0 sample transparent/opaque BLACK, which hid a door's sam.
             if (tid == 0)
             {
@@ -315,15 +310,15 @@ public sealed unsafe partial class AlloyRenderer
         // R1-33 honoured ObjFlag.NoShadow (AurDisableShadowing) AND the mesh's own `shadow 0`. CX-120
         // withdraws the mesh flag, measured. `shadow 0` is the engine's STENCIL-VOLUME class and the
         // tileset's TERRAIN carries it, so reading it as a verdict about Alloy's depth maps left the GROUND
-        // out of the cascades: 227 casters in this area where mode 0 has 3138. A ground with no depth of its
+        // out of the cascades: 227 casters in this area where the engine's own caster set has 3138. A ground with no depth of its
         // own in the map has nothing to win the comparison at its own texels, so every trunk, rock and bank
         // beside it shadowed it instead -- a FALSE 1,5..3,4u gap over whole tiles, which is the stepped slab
         // that lay across the forest path.
         // What settled it was the receiver's own lookup, run on the CPU over a ground grid around the player
-        // against a readback of the very texels the shader samples, in both scene modes: with the flag read,
-        // the cells around the player reported 1,6..2,7u of occlusion that mode 0 reports as -0,03u (its own
-        // surface); with it withdrawn the two grids agree cell for cell over 9x9 at 6u, every real cliff gap
-        // (3..17u) included. Alloy's engine path reads this flag nowhere.
+        // against a readback of the very texels the shader samples: with the flag read, the cells around the
+        // player reported 1,6..2,7u of occlusion where a ground that casts reads -0,03u (its own surface);
+        // with it withdrawn the two grids agree cell for cell over 9x9 at 6u, every real cliff gap (3..17u)
+        // included.
         // The OBJECT flag stays: AurDisableShadowing is an explicit per-object opt-out, not a statement
         // about which shadow system is running.
         bool mayCast = (SceneDb.ObjFlags[o] & ObjFlag.NoShadow) == 0;
@@ -370,9 +365,6 @@ public sealed unsafe partial class AlloyRenderer
         return Staged;
     }
 
-    /// <summary>The texture this part draws in <paramref name="slot"/>: the part's OVERRIDE when it has one
-    /// (<c>Gob::ReplaceTexture</c> and the PLT swaps write <see cref="SceneDb.PartTexId"/>), else the model's
-    /// own. The override is per INSTANCE, which is why it cannot live on the shared recipe.</summary>
     /// <summary>How many [db tiletex] lines the probe prints before it is done.</summary>
     private const int TileTexLines = 4;
     private static int _tileTexProbed;
@@ -453,6 +445,9 @@ public sealed unsafe partial class AlloyRenderer
         return DbTexOf(part, SceneDb.PartRecipe[part], 0).IsNull;
     }
 
+    /// <summary>The texture this part draws in <paramref name="slot"/>: the part's OVERRIDE when it has one
+    /// (<c>Gob::ReplaceTexture</c> and the PLT swaps write <see cref="SceneDb.PartTexId"/>), else the model's
+    /// own. The override is per INSTANCE, which is why it cannot live on the shared recipe.</summary>
     private static TexId DbTexOf(int part, int recipe, int slot)
     {
         if (slot < 4)
@@ -499,19 +494,16 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>CX-188: bumped wherever a slot's <see cref="_oBox"/> actually CHANGES -- which is
-    /// <see cref="DbWriteWorldBox"/> and nothing else. A reader whose answer is a function of those boxes
-    /// (<c>DbKeyhole.Write</c>'s dissolve verdict) re-derives it only when this moves.
-    /// <para>Not interlocked on purpose: the staging walk runs on the worker threads over 14k parts and this
-    /// is only ever COMPARED, never counted. Two workers incrementing from the same base still leave it
-    /// different from what a reader last saw, which is the whole question asked of it.</para></summary>
+    /// <summary>Bumped wherever a slot's <see cref="_oBox"/> actually CHANGES -- which is
+    /// <see cref="DbWriteWorldBox"/> and nothing else -- so a reader whose answer is a function of those boxes
+    /// (<c>DbKeyhole.Write</c>'s dissolve verdict) re-derives only when this moves. Not interlocked on purpose:
+    /// the staging walk runs on worker threads and this is only ever COMPARED, never counted.</summary>
     internal static int BoxGen;
 
-    /// <summary>R1-18: this slot's batch VAO key -- the arena SECTION its range lives in, so the static and
-    /// skinned formats cut apart and nothing else does.
-    /// <para>Taken from the RANGE, not from the recipe's skin flag: the arena decides which section a mesh
-    /// lands in, and a key derived from a second opinion is a batch bound to the wrong VAO the moment the two
-    /// disagree. <c>MeshArenaDraw.Vao</c> is the static section's only.</para></summary>
+    /// <summary>This slot's batch VAO key -- the arena SECTION its range lives in, so the static and skinned
+    /// formats cut apart and nothing else does. Taken from the RANGE, not the recipe's skin flag: the arena
+    /// decides the section, and a key from a second opinion binds the batch to the wrong VAO when they
+    /// disagree (<c>MeshArenaDraw.Vao</c> is the static section's only).</summary>
     private static int DbVaoKey(int i)
         => (int)MeshArena.FormatOf(DrawRecipe.Range(_oDbRecipe[i]));
 
@@ -520,9 +512,9 @@ public sealed unsafe partial class AlloyRenderer
     internal static readonly uint[] _oDbVao = new uint[MaxOwned];
     internal static readonly byte[] _oDbLevel = new byte[MaxOwned];
 
-    /// <summary>CX-120: chart offers left this frame. An area's whole tile set would otherwise be read off
-    /// the arena in one pass -- each offer takes the arena lock and allocates the job's arrays -- so the
-    /// enrolment is spread over frames, the way the engine path's harvest drip is.</summary>
+    /// <summary>Chart offers left this frame. An area's whole tile set would otherwise be read off the arena
+    /// in one pass -- each offer takes the arena lock and allocates the job's arrays -- so the enrolment is
+    /// dripped over frames.</summary>
     internal static int _dbOfferBudget;
     /// <summary>Offers one frame may make. Small: the charter's own queue is the real throttle and a miss
     /// costs the next frame nothing.</summary>

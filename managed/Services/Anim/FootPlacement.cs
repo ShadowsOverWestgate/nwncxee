@@ -7,22 +7,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Foot placement on uneven floors (CX-29), a <see cref="PoseService"/> module. Each foot casts one segment down
-/// through <c>Scene::HitCheck</c> (<see cref="SceneRay"/>: tile render triangles, then placeable render
-/// triangles) over <c>[rendered height +- footik_max]</c>; the root part's local Z takes the lower foot's offset,
-/// and the two-bone IK lifts the other ankle by the difference. Offsets are critically damped, so a step onto a
-/// platform edge eases in.
-/// <para><b>Reference height</b> is the rendered one: the root part's world position minus its own local offset,
-/// i.e. <c>Gob::GetAdjustedPosition</c> including a script's <c>SetObjectVisualTransform</c> translation. A
-/// character a script already raised onto the platform measures an offset near 0.</para>
-/// <para><b>Foot tilt</b> (<c>anim.footik_tilt</c>) measures the slope itself: in triangle mode
-/// <c>PartTriMesh::HitCheckGeom</c> clears the hit normal (<c>CHitInfo+0x5c</c> = 0) after <c>polyhit</c>, so the
-/// engine hands back none. Each foot keeps two slopes (toward the toe, and sideways), each from one short cast
-/// <see cref="ProbeReach"/> off the foothold; one of the four is re-cast per frame, and only after its foot's
-/// floor was, and the springs hide the staleness.</para>
-/// <para><b>Casts are cached</b> per foot (<see cref="FootCast"/>): a floor is cast again only when the foot
-/// moved <see cref="Recast"/>, the reference height changed, or <see cref="RecastAge"/> passed. A crowd
-/// standing still casts nearly nothing.</para>
+/// Foot placement on uneven floors, a <see cref="PoseService"/> module. Each foot casts one segment down through
+/// <c>Scene::HitCheck</c> (<see cref="SceneRay"/>: tile render triangles, then placeable ones) over
+/// <c>[rendered height +- footik_max]</c>; the root part's local Z takes the lower foot's offset, the two-bone IK lifts
+/// the other ankle by the difference, and <c>anim.footik_tilt</c> lays each foot on its slope. Casts are cached per foot.
 /// </summary>
 internal static unsafe class FootPlacement
 {
@@ -63,7 +51,9 @@ internal static unsafe class FootPlacement
     }
 
     /// <summary>Casts, eases and weighs this frame's footholds into <paramref name="feet"/>. With the knob off or
-    /// the animation gated the targets are 0, so a correction in place eases out rather than popping.</summary>
+    /// the animation gated the targets are 0, so a correction in place eases out rather than popping.
+    /// <paramref name="refZ"/> is the rendered height -- the root part's world position less its own local offset,
+    /// i.e. <c>Gob::GetAdjustedPosition</c> including a script's <c>SetObjectVisualTransform</c> translation.</summary>
     internal static void Compute(ref PoseService.Slot s, IntPtr scene, IntPtr gob, Vector3 rAnkle, Vector3 lAnkle,
                                  float refZ, Vector3 fwdH, Vector3 right, float scale, float weight, bool gated,
                                  bool snap, float dt, out Feet feet)
@@ -153,8 +143,7 @@ internal static unsafe class FootPlacement
     /// <summary>The weight foot placement should have: <see cref="StairWeight"/> while the character moves
     /// (<see cref="MoveSpeed"/>, held <see cref="MoveHold"/> across frames without travel) along a walkmesh steeper
     /// than <see cref="StairGrade"/>, else 1. <paramref name="grade"/> averages the rise per unit of travel over
-    /// <see cref="GradeTime"/>, so stopping on a flight brings full placement back. <paramref name="moving"/> is
-    /// the hold timer every module reads as "moving".</summary>
+    /// <see cref="GradeTime"/>; <paramref name="moving"/> is the hold timer every module reads as "moving".</summary>
     internal static float Weight(ref float grade, ref float moving, Vector3 moved, float dt, float scale)
     {
         if (!(dt > 0f)) return 1f;
@@ -169,8 +158,9 @@ internal static unsafe class FootPlacement
     }
 
     /// <summary>The floor's rise per unit from a foothold at <paramref name="z"/> toward <paramref name="dir"/>,
-    /// clamped to <paramref name="maxSlope"/>: one cast <paramref name="reach"/> away. 0 (flat) when the foot has no
-    /// foothold of its own or the cast finds no floor in the tilt range -- a stair edge, a drop.</summary>
+    /// clamped to <paramref name="maxSlope"/>: one cast <paramref name="reach"/> away, since in triangle mode
+    /// <c>PartTriMesh::HitCheckGeom</c> clears the hit normal (<c>CHitInfo+0x5c</c> = 0) and the engine hands back none.
+    /// 0 (flat) when the foot has no foothold of its own or the cast finds no floor in range -- a stair edge, a drop.</summary>
     private static float Slope(IntPtr scene, IntPtr gob, Vector3 ankle, Vector3 dir, bool hit, float z, float reach, float maxSlope)
     {
         if (!hit) return 0f;

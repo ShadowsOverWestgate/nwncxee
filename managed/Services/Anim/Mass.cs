@@ -24,8 +24,7 @@ internal static class Mass
     /// <summary>The chest's lean spring with the knob on: about the critically damped lean's pace, a sixth over.</summary>
     private const float ChestHz = 1.6f, ChestZeta = 0.5f;
     /// <summary>World units of dip past which the pelvis counts as loaded in the stats line: a millimetre, the
-    /// smallest dip anyone could see. Counting every dip at all (0.1 mm) made the clause read "every creature,
-    /// every frame" whatever was happening (CX-66 §2).</summary>
+    /// smallest dip anyone could see.</summary>
     private const float LoadedDip = 1e-3f;
 
     internal static int Loaded;

@@ -6,33 +6,20 @@ using CX.Framework;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// NUI layout solve (CX-154 §2, §5.2). kiwi's <see cref="SymbolMap.KiwiSubstitute"/> walks the
-/// whole tableau to replace one symbol, so a group that adds its subtree's R constraints one at a time pays R² row
-/// visits: 144 ms of addConstraint for one 267-node list. This hook keeps, per solver, an index from each symbol to the
-/// tableau rows that may hold it, and runs the engine's own substitute over just the rows that do, with the tableau's
-/// begin/end pointed at a compact copy of their entries for the call. A skipped row is one the engine would have left
-/// untouched and the engine still does every multiply, so the tableau stays bit-identical to vanilla's.
+/// NUI layout solve. kiwi's <see cref="SymbolMap.KiwiSubstitute"/> walks the whole tableau to replace one symbol, so a
+/// group that adds its subtree's R constraints one at a time pays R² row visits: 144 ms of addConstraint for one
+/// 267-node list. This hook keeps, per solver, an index from each symbol to the tableau rows that may hold it and runs
+/// the engine's own substitute over just those, so the tableau stays bit-identical to vanilla's. Cold.
 /// </summary>
-/// <remarks>
-/// The index stays a superset of "rows holding symbol s" because every change to a row's cells is a substitute: its
-/// target rows gain the substituted row's cells, and that row joins the tableau under the symbol. Two exceptions:
-/// <c>addWithArtificialVariable</c> inserts a copy of its row under <c>idTick - 1</c> with no substitute (checked
-/// directly while <see cref="kiwi__impl__SolverImpl.Artificial"/> is set), and MSVC inlined substitute into
-/// <c>optimize</c> (<see cref="BeforeOptimize"/> marks a Windows solver stale before a pivot). Dummy symbols are not
-/// indexed: every required equality leaves one and they ride along a column's whole chain, so a tableau's cells grow
-/// quadratically and indexing them cost more than it saved (measured). Only a redundant constraint or a removal
-/// substitutes a dummy; that takes the stock walk, and marks the index stale only when the row carries indexed symbols
-/// (a redundant constraint's row is all dummies). A stale index is rebuilt from the tableau only while rebuilding has
-/// cost less than the walking it saved; otherwise that solver goes back to the stock walk until its next reset. A
-/// solver is tracked from an empty tableau only -- after <c>SetChildren</c>'s reset, or never.
-/// Cold: layout builds and resizes, not every frame. Allocates only when an index outgrows its arrays.
-/// </remarks>
 internal static unsafe class NuiSolver
 {
     /// <summary>Symbols at or past this id stop tracking that solver (index arrays are sized by id).</summary>
     private const ulong MaxSymbol = 1 << 22;
     private const int Slots = 8;
-    /// <summary>A symbol pair's type when it is a solver-internal dummy (never enters a pivot).</summary>
+    /// <summary>A symbol pair's type when it is a solver-internal dummy (never enters a pivot). Dummies are not
+    /// indexed: every required equality leaves one and they ride a column's whole chain, so indexing them measured
+    /// costlier than the walk it saved. Only a redundant constraint or a removal substitutes one, which takes the
+    /// stock walk.</summary>
     private const int DummyType = 4;
 
     private sealed class Index

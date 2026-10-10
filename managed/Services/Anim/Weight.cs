@@ -4,25 +4,17 @@ using System.Numerics;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// The acceleration the weight cues read, a <see cref="PoseService"/> module (CX-71). The pelvis dip
-/// (<see cref="Mass"/>), the lean (<see cref="UpperBody"/>) and the follow-through (<see cref="Follow"/>) are all
-/// keyed on how hard the body is speeding up or slowing down:
-/// <list type="bullet">
-/// <item>on a path or a drive, <see cref="PoseService.Slot.GaitAccel"/> -- the engine's own factor times its own
-/// rate, exact, where a second difference of the drawn position is ±0.05 m/s² of millisecond-clock noise
-/// (CX-66 §2). A drive is bang-bang in the engine, so it carries a cue only while
-/// <see cref="DriveEase"/> gives it a real ramp and ease: nothing here pretends one;</item>
-/// <item>with no path at all -- a server correction, a knockback, a combat shuffle -- the measured
-/// <see cref="PoseService.Slot.Accel"/>, which is the only signal there is.</item>
-/// </list>
-/// <para><b>Hot.</b> Once per corrected humanoid per frame: a branch and a clamp. No allocation.</para>
+/// The acceleration the weight cues read, a <see cref="PoseService"/> module: the pelvis dip (<see cref="Mass"/>), the
+/// lean (<see cref="UpperBody"/>) and the follow-through (<see cref="Follow"/>) all key on it. On a path or a drive it
+/// is the engine's exact <see cref="PoseService.Slot.GaitAccel"/>, where a differenced drawn position gives ±0.05 m/s²
+/// of clock noise; with no path -- a correction, a knockback, a shuffle -- the measured one. <b>Hot</b>, no allocation.
 /// </summary>
 internal static class Weight
 {
     /// <summary>Largest cue (world units per second squared): the running stop ease, which is the hardest the
     /// engine ever slows a body on a path. This is weight, not a stumble.</summary>
     private const float MaxCue = 4f;
-    /// <summary>The SoW walk rate (world units/s) the self-check runs at.</summary>
+    /// <summary>The walk rate (world units/s) the self-check runs at.</summary>
     private const float WalkRate = 2f;
 
     /// <summary>Fills <see cref="PoseService.Slot.Cue"/> for this frame. After <see cref="Gait.Read"/>, before any

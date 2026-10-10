@@ -5,31 +5,29 @@ using CX.Alloy.Mdl;
 namespace CX.Alloy.Db;
 
 /// <summary>
-/// CX-114: one parsed <c>.mtr</c>, the material file a mesh's <c>materialname</c> names. Transcribed from
-/// <c>SharedMaterial::ParseField</c> @0x5c6760 and <c>SharedMaterial::ExtractRenderHint</c> @0x5c5410: the
-/// eleven texture slots, the render hint, the three custom shader stages, the named float parameters and the
-/// two flags. Immutable after the parse and shared by every part whose mesh names it, which is why the part
-/// column holds a reference rather than a copy.
-/// <para>Engine-free: the bytes come from a provider the resource layer sets
-/// (<see cref="Bytes"/>), so this parses identically off-device.</para>
+/// One parsed <c>.mtr</c>, the material file a mesh's <c>materialname</c> names, transcribed from
+/// <c>SharedMaterial::ParseField</c> @0x5c6760 and <c>SharedMaterial::ExtractRenderHint</c> @0x5c5410. Immutable
+/// after the parse and shared by every part whose mesh names it, so the part column holds a reference, not a copy.
+/// Engine-free: the bytes come from a provider the resource layer sets (<see cref="Bytes"/>).
 /// </summary>
 public sealed class MtrDef
 {
-    /// <summary>Texture slots the engine's own material carries. Slots 4..10 are past the engine's render
-    /// ceiling and are #275's business (<c>MaterialExtraSlots</c>); they are parsed here so nothing is lost.</summary>
-    public const int MaxTextures = 11;
+    /// <summary><c>texture0</c>..<c>texture15</c>: the engine's eleven plus the extender-owned ones past its
+    /// ceiling (<c>texture11</c> is the AO/ORM map, <see cref="AlloyRenderer.AoTexture"/>).</summary>
+    public const int MaxTextures = 16;
 
     public string Name = "";
-    /// <summary><c>bitmap</c>/<c>texture0</c>..<c>texture10</c>; empty for a slot the file does not state.</summary>
+    /// <summary><c>bitmap</c>/<c>texture0</c>..<c>texture15</c>; empty for a slot the file does not state.</summary>
     public readonly string[] Textures = new string[MaxTextures];
     /// <summary><c>ExtractRenderHint</c>: 0 absent/unknown, 1 <c>none</c>, 2 <c>normalandspecmapped</c>,
     /// 3 <c>normaltangents</c>.</summary>
     public int RenderHint;
     public string ShaderVs = "", ShaderFs = "", ShaderGs = "";
     /// <summary><c>parameter float|int &lt;name&gt; &lt;value&gt;...</c>, in file order (the engine's own
-    /// <c>Parse(char*, MaterialParameter&amp;)</c> @0x5c5310 reads the type word first and drops any other).</summary>
-    public readonly List<(string Name, float[] Values)> Parameters = new();
-    /// <summary>CX-189: <c>parameter int NWN_ALPHA_MODE n</c>, 0 when absent. 2 asks for alpha-to-coverage.</summary>
+    /// <c>Parse(char*, MaterialParameter&amp;)</c> @0x5c5310 reads the type word first and drops any other).
+    /// <c>Int</c> is the <c>int</c> type word, which the engine binds as an integer uniform.</summary>
+    public readonly List<(string Name, float[] Values, bool Int)> Parameters = new();
+    /// <summary><c>parameter int NWN_ALPHA_MODE n</c>, 0 when absent. 2 asks for alpha-to-coverage.</summary>
     public int AlphaMode;
     public bool Transparency, TwoSided, Volumetric;
     /// <summary><c>sample_framebuffer</c>: the engine parses it as an INT, not a flag.</summary>
@@ -62,7 +60,7 @@ public sealed class MtrDef
 
     /// <summary>The material a mesh draws with: <c>MdlNodeTriMesh::GetMaterialName</c> @0x53c4a0 answers
     /// <c>materialname</c>, or the <c>bitmap</c> when that is empty -- so a bitmap naming a <c>.mtr</c>
-    /// (SoW's dynamic skies) IS that material.</summary>
+    /// (a content dynamic sky) IS that material.</summary>
     public static MtrDef? Of(MeshDef mesh)
         => Resolve(mesh.MaterialName.Length > 0 ? mesh.MaterialName : mesh.Textures[0]);
 
@@ -130,7 +128,7 @@ public sealed class MtrDef
                                    System.Globalization.CultureInfo.InvariantCulture, out float v)) vals.Add(v);
                 tail = e < 0 ? default : tail[(e + 1)..];
             }
-            m.Parameters.Add((pn, vals.ToArray()));
+            m.Parameters.Add((pn, vals.ToArray(), Is(type, "int")));
             if (pn.Equals("NWN_ALPHA_MODE", StringComparison.OrdinalIgnoreCase) && vals.Count > 0) m.AlphaMode = (int)vals[0];
         }
     }

@@ -8,35 +8,10 @@ using CX.Graphics;
 namespace CX.Alloy.Db;
 
 /// <summary>
-/// CX-114: <b>Alloy's one model-space vertex arena</b> -- the arena <see cref="MeshChart"/> already keeps for
-/// charted statics, grown to cover every part. A distinct mesh is uploaded ONCE, in its own model space, and
-/// every part that instances it draws that one range, placed by the matrix <c>GobXform</c> composes; the
-/// per-VDO vertex pools, their per-slot VAOs and the per-part weld go away with it.
-///
-/// <para><b>The API a draw needs</b> -- the CX-120 <c>seam-feed</c> contract, kept stable:
-/// <list type="bullet">
-/// <item><see cref="Acquire(MeshDef)"/> / <see cref="AddRef"/> / <see cref="Release"/>: a refcounted range id
-/// per distinct mesh. Identity is CONTENT, so two models with the same geometry share one range and an area
-/// change re-uses every mesh the next area shares. Game thread, no GL.</item>
-/// <item><see cref="Draw"/>(range, lod) -> VAO name, base vertex, index BYTE offset, index count, and the
-/// level it answered. Indices are always <c>GL_UNSIGNED_SHORT</c>, which every Alloy draw path assumes.</item>
-/// <item><see cref="Bounds"/>(range) -> the mesh's own-space box and sphere (cull, cast sphere, bake reach).</item>
-/// <item><see cref="VramBytes"/> / <see cref="Stats"/>: the <c>[alloy]</c> line's clause, including the
-/// sharing factor -- parts served per distinct mesh -- the VRAM saving comes from.</item>
-/// <item><see cref="Pump"/>: render thread, INSIDE Alloy's GL bracket, once a frame before the batches are
-/// built. The only place a GL name is touched, and where frees land, so no draw in flight holds a stale
-/// offset.</item>
-/// </list></para>
-///
-/// <para><b>Formats.</b> Two, so a static mesh pays nothing for bones: <see cref="Fmt.Static"/> is 10 floats
-/// (pos3 nrm3 uv2 chart2), byte-identical to the layout MeshChart has always used -- which is why its charted
-/// meshes live in this arena unchanged -- and <see cref="Fmt.Skinned"/> adds four bone indices (one packed
-/// word) and four weights. One VBO and one VAO per format, ONE element arena shared by both.</para>
-///
-/// <para><b>No tangent stream.</b> No Alloy stage reads one (the bitangent comes off derivatives), so a
-/// tangent column would be 16 B a vertex with no consumer. ponytail: when a stage does read tangents, add
-/// location 4 to both formats and fill it from <see cref="MeshDef.Tangents"/>, which the post-process
-/// already computes.</para>
+/// <b>Alloy's one model-space vertex arena.</b> A distinct mesh is uploaded ONCE, in its own model space, and
+/// every part that instances it draws that one range, placed by the matrix <c>GobXform</c> composes. Range ids
+/// are refcounted and identity is CONTENT, so two models with the same geometry share a range; indices are
+/// always <c>GL_UNSIGNED_SHORT</c>, and <see cref="Pump"/> is the one place a GL name is touched.
 /// </summary>
 public static unsafe partial class MeshArena
 {
@@ -45,16 +20,15 @@ public static unsafe partial class MeshArena
 
     private const int Formats = 2;
     /// <summary>Floats per vertex, per format: pos3 nrm3 uv2 chart2, plus a packed bone-index word and four
-    /// weights for <see cref="Fmt.Skinned"/>.</summary>
+    /// weights for <see cref="Fmt.Skinned"/>. There is no tangent stream, since no Alloy stage reads one (the
+    /// bitangent comes off derivatives). ponytail: when a stage does read tangents, add location 4 to both
+    /// formats and fill it from <see cref="MeshDef.Tangents"/>, which the post-process already computes.</summary>
     private static readonly int[] StrideOf = { 10, 15 };
 
-    /// <summary>Vertices one format's section may hold (8M x 40 B = 320 MiB for the static one, grown on demand;
-    /// the skinned section is far smaller in practice -- one copy per distinct creature mesh, not per creature).
-    /// 2M filled in a 27x24 city with 1654 placeables (2026-10-08); 4M then filled on the hop INTO a ~3M-vertex
-    /// area (2026-10-09, 84 meshes refused), because the area load lands on top of the previous area's dead
-    /// ranges and only the render pump compacts. The ceiling holds two such areas at once.
-    /// ponytail: a section past its ceiling refuses and counts; there is no spill to a second VBO, and the
-    /// load does not compact mid-way -- add that if an area alone ever nears this.</summary>
+    /// <summary>Vertices one format's section may hold (8M x 40 B = 320 MiB static, grown on demand; the
+    /// skinned section is far smaller). Measured: 2M in a 27x24 city of 1654 placeables, 4M hopping INTO a
+    /// ~3M-vertex area, because a load lands on the previous area's dead ranges and only the pump compacts.
+    /// ponytail: past the ceiling it refuses and counts -- no spill to a second VBO, no mid-load compaction.</summary>
     private const int MaxVerts = 1 << 23;
     /// <summary>Indices the shared element arena may hold (16M x 2 B = 32 MiB): scaled with
     /// <see cref="MaxVerts"/>, since the same area hop doubles it.</summary>
@@ -78,7 +52,7 @@ public static unsafe partial class MeshArena
     {
         internal ulong Content;
         /// <summary>Second hash and the two counts: a 64-bit content hash alone is not identity, so a HIT is
-        /// verified before two different meshes are collapsed into one range (finding 26).</summary>
+        /// verified before two different meshes are collapsed into one range.</summary>
         internal ulong Content2;
         internal int NVerts, NIndices;
         internal int Refs;
@@ -89,19 +63,18 @@ public static unsafe partial class MeshArena
         internal Vector3 BMin, BMax, Center;
         internal float Radius;
         internal bool Live, Charted;
-        /// <summary>CX-120: this range has been handed to the charter already -- the DB offer is once per
-        /// mesh, not once per frame per instance that draws it.</summary>
+        /// <summary>This range has been handed to the charter already -- the offer is once per mesh, not once
+        /// per frame per instance that draws it.</summary>
         internal bool Offered;
-        /// <summary>CX-120: a seated part the bake may take (<c>AlloyRenderer.DbBakeable</c>) draws this range, so
+        /// <summary>A seated part the bake may take (<c>AlloyRenderer.DbBakeable</c>) draws this range, so
         /// it is worth charting. Only these are offered: a creature's rigid parts never bake.</summary>
         internal bool Bake;
         /// <summary>Bumped every time this slot is handed out: a <see cref="_byMesh"/> entry stamped with an
-        /// older one names a range that has since been freed and REUSED, which is how a recycled id used to
-        /// hand a caller someone else's geometry.</summary>
+        /// older one names a range since freed and REUSED, so the id must not be trusted.</summary>
         internal int Gen;
         /// <summary>The <see cref="MeshDef"/> keys that resolve to this range, so the free can take them out
-        /// of <see cref="_byMesh"/>. Without it that map grew for the session and pinned every merged mesh's
-        /// CPU arrays (findings 3 and 4).</summary>
+        /// of <see cref="_byMesh"/>, which would otherwise grow for the session and pin every merged mesh's
+        /// CPU arrays.</summary>
         internal List<MeshDef>? Keys;
         internal int NextFree;
     }
@@ -135,10 +108,9 @@ public static unsafe partial class MeshArena
     private static int _movedN, _movedTotal;
 
     /// <summary>Told, after a compaction, which ranges moved -- so a consumer that cached a base vertex or an
-    /// index offset in a record can refresh exactly those and nothing else. Set by the draw side
-    /// (<c>AlloyRenderer.DbRangesMoved</c>); the arena itself knows nothing about records.
-    /// <para>Runs inside <see cref="Pump"/>, on the thread that owns the GL bracket, with the arena's lock
-    /// held -- so the handler reads the arena through <see cref="Runs"/> and touches nothing else.</para></summary>
+    /// index offset in a record can refresh exactly those. Set by the draw side
+    /// (<c>AlloyRenderer.DbRangesMoved</c>) and run inside <see cref="Pump"/>, on the thread that owns the GL
+    /// bracket with the arena's lock held, so the handler reads through <see cref="Runs"/> and nothing else.</summary>
     internal static Action<int[], int>? RangesMoved;
     private static int _acquired, _shared, _freed, _refused, _compactions, _logLeft = LogCap;
     private static readonly int[] _refusedBy = new int[RefusalName.Length];
@@ -274,10 +246,9 @@ public static unsafe partial class MeshArena
     // ---------------------------------------------------------------- acquire
 
     /// <summary>The arena range for <paramref name="mesh"/>, uploading it on first use; -1 when it cannot be
-    /// held (counted, and the first few named in the log). Game thread, cold: once per distinct mesh per
-    /// instance. A caller for content already held gets that range with one more reference.
-    /// <para><paramref name="skin"/> non-null puts the mesh in <see cref="Fmt.Skinned"/>, with the bone slots
-    /// and weights the pose stage pulls at locations 8 and 9.</para></summary>
+    /// held (counted, the first few named in the log). Game thread, cold; a caller for content already held
+    /// gets that range with one more reference. <paramref name="skin"/> non-null puts the mesh in
+    /// <see cref="Fmt.Skinned"/>, with the bone slots and weights the pose stage pulls at locations 8 and 9.</summary>
     public static int Acquire(MeshDef mesh, SkinDef? skin = null)
     {
         if (mesh == null) return -1;
@@ -376,11 +347,10 @@ public static unsafe partial class MeshArena
 
     private static bool Alive(int r) => (uint)r < (uint)_rangeHigh && _ranges[r].Live;
 
-    /// <summary>CX-113's eviction edge (<c>ModelCache.Evicting</c>): the model is leaving the cache, so the
-    /// reference-identity shortcuts to its meshes go with it. It holds no arena REFERENCE (those belong to the
-    /// parts, and <c>PartTree.Free</c> gave them back when the objects died), so nothing is released here. A
-    /// range still held at this point is a part that outlived its model: named once and counted, never
-    /// silently released out from under its draw.</summary>
+    /// <summary>The model-cache eviction edge (<c>ModelCache.Evicting</c>): the model is leaving, so the
+    /// reference-identity shortcuts to its meshes go with it. It holds no arena REFERENCE -- those belong to
+    /// the parts, and <c>PartTree.Free</c> returns them when the objects die -- so nothing is released here; a
+    /// range still held is a part that outlived its model, named once and counted.</summary>
     internal static void Forget(ModelDef model)
     {
         lock (_gate)
@@ -560,9 +530,8 @@ public static unsafe partial class MeshArena
 
     /// <summary>A range from vertices the caller has already interleaved in <paramref name="fmt"/>'s layout --
     /// <see cref="MeshChart"/>'s charted meshes, whose chart UVs split vertices and so cannot be derived from
-    /// a <see cref="MeshDef"/>. Content-keyed and refcounted exactly like <see cref="Acquire(MeshDef, SkinDef)"/>.
-    /// <para>The key space is SEPARATE from the <see cref="MeshDef"/> one (it is salted, finding 26): the two
-    /// are computed differently and must never collide into one map entry.</para></summary>
+    /// a <see cref="MeshDef"/>. Content-keyed and refcounted like <see cref="Acquire(MeshDef, SkinDef)"/>, but
+    /// on a SEPARATE salted key space: the two hashes are computed differently and must never collide.</summary>
     internal static int AcquireRaw(ulong content, Fmt fmt, int nv, ReadOnlySpan<float> interleaved,
                                   ushort[] i0, int n0, ushort[]? i1, int n1, ushort[]? i2, int n2,
                                   Vector3 bmin, Vector3 bmax)
@@ -801,10 +770,9 @@ public static unsafe partial class MeshArena
     }
 
     /// <summary>Rewrite every section and the element arena with only the live ranges, in place under the same
-    /// buffer names (so the VAOs stay valid), and re-upload. Cold: an area change's worth of copying.
-    /// <para>TWO passes with their own monotone cursors (finding 9): the vertices PER FORMAT, ordered by base
-    /// vertex, and the shared element arena ordered by first index offset. A single pass sorted by base
-    /// vertex is not monotone in the element arena, because two formats interleave their runs there.</para></summary>
+    /// buffer names (so the VAOs stay valid), and re-upload. Cold: an area change's worth of copying. TWO
+    /// passes with their own monotone cursors -- vertices PER FORMAT by base vertex, the shared element arena
+    /// by first index offset -- because one pass by base vertex is not monotone where two formats interleave.</summary>
     private static void Compact()
     {
         var live = new List<int>();

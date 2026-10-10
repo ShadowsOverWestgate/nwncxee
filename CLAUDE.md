@@ -5,8 +5,8 @@ a thin native bootstrap gets it loaded. Optional by design: run the stock client
 and you play vanilla. New client->server packets the server doesn't recognize are
 ignored, so an un-extended client loses nothing.
 
-This is the **client** (`nwmain`), not the server. Server hooking lives in
-`sow-codebase`; do not conflate the two.
+This is the **client** (`nwmain`), not the server. The server end of any packet lives in the
+server's own extender (NWNX/Anvil); do not conflate the two.
 
 The OpenGL 4.6 renderer is called **Alloy** (`managed/Alloy/`, namespace
 `CX.Alloy`) -- one of the family: Anvil on the server backend, Crucible the
@@ -14,7 +14,7 @@ module builder, Alloy the renderer. "Alloy" is the term for what it draws, and
 **vanilla** is the contrast: an Alloy part is one Alloy submits, a vanilla one is
 one the engine draws. The product is **NWNCX:EE** (full name) / **CX** (shorthand):
 `cx.cfg`, `cx.log`, `cx-launch`, `cx_managed.so`, and the `cx_*.shd` stage names,
-which are the override contract with `sow-topdata`, and the C# namespaces are
+which are the override contract with content (a hak or NWSync), and the C# namespaces are
 `CX.*`. The `CX*`/`CX_*` identifiers in C# and GLSL are internal glue -- not
 user-visible, not renamed (#530).
 
@@ -36,6 +36,10 @@ Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root (created lazily
     tools/live/run-live.sh  # boots the REAL client headless into a playable area and grades the session
                             # PASS/FAIL + screenshots; nothing reaches the desktop, nothing of the user's
                             # is touched. Runbook + limits: docs/live-harness.md
+
+Per-machine paths -- the game, the decomp dump, the Ghidra project, content corpora, the Windows SDK --
+resolve through `tools/paths.py`: the environment, then `local.env` (gitignored; copy `local.env.example`),
+then a stock default (your Steam library). `$NWN_DECOMP` and `$GHIDRA_PROJECT` below name those keys. No tracked file names one machine's path; `local-paths.sh` refuses it.
 
 `build.sh` stages a runtime folder `cx-linux-x64/` (launcher + 2 `.so` + the audio runtime) and a flat zip
 of its contents -- the install is "unpack into bin/linux-x86".
@@ -134,6 +138,11 @@ no registration:
 See `docs/hook-pattern.md` for the hook + trampoline mechanics. Everything else --
 loading, discovery, install ordering -- is done for you.
 
+Trampolines must be static; mutable state must not be loose. New state goes in the one **lifetime owner**
+for its lifetime -- a `static` field holding a `...State` class -- so a reset (context loss, stand-down,
+area change) replaces the object instead of remembering forty fields. `static readonly`, `const` and the
+owner field itself are free; one more loose `static` is refused by `tools/gates/statics.sh`.
+
 ## Engine memory reads
 
 Read engine fields through the typed views in `CX.Engine`
@@ -154,8 +163,9 @@ callback with no symbol, or it needs `[SuppressGCTransition]`. `build.sh` refuse
 in `managed/` that does not say `not-an-offset:` on its line.
 
 `build.sh` regenerates `Framework/Engine/Views.g.cs` (`tools/engine/views.py`); never edit it
-by hand, and settle a merge conflict in it by rerunning the script. **Touch a file, port its
-reads** -- no backlog beyond that (CX-30). Views inline to the raw load, so hot loops use them
+by hand, and settle a merge conflict in it by rerunning the script. `tools/gates/engine-views.sh`
+refuses `ptr +/- EngineLayout.X` outside `Framework/` once row X has a view member, so the
+rule is checked rather than remembered. **Touch a file, port its reads** -- no backlog beyond that (CX-30). Views inline to the raw load, so hot loops use them
 too; resolve an `EngineFn` pointer once into a static field there.
 
 ## Comment rule
@@ -165,16 +175,63 @@ lines). No prose banners. Inside method bodies, no comments EXCEPT a single ters
 line where omitting it is a footgun -- a magic offset/opcode, a non-obvious ABI
 requirement, or an ordering hazard. Prefer promoting a magic number to a named
 `const` with an XML doc over an inline comment. `ponytail:` markers are allowed and
-name a known ceiling + its upgrade path.
+name a known ceiling + its upgrade path. A doc comment states the current contract, never its
+history or a ticket number; `tools/gates/comments.sh` refuses a `///` block over 4 text lines or citing a ticket.
+
+Past 1,500 lines a `.cs` file is split by responsibility -- `partial` files or sibling
+classes, one job each, the way `AlloyRenderer`'s are; `tools/gates/file-size.sh` refuses otherwise.
+
+## Gates (CX-192)
+
+A rule counts once a check refuses it. Each gate is `tools/gates/<rule>.sh`, run by `tools/gates/run.sh` from
+`build.sh`, CI and a Claude Code `PostToolUse` hook (`.claude/settings.json`), so a violation shows the moment
+it is written. An unfinished cleanup is a `<rule>.baseline` ratchet (`tools/gates/ratchet.sh`): it may only
+shrink. Adding a rule means adding its gate in the same change, and one line here:
+
+- `comments.sh`: a `///` block over 4 text lines, or a `///` line citing a ticket (`#n`, `CX-n`, `!n`), fails. No baseline.
+- `file-size.sh`: a `.cs` file under `managed/` over 1,500 lines fails -- past the cap, split by
+  responsibility the way `AlloyRenderer`'s partials are. `*.g.cs` is exempt and `file-size.baseline` holds
+  what is still over. `SymbolMap.cs` and `EngineLayout.cs` stay baselined: four tools read them by that exact
+  file name, so a partial would halve what each of them sees.
+- `bench-scope.sh`: the `/alloy bench` ablation ladder's state outside its own two files, or the ladder named
+  outside the call sites the script lists, fails.
+- `retired-terms.sh`: a name listed in `tools/gates/retired-terms.txt` appearing under `managed/` or `docs/`
+  fails. Not scanned: that file, `docs/adr/` and `docs/handoff/` -- dated records of what was true then.
+- `knob-refs.sh`: a `<group>.<knob>` key in a string literal under `managed/` naming no declared `Knob<T>`
+  fails.
+- `engine-views.sh`: outside `Framework/`, `ptr +/- EngineLayout.X` fails when row X has a view member; a
+  `not-an-offset:` marker on a line that dereferences `ptr + 0x...` fails.
+- `statics.sh`: a file under `managed/Alloy` or `managed/Services` with more non-readonly `static` fields
+  than `statics.baseline` allows fails. Free: `static readonly`, `const`, static methods/properties, and a
+  lifetime owner -- a plain field whose type is a `...State` class declared under `managed/`.
+- `selfcheck.sh`: inside a `*SelfCheck*` file or a `SelfCheck` method, an `Expect` that cannot fail fails --
+  a compile-time-constant condition, a `const` compared to its own kind of literal, or the same text on both
+  sides of `==`/`!=` -- and so does a hand-written `SKIPPED` log line.
+
+  **The independent-oracle rule.** A self-check's expected value comes from an independent oracle: a
+  hand-written literal, golden data or a fixture, or a second artifact (the embedded GLSL text, a build
+  `.tsv`, engine bytes). Never from a call to the code under test, a copy of it, or the declaration it
+  restates -- an assertion that cannot fail is worse than none, because it adds to the "passed" count and
+  suggests coverage that does not exist. A guard that can skip assertions `Expect`s its precondition first;
+  a suite that cannot run on this host calls `Checker.Skip`, which logs `SKIPPED` and counts it, and never
+  goes on to log "passed". A self-check Claude writes names its oracle in the check's `<summary>`.
+- `server-neutral.sh`: `managed/` naming a specific server or its content (SoW, Westgate, Arelith) fails;
+  describe it generically. `Framework/Product.cs` (the hosting URLs) is exempt.
+- `local-paths.sh`: a home directory, mount point or personal checkout path in a tracked file fails
+  (`docs/adr/`, `docs/handoff/` exempt); a machine's paths go through `tools/paths.py`.
 
 ## Hard rules
 
-- **No decompiled code in the repository, ever** (sow-platform ADR-0064). Read the dump on your own
+- **No decompiled code in the repository, ever.** Read the dump on your own
   machine; write what it shows as prose, symbol names, addresses and constants. A quoted listing,
   pseudo-C or Ghidra's `param_N`/`iVarN` names in a doc or a comment is the violation, and
   `tools/no-decompiled.sh` refuses the usual shapes in CI.
-- **Research lives on its work item** (ADR-0064): post the findings as a comment on the `CX` item it
+- **Research lives on its work item**: post the findings as a comment on the `CX` item it
   answers, or file one titled "Research: ..." and close it. Never a `docs/` note, never a branch.
+- **A retired name goes on the retired list in the same change.** Retiring a pipeline stage, a mode or a
+  knob means adding its name to `tools/gates/retired-terms.txt` (with the ticket that retired it) in that
+  change, not as a follow-up -- and removing it means removing its tools, comments and messages too, so no
+  log line, help text or doc comment still describes something that is gone.
 - **NEVER GUESS.** Always verify with a Ghidra decompilation.
 - **Hook with funchook, NOT NativeHookRegistry.** The ported `server-hooking` skill
   describes the server's registry, which does not exist here. Take its RE mindset
@@ -194,13 +251,15 @@ name a known ceiling + its upgrade path.
   as `this` (#456). `tools/abi/check-win-symbols.py` finds these; `build-win.sh` runs it. Deliberately Linux-only work is allowed
   and says so on its own line -- what is forbidden is the silent absence, where
   "never looked" and "decided" are the same missing key.
+- **Diagnostics reach a pass through the bench's one indirection** (`CX.Alloy.Ablation`): a pass holds one
+  program field and no bench-only one -- `tools/gates/bench-scope.sh`.
 - **Shaders for what shaders reach; extender for what they can't.** Lighting/color
-  = `.shd` overrides via hak/NWSync (see `sow-topdata`). Shadows, render bugs,
+  = `.shd` overrides via hak/NWSync (content, not this repo). Shadows, render bugs,
   fixed-function state = engine-internal, needs a GL hook.
 
 ## The binary is your map
 
-`~/gry/steam/Neverwinter Nights/bin/linux-x86/nwmain-linux` is an
+The client binary (`python3 tools/paths.py NWN_BIN`) is an
 **unstripped** ELF (~24k dynamically-exported functions). You hook by name, no
 offset hunting. Known hook points:
 
@@ -223,9 +282,9 @@ Two tools, two jobs:
 
 The client is already imported and analyzed:
 
-- Project: `~/ghidra/nwn-linux.rep`  (client / `nwmain`; the *only* Ghidra project)
+- Project: `$GHIDRA_PROJECT/nwn-linux.rep`  (client / `nwmain`; the *only* Ghidra project)
 - GUI: `ghidra`   Headless/scripted: `/opt/ghidra/support/analyzeHeadless`
-- **Read-only dump:** `~/nwn-decomp/<build>/` holds every function decompiled
+- **Read-only dump:** `$NWN_DECOMP/<build>/` holds every function decompiled
   (`src/<Class>.c`), a `symbols.tsv` index and a `callgraph.tsv`; its README says how to
   query it, and its addresses are Ghidra's (nm + 0x100000). Grep it before opening Ghidra.
   Generated by `tools/ghidra/decomp-all.sh`, never committed (it is Beamdog's code). The
@@ -233,20 +292,14 @@ The client is already imported and analyzed:
   source of truth. State uncertainty from decompilation honestly; confirm against
   runtime behavior when it matters.
 
-## Sibling repos
+## The server side
 
-- **`~/repos/sow-codebase`** -- the SoW **monorepo**: everything except CX. Its
-  `server/` is the server extender (Anvil + native hooks via `NativeHookRegistry`):
-  your reference for the *server end* of any custom packet (where the payload is
-  received/ignored), hooking semantics (Before/After/SkipOriginal), and shared
-  engine knowledge -- `CNWSMessage` and friends are the *same classes* on client
-  and server, so its struct/field notes transfer. Do NOT copy its hook mechanism;
-  the client uses funchook. Its `AGENTS.md`/`CODING_STANDARDS.md` are server law, not ours.
-  Its `topdata/` is shaders (`.shd`), 2DA, TLK as data -- the graphics-via-data
-  path: anything shaders can express ships there, no extender. (The standalone
-  `sow-topdata` repo is retired; `~/repos/sow-topdata` is a stale checkout.)
-- `.claude/skills/` -- ported server skills (hooking, threading, native
-  conventions) with a README on what adapts to the client.
+CX is client-only. A server that wants a CX packet implements its receive end in its own extender
+(NWNX/Anvil); a server that does not simply ignores it. The engine classes (`CNWSMessage` and friends) are
+the *same classes* on client and server, so server-side struct/field knowledge transfers; the hook mechanism
+does not (the client uses funchook). Shadows over Westgate's server is the reference implementation of the
+hotkey, UI-policy and nameplate packets (`docs/hotkeys-server-contract.md`, `docs/ui-policy-contract.md`).
+`.claude/skills/` holds server skills ported from it, with a README on what adapts to the client.
 
 ## Status
 

@@ -8,10 +8,9 @@ namespace CX.Services.Inventory;
 
 /// <summary>
 /// The gold button and the world drops. The button opens the CX <see cref="GoldPrompt"/>; its Drop puts the amount "on
-/// the cursor" (the stock <c>CGuiPlayerGoldSource</c> drag, drawn with the same <c>ir_buy</c> icon), and the next left
-/// click in the world sends it where it lands, by the stock drop's rules (<see cref="InventoryNative.GoldTarget"/>). Items
-/// dragged out of the window land the same way (<see cref="InventoryNative.DropVerb"/>). Both run through the
-/// <c>inventory.gold</c> / <c>inventory.drop</c> / <c>.barter</c> / <c>.use</c> routes.
+/// the cursor" (the stock <c>CGuiPlayerGoldSource</c> drag, drawn with the same <c>ir_buy</c> icon) and the next left
+/// click in the world sends it where it lands, by the stock drop's rules (<see cref="InventoryNative.GoldTarget"/>).
+/// Items dragged out land the same way; both run the <c>inventory.gold</c> / <c>.drop</c> / <c>.barter</c> / <c>.use</c> routes.
 /// </summary>
 public sealed unsafe partial class InventoryService
 {

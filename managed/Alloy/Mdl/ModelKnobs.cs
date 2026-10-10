@@ -2,8 +2,8 @@ using CX.Framework;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-113's knobs (ADR 0025): the resident-set budget and the live comparison against the engine's own
-/// animation tables. One declaration each -- the settings row, the <c>cx.cfg</c> key and
+/// <summary>The model cache's knobs (ADR 0025): the resident-set budget and the live comparison against the
+/// engine's own animation tables. One declaration each -- the settings row, the <c>cx.cfg</c> key and
 /// <c>/models &lt;knob&gt; &lt;value&gt;</c> are three views of it.</summary>
 internal static class ModelKnobs
 {

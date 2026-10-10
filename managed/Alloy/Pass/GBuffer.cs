@@ -4,13 +4,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-188 (ADR 0029): the deferred G-buffer -- four render-size textures (three RGBA32UI, one RGBA16F)
-/// the colour pass's <c>CX_DEFERRED</c> twin writes on draw buffers 4..7 and <see cref="DeferredLights"/> reads.
-/// The lane format is <c>cx_gbuf.glsl</c>'s; this class owns the GL objects, the per-frame clear of G0 and
-/// the attachment.
-/// <para>It also owns the colour pass's whole draw-buffer list (<see cref="ApplyDrawBuffers"/>): that list is one
-/// piece of framebuffer state, and <see cref="Ssr"/>'s record pair at 2..3 lives in it too -- whichever class
-/// wrote it last would otherwise drop the other's attachments.</para></summary>
+/// <summary>The deferred G-buffer (ADR 0029) -- four render-size textures (three RGBA32UI, one RGBA16F) the
+/// colour pass's <c>CX_DEFERRED</c> twin writes on draw buffers 4..7 and <see cref="DeferredLights"/> reads,
+/// in <c>cx_gbuf.glsl</c>'s lane format. It also owns the colour pass's whole draw-buffer list, because that
+/// list is one piece of framebuffer state and <see cref="Ssr"/>'s record pair at 2..3 lives in it too.</summary>
 internal static unsafe class GBuffer
 {
     /// <summary>Draw-buffer index of G0; G1..G3 follow it. 0..3 are the colour, the vis-ID and Ssr's record pair.</summary>
@@ -122,11 +119,10 @@ internal static unsafe class GBuffer
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT4 + i, Gl.TEXTURE_2D, 0, 0);
     }
 
-    /// <summary>Write-enable the four G-buffer draw buffers for the twin, mask them OFF for every other program
-    /// drawing in the same passes (the fullbright stage, a hosted lit batch). Only the twin declares outputs
-    /// there, and a draw buffer no output is written to is left UNDEFINED, not left alone -- masked, a forward
-    /// draw over a twin's pixel leaves the twin's record standing, which is what the reader's own depth test is
-    /// there to reject. Called on each program switch inside the bracket, so a handful of calls a frame.</summary>
+    /// <summary>Write-enable the four G-buffer draw buffers for the twin, mask them OFF for every other
+    /// program drawing in the same passes. Only the twin declares outputs there, and a draw buffer no output
+    /// is written to is left UNDEFINED rather than left alone -- masked, a forward draw over a twin's pixel
+    /// leaves the twin's record standing, which the reader's own depth test is there to reject.</summary>
     internal static void MaskColour(bool twin)
     {
         byte b = twin ? (byte)1 : (byte)0;

@@ -7,7 +7,7 @@ using CX.Ui;
 
 namespace CX.Services.Loading;
 
-/// <summary>CX-100: the engine half of the one loading screen -- the load screen's bar, shared between the engine's load
+/// <summary>The engine half of the one loading screen -- the load screen's bar, shared between the engine's load
 /// and the lightmap bake hold (<see cref="LoadScreen"/>). Everything else about the screen is the engine's own panel,
 /// drawn by Alloy's GUI path. Alloy mode only: in vanilla nothing is hooked.</summary>
 public sealed unsafe class LoadBarService : IExtenderService

@@ -3,20 +3,16 @@ using System.Buffers.Binary;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: parses one model file -- binary or ASCII, told apart by the first dword as the engine's
+/// <summary>Parses one model file -- binary or ASCII, told apart by the first dword as the engine's
 /// <c>ReadSync</c> does -- and runs the post-process, returning an immutable <see cref="ModelDef"/>. Pure C#,
-/// thread-agnostic; the model cache calls it on its worker.
-/// <para>Nothing under <c>Alloy/Mdl/</c> touches the engine, which is what lets <c>tools/mdlcheck</c> run the
-/// whole parse off-device against the game's own BIFs and against the engine's compiled output.</para></summary>
+/// thread-agnostic and engine-free, which is what lets <c>tools/mdlcheck</c> run the whole parse off-device;
+/// the model cache calls it on its worker.</summary>
 public static class MdlParser
 {
-    /// <summary>A mesh with no <c>renderhint</c> of its own still gets a tangent frame when the material it
-    /// names -- <c>materialname</c>, or <c>texture0</c> when that is empty -- carries one, which the engine
-    /// looks up through <c>SharedMaterial::GetSharedMaterial</c>. Reading a <c>.mtr</c> is a resource lookup,
-    /// so it cannot live in an engine-free parser: the host sets this once at startup and the parse reads it
-    /// on its worker. Null means "no material hints", which is what an off-device run without the corpus gets.
-    /// <para>The score is the engine's: <c>none</c> 1, <c>normalandspecmapped</c> 2, <c>normaltangents</c> 3,
-    /// anything else 0.</para></summary>
+    /// <summary>Scores a material's render hint by name (<c>materialname</c>, else <c>texture0</c>) as the
+    /// engine's <c>SharedMaterial::GetSharedMaterial</c> does, so a mesh with no <c>renderhint</c> of its own
+    /// still gets a tangent frame. A resource lookup, so the host wires it once at startup and the parse worker
+    /// reads it; null means none. Engine score: <c>none</c> 1, <c>normalandspecmapped</c> 2, <c>normaltangents</c> 3, else 0.</summary>
     public static Func<string, int>? MaterialHint;
 
     /// <summary>Meshes that asked for a material's render hint and got no answer, because no host wired

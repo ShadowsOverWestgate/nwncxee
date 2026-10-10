@@ -6,17 +6,14 @@ using CX.Framework;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// NUI scrollbar visibility, on the whole-scrollbar functions <see cref="SymbolMap.NkDoScrollbarV"/> / <c>H</c>.
-/// <see cref="NuiKnobs.AutoHide"/> restores upstream nuklear's <c>if (target &lt;= track) return 0;</c>, which Beamdog removed:
-/// a bar whose content fits is neither drawn nor hit-tested. <see cref="NuiKnobs.HoverBars"/> fades a window's or
-/// group's bar out while the pointer is off that container and back in over it, by scaling the alpha of every draw
-/// command the call appended; the bar still runs underneath, so the offset, the glide and the clamp stay the engine's.
+/// NUI scrollbar visibility on <see cref="SymbolMap.NkDoScrollbarV"/> / <c>H</c>. <see cref="NuiKnobs.AutoHide"/>
+/// restores upstream nuklear's <c>if (target &lt;= track) return 0;</c>, which Beamdog removed: a bar whose content
+/// fits is neither drawn nor hit-tested. <see cref="NuiKnobs.HoverBars"/> fades one out off-container by scaling
+/// the alpha of the call's own draw commands, so offset, glide and clamp stay the engine's. Hot, no allocation.
 /// </summary>
-/// <remarks>Hot: once per shown scrollbar per frame. Fixed tables, no allocation. The nuklear offsets below are the
-/// same on both builds (CX-154, the scrollbar hide facts).</remarks>
 internal static unsafe class NuiScrollbarHide
 {
-    private const int StyleScrollV = 0x3060, StyleScrollH = 0x2bb8, CtxBarSizeX = 0x41ec, CtxBarSizeY = 0x41f0;  // not-an-offset: nk_context ABI, not an engine class
+    private const int StyleScrollV = 0x3060, StyleScrollH = 0x2bb8, CtxBarSizeX = 0x41ec, CtxBarSizeY = 0x41f0;  // not-an-offset: nk_context ABI (same on both builds), not an engine class
     private const int InMouseX = 0x14c, InLeftDown = 0x10c, InClickedX = 0x114;  // not-an-offset: nk_input ABI
     /// <summary>A scrollbar's <c>out</c> is always <c>&amp;window-&gt;buffer</c> (window+0x68), so the panel being ended is
     /// <c>window-&gt;layout</c> 0x40 past it -- for a group too, whose window is <c>nk_group_scrolled_end</c>'s stack copy.</summary>

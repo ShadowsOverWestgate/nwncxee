@@ -7,12 +7,10 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy;
 
-/// <summary>Where a resource lives, resolved on the MAIN thread without reading it: the half CX-54 built for
-/// textures and CX-55 reads models through. One pure engine lookup (<c>CExoResMan::GetKeyEntry</c> @0x53dc90)
-/// gives the key entry, and this turns that entry into a <see cref="TexLocation"/> a worker can read from --
-/// a VALUE record, because a <c>CKeyTableEntry*</c> is not a stable handle.
-/// <para>Nothing here is restype-specific: the caller names the restype it looked the entry up under, so a
-/// texture (DDS/TGA) and a model (2002) travel the same path.</para></summary>
+/// <summary>Where a resource lives, resolved on the MAIN thread without reading it. One pure engine lookup
+/// (<c>CExoResMan::GetKeyEntry</c>) gives the key entry, and this turns it into a <see cref="TexLocation"/> a
+/// worker can read from -- a VALUE record, because a <c>CKeyTableEntry*</c> is not a stable handle. Nothing here
+/// is restype-specific: the caller names the restype it looked the entry up under.</summary>
 internal static unsafe class ResLocate
 {
     /// <summary>What kind of entry the locate walked, so each caller can count it under its own tally.</summary>
@@ -42,7 +40,7 @@ internal static unsafe class ResLocate
     internal static IntPtr ResMan => _resManSym == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)_resManSym;
 
     /// <summary>Resolve the two globals. Idempotent: every consumer calls it, the first one does the work.
-    /// <paramref name="why"/> is the caller's refusal line when this answers false (CX-45).</summary>
+    /// <paramref name="why"/> is the caller's refusal line when this answers false.</summary>
     internal static bool Attach(out string? why)
     {
         why = null;
@@ -127,7 +125,8 @@ internal static unsafe class ResLocate
                 IntPtr entries = new CExoResFile(file).Entries;
                 if (entries == IntPtr.Zero) { why = "the BIF's resource table is unloaded"; return false; }
                 var rec = new BiffVarResEntry(entries)[(int)id[3]];
-                string? path = PathOf(kind, tableId, (int)id[1], file + EngineLayout.ResFileName, BifResType);
+                string? path = PathOf(kind, tableId, (int)id[1],
+                                     (IntPtr)System.Runtime.CompilerServices.Unsafe.AsPointer(ref new CExoResFile(file).Name), BifResType);
                 if (path == null) { why = "the BIF's filename does not resolve"; return false; }
                 loc = new TexLocation(kind, tableId, path, rec.Offset, rec.StoredSize, rec.PlainSize, rec.Compressed != 0, resType);
                 return true;
@@ -140,7 +139,8 @@ internal static unsafe class ResLocate
                 IntPtr entries = new CExoEncapsulatedFile(file).Entries;
                 if (entries == IntPtr.Zero) { why = "the hak's resource list is unloaded"; return false; }
                 var rec = new ErfResListEntry(entries)[(int)id[3]];
-                string? path = PathOf(kind, tableId, 0, file + EngineLayout.EncapFileName, 0);
+                string? path = PathOf(kind, tableId, 0,
+                                     (IntPtr)System.Runtime.CompilerServices.Unsafe.AsPointer(ref new CExoEncapsulatedFile(file).Name), 0);
                 if (path == null) { why = "the hak's filename does not resolve"; return false; }
                 loc = new TexLocation(kind, tableId, path, rec.Offset, rec.StoredSize, rec.PlainSize, rec.Compressed != 0, resType);
                 return true;
@@ -160,7 +160,7 @@ internal static unsafe class ResLocate
 
     /// <summary>NWSync (kind 5) has no offset in its <c>RESID</c> -- the index names a manifest vector that is
     /// freed once the table is built -- so the location is the lowercase resref alone, and the worker asks
-    /// <see cref="NwSyncReader.TryRead"/> (CX-54 step 3) for the bytes. A refusal here is the engine's read.</summary>
+    /// <see cref="NwSyncReader.TryRead"/> for the bytes. A refusal here is the engine's read.</summary>
     private static bool NwSyncLoc(IntPtr entry, ushort resType, uint tableId, out TexLocation loc, out string? why)
     {
         loc = default; why = null;

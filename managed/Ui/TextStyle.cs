@@ -34,8 +34,7 @@ public sealed class TextStyle
     /// <summary>Declare <c>&lt;prefix&gt;font</c>, <c>&lt;prefix&gt;typeface</c>, <c>&lt;prefix&gt;outline</c> in
     /// <paramref name="g"/>. <paramref name="what"/> names the element in the help lines; <paramref name="size"/> is
     /// the size default (0 = as UI), <paramref name="sized"/> false leaves the size row out. <paramref name="tier"/>
-    /// carries all three rows: overriding the UI-wide rows for one element is an enthusiast's dial (ADR 0030), so an
-    /// element drawn over the world declares Advanced and a CX window that is happy following the UI rows ChatOnly.</summary>
+    /// carries all three rows: Advanced for an element over the world, ChatOnly to follow the UI-wide rows.</summary>
     public TextStyle(KnobGroup g, string what, string prefix = "", int size = 0, int outline = 0, bool sized = true,
                      Action? changed = null, Tier tier = Tier.User)
     {
@@ -83,10 +82,9 @@ public sealed class TextStyle
     }
 
     /// <summary>The element's face: <paramref name="ui"/> when it follows the UI, else its own. Hot-safe: a miss never
-    /// bakes here, it queues the bake on the thread pool once per (typeface, px) and <paramref name="ui"/> stands in until
-    /// it lands; <paramref name="cold"/> (a caller on the input / setter thread) bakes in place instead. A refused bake
-    /// logs once. ponytail: every (typeface, px) ever picked stays in the sheet for the session, as the chat windows'
-    /// faces do; releasing an unshared previous face is the upgrade when the sheet fills.</summary>
+    /// bakes here, it queues the bake on the thread pool once per (typeface, px) and <paramref name="ui"/> stands in
+    /// until it lands; <paramref name="cold"/> (a caller on the input / setter thread) bakes in place. A refused bake
+    /// logs once. ponytail: every (typeface, px) picked stays in the sheet for the session; releasing one is the upgrade.</summary>
     public GlyphAtlas? Face(GlyphAtlas? ui, bool cold = false)
     {
         GlyphAtlas? f = Resolve(ui, cold);

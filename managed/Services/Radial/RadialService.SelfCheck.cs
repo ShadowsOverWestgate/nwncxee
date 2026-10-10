@@ -10,12 +10,9 @@ namespace CX.Services.Radial;
 public sealed unsafe partial class RadialService
 {
     /// <summary>The pure parts, off-device: the cascade opened on fake rows with no engine root held, the per-level
-    /// handle bookkeeping, the close-reason paths (leaf / esc / away / off / area / font via the deferred close, and
-    /// the release ledger for the up that follows a click-away), the three tag shapes through <see cref="RowOf"/>
-    /// (slot / hoist / header), an unvalidated hoist refused on Enter, and the row-action popup's open, routing and
-    /// close (its actions need an engine menu, so they are not run: the model is <see cref="RadialPins.SelfCheck"/>'s).
-    /// Engine calls are skipped because no root is held (<see cref="Release"/> is a no-op at zero) and no window
-    /// exists in the stub host.</summary>
+    /// handle bookkeeping, the close-reason paths, the three tag shapes through <see cref="RowOf"/> (slot / hoist /
+    /// header), an unvalidated hoist refused on Enter, and the row-action popup's open, routing and close. Engine
+    /// calls are skipped because no root is held (<see cref="Release"/> is a no-op at zero) and there is no window.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
@@ -71,7 +68,7 @@ public sealed unsafe partial class RadialService
             _menu.Level(0).Hover = 0;
             check.Expect(OnKey(0x0D, 0) && !_menu.Open && _levelMenu[0] == IntPtr.Zero, "Enter on a leaf with no held root just closes (no engine call at zero)");
 
-            // A click is press + release on the leaf (CX-694: the press arms a drag, the release activates).
+            // A click is press + release on the leaf: the press arms a drag, the release activates.
             OpenFake();
             int r0 = (int)_menu.RowTop(0, 0) + 1;
             check.Expect(OnMouseButton(true, 1, 110, r0) && _menu.Open && _pressOwned, "the press on a leaf activates nothing yet");

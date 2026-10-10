@@ -5,15 +5,11 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120 seam-feed: <b>the ownership table, fed from the scene database.</b> In DB mode this file is
-/// what <c>EnrollOne</c> is in engine mode -- the ONE writer of a slot's ownership columns -- except that its
-/// input is a <c>(DbId part, int recipe)</c> pair rather than the five engine pointers
-/// <c>(Tri, Node, Mat, Vdo, Item)</c>, and it runs on a dirty bit rather than on a table scan.
-/// <para><b>How a DB slot is told apart.</b> <see cref="_oDbPart"/> carries the part index, -1 for an engine
-/// slot, and <c>_oTri</c> carries a NEGATIVE sentinel so that every existing "slot vacated" test
-/// (<c>_oTri[i] == Zero</c>) keeps reading correctly while any dereference that forgot its DB branch faults
-/// immediately on a non-canonical address. That is deliberate: a missed branch must be a crash with a name on
-/// it, not a quiet misrender off whatever the heap happened to hold (no-silent-fallbacks).</para></summary>
+/// <summary>The ownership table, fed from the scene database: the ONE writer of a slot's ownership columns,
+/// keyed by a <c>(DbId part, int recipe)</c> pair and driven by a dirty bit rather than a table scan.
+/// <para>A DB slot is told apart by <see cref="_oDbPart"/> (-1 for an engine slot); its <c>_oTri</c> holds a
+/// NEGATIVE sentinel, so "slot vacated" tests still read right and a forgotten DB branch faults at once.</para>
+/// </summary>
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>The scene-database part this slot draws, -1 for a slot fed from the engine's scene graph.
@@ -30,8 +26,8 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool DbSlot(int i) => (uint)i < (uint)_oDbPart.Length && _oDbPart[i] >= 0;
 
     /// <summary>May the lightmap bake take this DB slot? Lit geometry of a Static object (a tile or a Static
-    /// placeable) and nothing else -- mode 0 charts only the engine's static pools, and a baked mover keeps
-    /// the light of wherever it stood when it enrolled.</summary>
+    /// placeable) and nothing else -- a baked mover would keep the light of wherever it stood when it
+    /// enrolled.</summary>
     internal static bool DbBakeable(int i)
     {
         if (!DbSlot(i) || !_oLit[i]) return false;
@@ -97,8 +93,7 @@ public sealed unsafe partial class AlloyRenderer
         DbSetChanged();
     }
 
-    /// <summary>The DB-mode counterpart of <c>EnrollOne</c>'s column block: everything about a draw that does
-    /// not change while this part holds this slot.</summary>
+    /// <summary>Everything about a draw that does not change while this part holds this slot.</summary>
     private static void DbWriteColumns(int i, int part, int recipe)
     {
         DbId obj = SceneDb.PartObj[part];
@@ -157,16 +152,10 @@ public sealed unsafe partial class AlloyRenderer
         UnstampRecord(i);
     }
 
-    /// <summary>The slot's tile TEXTURE rotation, as the record's <c>rot.xy</c>.
-    /// <para><c>SpawnPartsForTile</c> @0x563450 ends in <c>SetPartTextureRotate(tree, orient)</c> @0x561670,
-    /// which stores <c>orient * 90</c> degrees on every mesh of the tree whose <c>rotatetexture</c> is set or
-    /// whose material has a bumpy-shiny map -- both <see cref="RecipeFlag.RotateTexture"/> here, since
-    /// <see cref="DrawRecipe"/> latches the second exactly as the engine's own
-    /// <c>mdlnode+0x2b9 = 1</c> write does. The angle is per PLACEMENT and one recipe serves all four
-    /// orientations of a tile model, so it comes off <see cref="SceneDb.ObjTexRotate"/> and not off the
-    /// recipe, whose own pair stays the fallback (a texture-animation controller's, when there is one).</para>
-    /// <para>Identity here was the whole bug: every DB recipe reported (1, 0), so NWN's tile anti-repetition
-    /// scheme did not happen and a quarter of every tileset's floors and walls drew at the wrong angle.</para></summary>
+    /// <summary>The slot's tile TEXTURE rotation, as the record's <c>rot.xy</c>: <c>orient * 90</c> degrees on
+    /// a mesh whose <c>rotatetexture</c> is set or whose material is bumpy-shiny (one
+    /// <see cref="RecipeFlag.RotateTexture"/> covers both). Per PLACEMENT, so it comes off
+    /// <see cref="SceneDb.ObjTexRotate"/>, not the recipe -- identity defeats tile anti-repetition.</summary>
     private static void DbWriteTexRot(int i, int o, int recipe, RecipeFlag rf)
     {
         int qt = (rf & RecipeFlag.RotateTexture) != 0 && (uint)o < SceneDb.MaxObjects
@@ -175,14 +164,10 @@ public sealed unsafe partial class AlloyRenderer
         _oCos[i] = TexRotCos[qt]; _oSin[i] = TexRotSin[qt];
     }
 
-    /// <summary>(cos, sin) of 0/90/180/270 degrees, exact rather than <c>MathF</c>'s (which leaves 1e-7 in
-    /// the zero terms and skews every rotated tile's UVs by a texel at grazing angles).
-    /// <para>Sign convention, verified rather than guessed: <c>aurMatrixStack::Rotate((0,0,1), angle)</c>
-    /// @0x5dafe0 lays its matrix out so that READ AS GL COLUMN-MAJOR its first two columns are
-    /// <c>(c, s)</c> and <c>(-s, c)</c>, and the stock vertex stage does
-    /// <c>vVertexTexCoords = mat2(m_texture) * vTcIn.xy</c> -- which is the
-    /// <c>(c*u - s*v, s*u + c*v)</c> that <c>cx_owned_v.glsl</c> computes from <c>rot.xy</c>. So the pair is
-    /// the engine's own <c>(cos, sin)</c> of <c>orient * 90</c> degrees, unnegated and unswapped.</para></summary>
+    /// <summary>(cos, sin) of 0/90/180/270 degrees, exact rather than <c>MathF</c>'s, which leaves 1e-7 in the
+    /// zero terms and skews a rotated tile's UVs by a texel at grazing angles.
+    /// <para>Sign convention, verified: the engine's <c>aurMatrixStack::Rotate((0,0,1), angle)</c> @0x5dafe0
+    /// gives GL columns <c>(c, s)</c> and <c>(-s, c)</c>, so the pair is unnegated and unswapped.</para></summary>
     private static readonly float[] TexRotCos = [1f, 0f, -1f, 0f];
     /// <inheritdoc cref="TexRotCos"/>
     private static readonly float[] TexRotSin = [0f, 1f, 0f, -1f];
@@ -219,13 +204,10 @@ public sealed unsafe partial class AlloyRenderer
         if (fixedUp > 0) CasterPass.ShadowInvalidate();
     }
 
-    /// <summary>A recipe's CLASS moved once its diffuse landed (<see cref="DrawRecipe.Reclassify"/>), so
-    /// every slot drawing it has to be told: the class columns are the stable half, written once at the seat,
-    /// and the route reads them every pass. Without this a part interned before its texture arrived kept the
-    /// conservative cutout guess for ever -- which is what left water, drawn by its own pass on its own
-    /// class, in the cutout run with the flat legacy texture on it.
-    /// <para>A whole-table walk because classes move at texture-arrival rate, not per frame; only a slot
-    /// whose column disagrees with its recipe is rewritten.</para></summary>
+    /// <summary>A recipe's CLASS moves once its diffuse lands (<see cref="DrawRecipe.Reclassify"/>), so every
+    /// slot drawing it is told: the class columns are written at the seat and read by the route every pass, so
+    /// a part interned before its texture arrived would otherwise keep the conservative cutout guess for ever.
+    /// <para>A whole-table walk, at texture-arrival rate; only a disagreeing slot is rewritten.</para></summary>
     internal static void DbReclassified()
     {
         int moved = 0;
@@ -271,12 +253,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>A new area is a new budget. <see cref="DbBlackProbe"/>.</summary>
     internal static void DbBlackProbeAreaEdge() => _blackProbed = 0;
 
-    /// <summary>What draws BLACK. A part whose diffuse never resolved samples the white stand-in and a part
-    /// whose material terms are zero shades to nothing, and the two look identical on screen -- so this names
-    /// the model, the node, the texture it asked for, what the registry did with it, and the terms, for the
-    /// first few NON-TILE parts whose diffuse is missing or whose colour terms are black. One-shot per
-    /// AREA: the first area would otherwise spend the whole budget and the probe could say nothing about
-    /// the area the question is in.</summary>
+    /// <summary>What draws BLACK: an unresolved diffuse samples the white stand-in and zero material terms
+    /// shade to nothing, which look identical on screen -- so this names the model, node, texture asked for,
+    /// what the registry did with it, and the terms, for the first few NON-TILE offenders. One-shot per AREA,
+    /// so the first area cannot spend the whole budget.</summary>
     internal static void DbBlackProbe(int part, int recipe, ulong h0)
     {
         if (_blackProbed >= BlackProbes || _dbPasses < 300) return;
@@ -325,11 +305,10 @@ public sealed unsafe partial class AlloyRenderer
         PcBelow(pc, 1);
     }
 
-    /// <summary>Everything hanging off <paramref name="obj"/>, both ways down: the pieces
-    /// <c>Gob::Append</c> grafted into its tree, and the separate gobs the game ATTACHED to one of its nodes
-    /// -- the cloak, the tail, the wings, the robe, a wielded item and, below that item, the part models a
-    /// composite weapon is built from (<c>CNWCAnimBaseItemComp::LoadModel</c> @0xad7780 attaches each to the
-    /// item's own root). One-shot, so the table scan per level costs nothing per frame.</summary>
+    /// <summary>Everything hanging off <paramref name="obj"/>, both ways down: the pieces <c>Gob::Append</c>
+    /// grafted into its tree, and the separate gobs the game ATTACHED to one of its nodes -- cloak, tail,
+    /// wings, robe, a wielded item, and the part models a composite weapon is built from. One-shot, so the
+    /// table scan per level costs nothing per frame.</summary>
     private static void PcBelow(DbId obj, int depth)
     {
         if (depth > 3) return;
@@ -394,9 +373,8 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>A DB slot's index range, for a consumer that would otherwise walk the VDO item tables.
     /// <para>Resolved live off the arena, never out of <c>_dCount</c>/<c>_dOff</c>/<c>_dBase</c>: those are
-    /// indexed by DRAW rank and rewritten by every batch build, so reading them by slot handed each caster
-    /// another part's mesh under its own matrix -- camera-dependent nonsense in the cascades and the cover
-    /// map. The arena's offset is in BYTES of <c>GL_UNSIGNED_SHORT</c>, so the index-valued form is half.</para></summary>
+    /// indexed by DRAW rank and rewritten by every batch build, so reading them by slot hands a caster another
+    /// part's mesh. The arena's offset is in BYTES of <c>GL_UNSIGNED_SHORT</c>, so the index form is half.</para></summary>
     internal static bool DbCasterRange(int slot, out int idxCount, out uint first, out uint baseVert)
     {
         idxCount = 0; first = 0; baseVert = 0;
@@ -410,26 +388,16 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    /// <summary>A DB caster's alpha-mask texture: the recipe's diffuse, which is the same texture the colour
-    /// pass binds for it. The engine-path equivalent walks the material, which a DB slot does not have.
-    /// <para>This is a <see cref="TexId"/> value -- a REGISTRY SLOT, not a GL name and not an engine tid. It
-    /// is the mask's identity, for a key or a counter; a stage that BINDS one wants
-    /// <see cref="DbCasterMask"/>.</para></summary>
+    /// <summary>A DB caster's alpha-mask texture: the recipe's diffuse, the same texture the colour pass binds.
+    /// <para>A <see cref="TexId"/> value -- a REGISTRY SLOT, not a GL name and not an engine tid: the mask's
+    /// identity, for a key or a counter. A stage that BINDS one wants <see cref="DbCasterMask"/>.</para></summary>
     internal static int DbCasterTid(int slot)
         => DbSlot(slot) ? (int)DrawRecipe.Tex(_oDbRecipe[slot], 0).Value : 0;
 
-    /// <summary>CX-120: a DB caster's mask as the masked DEPTH stage needs it -- the GL name it binds, and
-    /// what the decode said that texture's alpha carries. False = nothing to alpha-test against (no diffuse,
-    /// or it has not arrived yet), and the caster casts solid for the frame.
-    /// <para>Neither answer may come through <c>OwnedTextures</c>: the database's textures never pass the
-    /// engine's upload funnel, so its tables know none of them. It handed the REGISTRY SLOT NUMBER straight
-    /// back as the GL name to bind -- so the masked bake alpha-tested every arena caster against whatever
-    /// small texture name happened to exist -- and reported "never scanned" for every one, which the hole
-    /// gate reads as 1.0, so every DB caster took the masked stage. Together that emptied the sun cascades.</para>
-    /// <para><paramref name="holes"/> is a VERDICT here, not a measured fraction: the registry's decode
-    /// answers <see cref="TexCoverage"/>, so a cutout reports 1 (alpha-test it) and a slab 0 (cast it solid).
-    /// The engine path's fraction exists to decide whether alpha-testing a mostly-opaque texture earns its
-    /// batch; with a decoded verdict in hand there is nothing left to weigh.</para></summary>
+    /// <summary>A DB caster's mask as the masked DEPTH stage needs it: the GL name it binds and what the decode
+    /// said that texture's alpha carries. False = nothing to alpha-test against, and the caster casts solid.
+    /// <para>Never through <c>OwnedTextures</c>: database textures skip the engine's upload funnel, so its
+    /// tables know none of them. <paramref name="holes"/> is a VERDICT (cutout 1, slab 0), not a fraction.</para></summary>
     internal static bool DbCasterMask(int slot, out int name, out float holes, out float graded)
     {
         name = 0; holes = 0f; graded = 0f;
@@ -501,14 +469,10 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    /// <summary>Which LOD of the part's arena range this frame draws.
-    /// <para>R1-34: always 0 today, and deliberately. Alloy's AUTOMATIC mesh LOD still runs -- the batch row
-    /// picks a level from the cull sphere's screen radius and the arena serves that level's runs -- so a
-    /// distant DB part is already thinned. What this would add is the MODEL's own authored alternates
-    /// (<c>GobPartTree</c> / <c>SetLODModel</c>), which are a property of the object's animation and part
-    /// tree, and seam-anim owns that over the database (its <c>GobLod</c> retarget). When it lands, this
-    /// reads <see cref="SceneDb.ObjLodShown"/>; the visible-set query and <c>RouteLive</c> already do.
-    /// ponytail: authored LOD alternates unused in DB mode; the hook is one column read.</para></summary>
+    /// <summary>Which LOD of the part's arena range this frame draws: always 0. Alloy's AUTOMATIC mesh LOD
+    /// still runs (the batch row picks a level from the cull sphere's screen radius), so a distant DB part is
+    /// already thinned; what is missing is the MODEL's own authored alternates, which seam-anim owns.
+    /// ponytail: authored LOD alternates unused; the hook is one <see cref="SceneDb.ObjLodShown"/> read.</summary>
     private static int DbLodOf(int i) => 0;
 
     /// <summary>The DB-mode stable half: the same record fields <c>WriteStable</c> writes, sourced from the
@@ -608,18 +572,15 @@ public sealed unsafe partial class AlloyRenderer
         _dbSeated = 0; _dbReleased = 0; _dbNoRange = 0;
     }
 
-    /// <summary>CX-120: bumped whenever the DB slot SET changes (a seat or a release). The order and the area
-    /// index are rebuilt off this edge and no other, which is the DB-mode equivalent of an enrolment: a frame
-    /// in which nothing was created or destroyed re-sorts nothing.</summary>
+    /// <summary>Bumped whenever the DB slot SET changes (a seat or a release). The order and the area index are
+    /// rebuilt off this edge and no other, so a frame in which nothing was created or destroyed re-sorts
+    /// nothing.</summary>
     internal static int DbSetGen = 1;
 
     /// <summary>The slot set changed: a DB part was seated, released, or its arena range moved.
     /// <para>This also has to reach the SHADOW side. The sun's staleness predicate is
-    /// <c>invalidate || keyChanged || hadMover || hasMover</c>, and a DB world trips none of them: its parts
-    /// are static, so there are no movers, and the cascade keys settle while the arena is still empty -- every
-    /// view published its key over a staging of nothing and then skipped forever (<c>sun 0,0 re-baked, 4,0
-    /// skipped</c> with 813 draws staged). An arena arrival is exactly the "the world changed under the
-    /// published layers" edge <c>ShadowInvalidate</c> names.</para></summary>
+    /// <c>invalidate || keyChanged || hadMover || hasMover</c>, and a static DB world trips none of them --
+    /// an arena arrival is the "world changed under the published layers" edge <c>ShadowInvalidate</c> names.</para></summary>
     private static void DbSetChanged()
     {
         DbSetGen++;
@@ -627,16 +588,10 @@ public sealed unsafe partial class AlloyRenderer
     }
     private static int _dbOrderGen;
 
-    /// <summary>Rebuild the draw order and the area index if the slot set has moved since the last one.
-    /// Returns the live order count.
-    /// <para>CX-120: it re-stamps NOTHING. It used to bump <c>_enrollGen</c> and write it onto every live DB
-    /// slot, which told every reader of the stamp that all of them had changed hands whenever one part
-    /// anywhere in the area appeared or died -- and that is not a cosmetic lie. The shadow caster list reads
-    /// the stamp as the tenancy it collected under (<c>CasterPass.Refresh</c>), so one set edge turned the
-    /// WHOLE standing list off, and an off entry stages a zero-index draw: the sun cascades were submitted,
-    /// culled and drawn every frame with 803 survivors and not one texel of depth in any of the four layers.
-    /// A slot that really did change hands is stamped by <see cref="DbSeat"/>, which is the only place a DB
-    /// slot ever changes tenant.</para></summary>
+    /// <summary>Rebuild the draw order and the area index if the slot set has moved since the last one;
+    /// returns the live order count. It re-stamps NOTHING: the caster list reads a slot's enrolment stamp as
+    /// the tenancy it collected under, so re-stamping every live slot on a set edge would turn the whole
+    /// standing list off. <see cref="DbSeat"/> is the only place a DB slot changes tenant.</summary>
     internal static int DbOrder()
     {
         if (_dbOrderGen == DbSetGen) return _orderCount;
@@ -645,18 +600,17 @@ public sealed unsafe partial class AlloyRenderer
         return _orderCount;
     }
 
-    /// <summary>Off-device: the DB-mode draw ORDER. Every live DB slot appears exactly once, the order is
-    /// grouped by class, and each class's [start, end) range covers exactly its own slots -- which is what
-    /// every pass depends on when it draws "its" range and nothing else. A slot that fell out of the order is
-    /// invisible geometry; a class range that overlapped its neighbour draws parts in the wrong pass with the
-    /// wrong depth and blend state. Neither errors.</summary>
+    /// <summary>Off-device: the DB draw ORDER. Every live slot appears exactly once, the order is grouped by
+    /// class, and each class's [start, end) range covers exactly its own slots -- a slot that fell out is
+    /// invisible geometry, and an overlapping range draws parts in the wrong pass. Neither errors.</summary>
     internal static bool DbOrderSelfCheck(ExtenderLog log, int[] slots, int[] wantCls)
     {
         var check = new Checker(log, "AlloyRenderer.DbOrderSelfCheck");
         DbSetChanged();
         _dbOrderGen = DbSetGen - 1;
         int live = DbOrder();
-        check.Expect(live == _orderCount, "DbOrder returns the live order count");
+        check.Expect(live == slots.Length,
+                     $"the order holds the {slots.Length} slot(s) the caller seated and nothing else ({live})");
 
         int found = 0;
         for (int k = 0; k < _orderCount; k++)
@@ -693,8 +647,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Slots seated, released and refused for want of resident geometry since arming -- the feed's
     /// period line, so a hole is a number rather than an absence.</summary>
     internal static int _dbSeated, _dbReleased, _dbNoRange;
-    /// <summary>Whole-table revokes that stood down because the slot space is the feed's (CX-120). Counted so
-    /// a DB session that is tearing down every frame is visible rather than merely slow.</summary>
+    /// <summary>Whole-table revokes that stood down because the slot space is the feed's. Counted so a DB
+    /// session that is tearing down every frame is visible rather than merely slow.</summary>
     internal static int _dbRevokeAll;
 
     internal static string DbTableNote()

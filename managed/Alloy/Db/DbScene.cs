@@ -4,13 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 (seam-scene): what a <c>CAurScene</c> IS when CX owns the scene database -- a row in
-/// <see cref="SceneDb.Scenes"/> plus the ordered member list the four <c>RenderGob*</c> slots reorder. Every
-/// method here runs on the GAME thread, from a <see cref="Seam.SceneSlots"/> entry point or one of the
-/// scene free functions, and writes columns + one <see cref="Dirty"/> bit (ADR 0028 section 4).
-/// <para>The area settings a scene carries -- fog, sky, wind, ambient, grass, static lighting, geometry fade
-/// -- are columns here and nothing else: in DB mode no engine <c>Scene</c> exists for Alloy to read them off,
-/// so <see cref="SceneFeed"/> is the one bridge from these columns into the renderer's own inputs.</para></summary>
+/// <summary>What a <c>CAurScene</c> IS: a row in <see cref="SceneDb.Scenes"/> plus the ordered member list the four <c>RenderGob*</c> slots
+/// reorder. Every method runs on the GAME thread, from a <see cref="Seam.SceneSlots"/> entry point or a scene free function, and writes
+/// columns plus one <see cref="Dirty"/> bit (ADR 0028 section 4). Fog, sky, wind, ambient, grass, static lighting and geometry fade are
+/// columns here too, bridged into the renderer by <see cref="SceneFeed"/>.</summary>
 public static unsafe class DbScene
 {
     private static ExtenderLog? _log;
@@ -65,9 +62,9 @@ public static unsafe class DbScene
     {
         if (!SceneDb.Scenes.Valid(scene)) return;
         int i = scene.Index;
-        // THE AREA EDGE, in DB mode. The mode-0 path takes it from the AreaLoaded send through
-        // AlloyRenderer.TakeAreaEdge, and that hook is not installed here -- so ModelCache.AreaEdge,
-        // TileBuild.Revoke and every pass's Revoke would never fire, and an area change would keep the
+        // THE AREA EDGE. Nothing else announces it: no engine-side hook is installed for it, so without this
+        // ModelCache.AreaEdge, TileBuild.Revoke and every pass's Revoke would never fire, and an area change
+        // would keep the
         // previous area's models, tiles and arena ranges for the session. The world scene's destruction IS
         // that edge, so it runs the same revoke rather than a DB-specific list of its own.
         // Before the member sweep: TileBuild.Revoke does the tile teardown with its census and holds, which
@@ -120,14 +117,13 @@ public static unsafe class DbScene
     public static int MemberCount(DbId scene)
         => SceneDb.Scenes.Valid(scene) ? SceneDb.SceneObjects[scene.Index]?.Count ?? 0 : 0;
 
-    /// <summary>An object joined the scene (<c>Gob::AttachToScene</c> / <c>Scene::AddObject</c> /
-    /// <c>ChildAdd</c>): append it in draw order and refresh the shell mirror.</summary>
-    /// <summary>Join a record the caller JUST allocated. Identical to <see cref="Join"/> except that the
-    /// "already a member" test is skipped, which it may be because a freshly allocated handle cannot be in
-    /// any list. That test is a linear scan, and an area load joins ~1150 tiles: paying it would make the
-    /// load quadratic for a question whose answer is known at the call site.</summary>
+    /// <summary>Join a record the caller JUST allocated: as <see cref="Join"/> but without the "already a
+    /// member" linear scan, which a freshly allocated handle cannot fail. An area load joins ~1150 tiles, so
+    /// paying that scan would make the load quadratic.</summary>
     public static void JoinNew(DbId scene, DbId obj) => Join(scene, obj, fresh: true);
 
+    /// <summary>An object joined the scene (<c>Gob::AttachToScene</c> / <c>Scene::AddObject</c> /
+    /// <c>ChildAdd</c>): append it in draw order and refresh the shell mirror.</summary>
     public static void Join(DbId scene, DbId obj) => Join(scene, obj, fresh: false);
 
     private static void Join(DbId scene, DbId obj, bool fresh)
@@ -258,12 +254,10 @@ public static unsafe class DbScene
         if (SceneDb.Scenes.Valid(scene)) SceneDb.SceneAnimOn[scene.Index] = animating;
     }
 
-    /// <summary>An object record died: drop every reference its scene holds, NOW. The scene's member list,
-    /// its highlight set, its shadow gob, its blind-light object and its skybox slots can each name a retired
-    /// shell, and the count word at the scene shell is read by game code synchronously -- so this cannot wait
-    /// for a frame-boundary fold.
-    /// <para><b>seam-obj must call this from the object destroy edge</b> (see
-    /// <see cref="ObjectBridge"/>). It is idempotent and cheap.</para></summary>
+    /// <summary>An object record died: drop every reference its scene holds, NOW. Its member list, highlight
+    /// set, shadow gob, blind-light object and skybox slots can each name a retired shell, and the count word
+    /// at the scene shell is read synchronously by game code, so this cannot wait for a frame-boundary fold.
+    /// <see cref="ObjectBridge"/> must call it from the object destroy edge; idempotent and cheap.</summary>
     public static void ObjectDied(DbId obj)
     {
         if (!SceneDb.Objects.Valid(obj)) return;

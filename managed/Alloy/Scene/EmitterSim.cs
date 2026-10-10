@@ -10,39 +10,20 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-86: the particle simulation, Alloy's. Replaces <c>Scene::DoEmitterBucket</c> @0x476f00 -- the walk, the
-/// per-emitter step and the camera-distance sort -- so no engine emitter code runs on an Alloy frame (CX-81
-/// tier 1). ADR 0018's CX-86 amendment moves the boundary; what the engine still owns is listed there.
-/// <para><b>Why the replay could not stay.</b> <c>DoEmitterBucket</c> is the only caller of
-/// <c>PartEmitter::AnimateParticles</c> @0x4ac660, and that call walks on into
-/// <c>RenderStandard</c>/<c>RenderLinked</c>/<c>RenderMotionBlurred</c>, whose draws the funnels eat. The
-/// simulation and the draw are one engine call; taking the draw means taking the simulation.</para>
-/// <para><b>The pool is laid out AS the engine's <c>Particle</c></b> -- the same 0x78 bytes at the same
-/// offsets, minus a vtable that nothing reads. That is not nostalgia: it makes <see cref="Particles"/>'s
-/// build loop indifferent to who stepped the particles (it is handed a <c>Particle*</c> array either way),
-/// so the whole simulation is A/B-able against the engine's on one knob, and the vertex build stays one
-/// piece of code rather than two.</para>
-/// <para><b>Zero allocation per frame.</b> Records and their pointer table live in two arenas, grown at load
-/// edges only; an emitter owns a contiguous block, and spawn/death move POINTERS inside its own slice
-/// (live in order at the front, free at the back) the way the engine's <c>DelIndex</c> + free list did.
-/// Nothing is allocated, copied or hashed per particle per frame here.</para>
-/// <para><b>Order is load-bearing.</b> The live slice is oldest-first, because an emitter with
-/// <c>lifeInterp 0</c> fades over a particle's INDEX and the linked and lightning render types read
-/// neighbours as chain segments. Death compacts stably; it never swap-removes.</para>
+/// The particle simulation, Alloy's: the walk, the per-emitter step and the camera-distance sort that replace
+/// <c>Scene::DoEmitterBucket</c> @0x476f00 (ADR 0018 states what the engine still owns). Zero allocation per
+/// frame -- arenas grown at load edges, spawn and death moving POINTERS inside an emitter's own slice -- and
+/// the live slice stays oldest-first, because index-domain fades and the linked types read neighbours.
 /// </summary>
 internal static unsafe partial class EmitterSim
 {
     /// <summary>Emitters tracked at once. Past this an emitter is not stepped and draws nothing, which is
     /// the same cost the draw table's own cap has (<c>Particles</c> MaxEmitters).</summary>
     private const int MaxEmitters = 4096;
-    /// <summary>Particles one emitter may hold. The engine has NO ceiling at all: every Update births from
-    /// the recycle list at <c>emitter+0x128</c> and, when that is empty, calls <c>operator new</c>
-    /// unconditionally (<c>FountainEmitter::Update</c> @0x4b1c70, and the same shape in
-    /// <c>SingleEmitter</c>/<c>ExplosionEmitter</c>) -- <c>birthRate x life</c> is an emergent steady state
-    /// there, not a bound. So this is purely ours, and every birth it refuses is a particle vanilla would
-    /// have drawn: loud once and counted, never quiet (CX-45).
-    /// <para>Derived rather than picked: it is the share of the arena one emitter may take before it starves
-    /// every other emitter in the area, <see cref="MaxSlots"/>/64 -- 480KB of the arena's 30MB.</para></summary>
+    /// <summary>Particles one emitter may hold. The engine has NO ceiling: every Update births from the recycle
+    /// list at <c>emitter+0x128</c> and calls <c>operator new</c> when it is empty, so <c>birthRate x life</c>
+    /// is an emergent steady state there, not a bound -- every birth this refuses is a particle vanilla would
+    /// have drawn, so it is loud once and counted. Derived as <see cref="MaxSlots"/>/64, 480KB of 30MB.</summary>
     private const int MaxPerEmitter = MaxSlots / 64;
     /// <summary>Pool growth, in particles: start here, double until the frame fits, stop at the cap (0x78
     /// bytes each, so the cap is 30 MiB) and start the arena over rather than truncating one emitter.</summary>
@@ -86,15 +67,15 @@ internal static unsafe partial class EmitterSim
     /// change, so they are resolved once when the slot is taken rather than per frame.</summary>
     private struct Slot
     {
-        /// <summary>CX-120: the database part this slot belongs to, or -1 for a free slot.
-        /// <see cref="Gen"/> is what makes it safe across a recycle.</summary>
+        /// <summary>The database part this slot belongs to, or -1 for a free slot. <see cref="Gen"/> is what
+        /// makes it safe across a recycle.</summary>
         public int Part;
         /// <summary>The <see cref="DbId"/> generation of the object that owned <see cref="Part"/> when the slot
         /// was taken. A part index the database re-tenanted is a different emitter, and inheriting its
         /// population would show a stranger's particles at the new one's place.</summary>
         public uint Gen;
-        /// <summary>DB mode: the simulation state the engine's own fields hold in mode 0. The slot IS the
-        /// emitter's memory here, so it survives between frames rather than being stored back.</summary>
+        /// <summary>The simulation state. The slot IS the emitter's memory, so it survives between frames
+        /// rather than being stored back into an engine object.</summary>
         public EmitMut Mut;
         /// <summary>DB mode: the emitter texture, acquired when the slot opens and released when it closes.
         /// </summary>
@@ -106,9 +87,8 @@ internal static unsafe partial class EmitterSim
         /// so a zero <see cref="Cap"/> cannot stand in for "not resolved yet".</summary>
         public bool Opened;
         public int Mode, Mover;
-        /// <summary>The particles are <c>CAurObject</c>s, so this emitter stays the engine's (ADR 0018's
-        /// CX-86 amendment): Alloy calls <c>AnimateParticles</c> and <c>RenderNothing</c> on it instead.
-        /// </summary>
+        /// <summary>The particles are <c>CAurObject</c>s, so this emitter stays the engine's (ADR 0018):
+        /// Alloy calls <c>AnimateParticles</c> and <c>RenderNothing</c> on it instead.</summary>
         public bool Chunk;
         /// <summary>Frame last seen in the bucket, so a slot an area walked away from can be reclaimed --
         /// an emitter that is merely out of view never destructs.</summary>
@@ -128,19 +108,10 @@ internal static unsafe partial class EmitterSim
 
     private static readonly Slot[] _tab = new Slot[MaxEmitters];
     private static int _tabN;
-    /// <summary>CX-188: DB mode's slot index by part, plus one -- zero for "this part has no slot". The walk
-    /// asked <see cref="FindDb"/> once per in-view emitter and that was a LINEAR scan of the whole table, so
-    /// the lookup alone was O(emitters^2) and measured 11,4% self of the main thread's on-CPU samples
-    /// (<c>perf-0927</c>, 12 s of a still camera).
-    /// <para>Written in exactly three places, which is what keeps it from drifting out of step with
-    /// <see cref="Slot.Part"/>: <see cref="FindDb"/> when a part takes or re-finds a slot, <see cref="Unmap"/>
-    /// when a slot stops being that part's (<see cref="Reset(int)"/>, the walk's failed <see cref="Open"/>) and
-    /// <see cref="Reset()"/> for the whole table at an area edge or context loss.</para>
-    /// <para><b>It is an index, never the authority.</b> <see cref="Slot.Part"/> and <see cref="Slot.Gen"/>
-    /// stay the keys: a map entry naming a slot that holds another part is treated as no entry, and a MISSING
-    /// entry falls into the scan with its own part match intact -- so neither kind of drift can hand an
-    /// emitter a stranger's particles or a second slot of its own. The cost of one is a scan on that
-    /// frame.</para></summary>
+    /// <summary>Slot index by part, plus one -- zero for "this part has no slot", replacing a linear scan of
+    /// the table per in-view emitter. Written in exactly three places so it cannot drift from
+    /// <see cref="Slot.Part"/>: <see cref="FindDb"/>, <see cref="Unmap"/> and <see cref="Reset()"/>. An index,
+    /// never the authority -- a stale entry reads as no entry and a missing one costs one frame's scan.</summary>
     private static readonly int[] _slotOfPart = new int[SceneDb.MaxParts];
     /// <summary>Bucket indices in DRAW order -- back to front, which is what the blended class needs.</summary>
     private static readonly int[] _order = new int[MaxEmitters];
@@ -158,10 +129,9 @@ internal static unsafe partial class EmitterSim
     private static RenderNothingFn _renderNothing;
     private static IntPtr* _currentCamera;
 
-    /// <summary>Resolved and ready to take the walk? <see cref="RspShim"/> chains
-    /// <see cref="Missing"/> into its own stand-down list, so a false here takes the WHOLE Alloy path with
-    /// it and the frame is vanilla -- rather than leaving an Alloy frame with the engine's emitter code
-    /// running inside it, which is what CX-81 tier 1 exists to remove.</summary>
+    /// <summary>Resolved and ready to take the walk? <see cref="RspShim"/> chains <see cref="Missing"/> into
+    /// its own stand-down list, so a false here takes the WHOLE Alloy path with it rather than leaving an
+    /// Alloy frame with the engine's emitter code running inside it.</summary>
     internal static bool Armed { get; private set; }
     /// <summary>The first symbol that did not resolve, or null. Read by <see cref="RspShim.Install"/>, the
     /// way <see cref="DoorFade"/> is.</summary>
@@ -180,7 +150,7 @@ internal static unsafe partial class EmitterSim
     /// <summary>Births a full block refused. EVERY one of them: the engine has no per-emitter ceiling
     /// (<c>operator new</c> on an empty recycle list, <c>FountainEmitter::Update</c> @0x4b1c70), so a refusal
     /// here is always a particle vanilla would have drawn, whether the block was sized by the emitter's own
-    /// parameters or clamped by <see cref="MaxPerEmitter"/>. Loud once, counted after (CX-45).</summary>
+    /// parameters or clamped by <see cref="MaxPerEmitter"/>. Loud once, counted after.</summary>
     private static void CapLost(int n)
     {
         if (n <= 0) return;
@@ -239,13 +209,10 @@ internal static unsafe partial class EmitterSim
 
     // ---- the walk ------------------------------------------------------------------------------------
 
-    /// <summary>CX-120: <b>the same walk over the scene database.</b> The population is
-    /// <see cref="DbInputs"/>'s emitter table (which part of which object carries an emitter node), the
-    /// parameters are the parsed model's blended with the animation channels, and the per-emitter state lives
-    /// in the slot rather than in an engine object. Everything between -- the cull, the step, the sort, the
-    /// enrolment -- is the code above, unchanged.
-    /// <para>Runs once per FRAME, not once per view: <paramref name="frame"/> is the feed's own frame counter
-    /// and a second world view in one frame re-enrols the same particles rather than stepping them twice.</para>
+    /// <summary>The same walk over the scene database: the population is <see cref="DbInputs"/>'s emitter
+    /// table, the parameters are the parsed model's blended with the animation channels, and the per-emitter
+    /// state lives in the slot. Runs once per FRAME, not once per view -- <paramref name="frame"/> is the
+    /// feed's own counter, so a second world view re-enrols the same particles instead of stepping them twice.
     /// </summary>
     internal static void StepDb(DbId scene, int frame)
     {
@@ -400,10 +367,9 @@ internal static unsafe partial class EmitterSim
     private const int DbDumpMax = 12;
     private static int _dbDumped;
 
-    /// <summary>Distinct (model node, verdict) pairs the DB walk names once each. The boot dump's budget is
-    /// spent on the first frame's emitters, so an emitter that appears LATER -- a torch equipped into a hand,
-    /// a VFX played on a creature -- left no line at all, and the per-frame counters cannot say which model
-    /// the skips belonged to. Keyed by the parsed model's identity and the verdict's literal, so a repeat
+    /// <summary>Distinct (model node, verdict) pairs the walk names once each, so an emitter that appears
+    /// LATER -- a torch equipped into a hand, a VFX played on a creature -- still leaves a line after the boot
+    /// dump's budget is spent. Keyed by the parsed model's identity and the verdict's literal, so a repeat
     /// costs two reference compares and no allocation.</summary>
     private const int CensusMax = 256;
     private static readonly object?[] _cenModel = new object?[CensusMax];
@@ -613,8 +579,8 @@ internal static unsafe partial class EmitterSim
     /// build them from, and every registered emitter is stepped -- an instrument that cannot see may not hide
     /// the world.</summary>
     private static readonly float[] _viewPlanes = new float[24];
-    /// <summary>The viewer the emission cone clamps against (<c>Particle::randomDirection</c> @0x4ab160), as
-    /// the walk resolved it: the engine camera in mode 0 and the frame's own camera in DB mode.</summary>
+    /// <summary>The viewer the emission cone clamps against (<c>Particle::randomDirection</c> @0x4ab160): the
+    /// frame's own camera, as the walk resolved it.</summary>
     private static Vector3 _eye;
     private static bool _hasEye;
     private static bool BuildViewPlanes()
@@ -643,17 +609,10 @@ internal static unsafe partial class EmitterSim
         return true;
     }
 
-    /// <summary>The engine's own draw order, which is <c>FUN_0055f140</c> @0x45f140 exactly: ASCENDING
-    /// squared camera distance -- nearest first -- and, when two emitters tie and share a Gob, ascending
-    /// <see cref="EngineLayout.EmitterRenderOrder"/>.
-    /// <para><b>A correction, and it is visible.</b> CX-86's first cut sorted DESCENDING, on the strength of
-    /// a note that called the engine's sort "back to front". It is not: the comparator returns true for
-    /// <c>a.dist &lt; b.dist</c>, the insertion-sort fixup moves an element back while its distance is
-    /// smaller, and <c>DoEmitterBucket</c>'s draw loop walks the result FORWARD. So vanilla composites
-    /// particles near-to-far, and since <see cref="Particles"/> keeps this order for its alpha-blended class,
-    /// sorting the other way changed how every overlapping pair of plumes read. This restores it.</para>
-    /// <para>Insertion sort over the index array: the bucket is tens of entries, nearly sorted frame to
-    /// frame, and it allocates nothing -- which <c>Array.Sort</c> with a comparison would not manage.</para>
+    /// <summary>The engine's own draw order, exactly: ASCENDING squared camera distance -- nearest first --
+    /// and, when two emitters tie and share a Gob, ascending <see cref="EngineLayout.EmitterRenderOrder"/>.
+    /// Vanilla composites near-to-far and <see cref="Particles"/> keeps this order for its alpha-blended
+    /// class, so sorting the other way changes how overlapping plumes read. Insertion sort: allocation-free.
     /// </summary>
     private static void SortDrawOrder()
     {
@@ -679,9 +638,9 @@ internal static unsafe partial class EmitterSim
     }
 
 
-    /// <summary>CX-120: the same search over DATABASE keys. <paramref name="gen"/> is the owning object's
-    /// handle generation, so a part index the database has re-tenanted takes a fresh slot instead of inheriting
-    /// the dead emitter's particles.</summary>
+    /// <summary>The same search over DATABASE keys. <paramref name="gen"/> is the owning object's handle
+    /// generation, so a part index the database has re-tenanted takes a fresh slot instead of inheriting the
+    /// dead emitter's particles.</summary>
     private static int FindDb(int part, uint gen)
     {
         int free = -1, stale = -1, oldest = int.MaxValue;
@@ -774,7 +733,7 @@ internal static unsafe partial class EmitterSim
         slot.Mover = (e.Flags & FP2P) == 0 ? MoveStandard
                    : (e.Flags & FP2PSel) != 0 ? MoveBezier : MoveGrav;
         slot.Chunk = e.Chunk;
-        // Engine mode leaves a chunk emitter's particles to the engine; DB mode simulates them in the pool.
+        // A chunk emitter with no part behind it has nothing to simulate from; the pool runs the rest.
         if (slot.Chunk && slot.Part < 0) return true;
         // dt 0: the steady-state size. Advance grows again with the frame's own dt before the first birth,
         // so the burst headroom is in place before anything can ask for it.
@@ -809,34 +768,16 @@ internal static unsafe partial class EmitterSim
 
     // ---- the pool ------------------------------------------------------------------------------------
 
-    /// <summary>The block one emitter's parameters can fill THIS step: its standing population plus the
-    /// largest burst its mode can add in one step, so a birth is never refused for want of a slot the
-    /// arithmetic could have predicted.
-    /// <list type="bullet">
-    /// <item><b>Single</b>: exactly one. Exact.</item>
-    /// <item><b>Lightning</b>: a fixed chain of <c>(int)rate</c>, seeded up to and killed down to it. Exact.</item>
-    /// <item><b>Explosion</b>: <c>(int)rate</c> at once on the detonate event, plus an ESTIMATE of what a
-    /// previous detonation still has alive (<c>rate x life</c>). Not a bound: the event's period P is the
-    /// model's and we do not read it, so the true live count is <c>(int)rate x ceil(life / P)</c> and a
-    /// re-detonating emitter with <c>life &gt; P</c> overruns this. What it fixes is the old size, which was
-    /// the standing term ALONE, so any emitter with <c>life &lt; 1</c> lost most of its burst on every bang.
-    /// An overrun is counted like any other loss and <c>CAP-LOST</c> is what would say P has to be read.</item>
-    /// <item><b>Fountain</b> (metered): the standing <c>rate x life</c>, plus one for the step a birth and a
-    /// death coincide, plus the metered burst. The burst is read off the loop: the accumulator fires at
-    /// <c>acc &gt;= 1/rate</c> and births <c>(int)(acc x rate)</c> with <c>acc &lt; 1/rate + dt</c>, so at
-    /// most <c>1 + (int)(dt x rate)</c> land in one step.</item>
-    /// </list>
-    /// Two bursts this deliberately does not cover, both counted by <see cref="Room"/> rather than sized for:
-    /// the p2p birth, which is <c>(int)(rate x distance travelled)</c> long and unbounded across a teleport;
-    /// and a birthrate RAMP, where the accumulator was filled at the old rate and is spent at the new one, so
-    /// up to <c>newRate / oldRate</c> more births can land in the step the controller raises it.</summary>
     /// <summary>Round a wanted population up to a power of two. The arena is a bump allocator and a grow
     /// ABANDONS the old block, so a controller ramping birthrate one particle at a time would burn ~N^2/2 of
-    /// the arena on its way up and take everything else down with it at the reset. Growing in powers of two
-    /// makes that O(log N) grows and under 2x the block's own size in abandoned space.</summary>
+    /// the arena on its way up. Powers of two make that O(log N) grows and under 2x the block in waste.</summary>
     private static int Block(int want)
         => want < 1 ? 1 : (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)want);
 
+    /// <summary>The block one emitter's parameters can fill THIS step: its standing population plus the
+    /// largest burst its mode can add in one step. Single and lightning are exact; explosion ESTIMATES a
+    /// previous detonation's survivors as <c>rate x life</c> and overruns when <c>life</c> exceeds the event
+    /// period; the p2p birth and a birthrate RAMP are counted by <see cref="Room"/> rather than sized for.</summary>
     private static int Want(int mode, float rate, float life, float dt)
     {
         float l = MathF.Max(life, 0f);
@@ -946,9 +887,9 @@ internal static unsafe partial class EmitterSim
     /// not outlive their own <c>Part</c>s by anything a person would notice.</summary>
     private const int StaleFrames = 120;
 
-    /// <summary>CX-120: a DATABASE part died (<c>DbInputs.PartDestroyed</c>, which the feed's own fold drives
-    /// off <see cref="Dirty.Destroyed"/>). The slot holds this emitter's whole memory and its texture
-    /// reference, so both go here rather than waiting for the stale sweep.</summary>
+    /// <summary>A DATABASE part died (<c>DbInputs.PartDestroyed</c>, which the feed's own fold drives off
+    /// <see cref="Dirty.Destroyed"/>). The slot holds this emitter's whole memory and its texture reference,
+    /// so both go here rather than waiting for the stale sweep.</summary>
     internal static void ForgetDbPart(int part)
     {
         int at = (uint)part < (uint)_slotOfPart.Length ? _slotOfPart[part] - 1 : -1;
@@ -973,8 +914,8 @@ internal static unsafe partial class EmitterSim
     }
 
     /// <summary>The GL name this slot's emitter draws with, or 0 -- the pass declines an emitter whose texture
-    /// has not arrived rather than drawing a white quad over the scene. The registry marks its dependents dirty
-    /// at arrival (CX-117), so "not yet" resolves itself on a later frame.</summary>
+    /// has not arrived rather than drawing a white quad over the scene. The registry marks its dependents
+    /// dirty at arrival, so "not yet" resolves itself on a later frame.</summary>
     private static uint TexNameOf(ref Slot slot)
     {
         uint v = TexOf(ref slot, slot.Part);
@@ -1065,16 +1006,9 @@ internal static unsafe partial class EmitterSim
     }
 
     /// <summary>Seconds the simulation actually advanced this period, and the steps it took them in. A period
-    /// that births and kills nothing while particles sit on screen is a period with no TIME in it, and no
-    /// other number on the line can tell that apart from a simulation that is not running.
-    /// <para>A zero over a non-zero step count means the game is PAUSED, and it is the engine's own verdict
-    /// rather than a fault here: <c>CClientExoAppInternal::MainLoop</c> @0x658250 sets
-    /// <c>DeltaT = GetSnapshotTimeDifference(timer@this+0x50) / 1e6</c>, and it advances that timer's snapshot
-    /// only while <c>GetActivePauseState</c> is 0 -- so a paused frame leaves the difference at zero.
-    /// <c>Scene::DoEmitterBucket</c> @0x476f00 hands <c>PartEmitter::AnimateParticles</c> @0x4ac660 the SAME
-    /// global, so vanilla's particles freeze under exactly this condition. Measured: in a live run the sum
-    /// tracked wall-clock to within 5% while the area was played, and read 0 only across the boot and the
-    /// harness's own quit sequence (a modal panel active-pauses).</para></summary>
+    /// that births and kills nothing while particles sit on screen has no TIME in it, which no other number
+    /// can tell apart from a simulation that is not running. A zero over a non-zero step count means the game
+    /// is PAUSED: the engine's <c>DeltaT</c> stops advancing while <c>GetActivePauseState</c> is non-zero.</summary>
     private static float _dtSum;
     private static int _steps;
 }

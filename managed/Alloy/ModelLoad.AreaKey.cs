@@ -4,21 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-56 step 3: the AREA key, folded out of the read-aheads CX-55 already runs.
-/// <para>The lightmap bake wants to know, at <c>LoadArea</c>'s return, which area this is -- so the plan of a
-/// previous visit can be read and inflated in the seconds before the AreaLoaded send. Nothing the engine holds
-/// says that: the area object's own id is assigned by the server per session, and the message it is parsed
-/// from is gone by the time the bake runs. What IS in hand is everything the two peeks already walked -- the
-/// tileset the load asked for, every tile's id, orientation, height and flag word, and every static
-/// placeable's appearance and place -- which together are the area's SHAPE, which is exactly what its bake
-/// depends on.</para>
-/// <para>Model bytes are deliberately not folded in: a model that changed moves the chart content, which is
-/// already in every rect's own bake key, so a stale plan loses the rects it names one at a time rather than
-/// silently painting old light. The settings the bake's look derives from ARE folded in, so a knob change is a
-/// different area key and never an adoption of the wrong-looking bake.</para>
-/// <para><b>No key rather than a wrong one.</b> A peek that stood down, a tile block that never arrived, or a
-/// static-placeable block the engine filled but the peek missed all mean the fold saw less than the area: the
-/// load then names no key, says which of those it was, and the bake packs and probes as it always did.</para></summary>
+/// <summary>The AREA key the lightmap bake names a stored plan by, folded out of the read-aheads' peeks: the
+/// tileset, every tile's id, orientation, height and flag word, every static placeable's appearance and place --
+/// the area's SHAPE -- plus the settings the bake's look derives from, since nothing the engine holds says which
+/// area this is. NO key rather than a wrong one: a fold that saw less than the area names none.</summary>
 internal static unsafe partial class ModelLoad
 {
     private const ulong FoldSeed = 14695981039346656037UL, FoldPrime = 1099511628211UL;
@@ -87,7 +76,7 @@ internal static unsafe partial class ModelLoad
         return h;
     }
 
-    /// <summary>CX-56: <c>LoadArea</c> has returned, so every peek has run and the area object now carries the
+    /// <summary><c>LoadArea</c> has returned, so every peek has run and the area object now carries the
     /// grid, the flags and the static-placeable count the fold is proved against. Hands the bake its area key,
     /// or 0 with the reason the fold saw less than the area.</summary>
     internal static void OnLoadAreaEnd(IntPtr area, bool ok)

@@ -6,20 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-102: the splash pass -- what a drop does when it ARRIVES. One instanced attribute-less draw
-/// beside the precipitation field, in the same bracket and the same premultiplied blend: the instance id
-/// hashes to a point on a camera-centred disc and to a time slice, the cover map's depth over that point is
-/// where the rain lands there, and the crown (a ring on the ground plus three to five droplet streaks
-/// leaping and falling back) is drawn at that landing point. Roofs, ledges, wall tops and open ground all
-/// get impacts; nothing under shelter does, because the cover map never reports a surface the rain cannot
-/// reach.
-/// <para>Before this, impacts existed only as a normal perturbation on the standing-water film: they showed
-/// where a puddle happened to be reflecting a light and nowhere else. This pass owes nothing to a
-/// reflection -- it is lit by the same rig the drops are (sun through its cascades, the clustered lamps, the
-/// area ambient with a floor under it) and scatters light rather than tinting the ground.</para>
-/// <para>The landing point needs the cover layer as PLAIN depth, which exists only as
-/// <see cref="CoverDepthView"/> -- the texture view <see cref="FilterCover"/> makes. No view, no splashes,
-/// and the stand-down says so once rather than drawing them in the wrong place.</para></summary>
+/// <summary>The splash pass -- what a drop does when it ARRIVES. One instanced attribute-less draw beside the
+/// precipitation field, in the same bracket and the same premultiplied blend: the instance id hashes to a
+/// point on a camera-centred disc and a time slice, the cover map's depth over that point is where the rain
+/// lands, and the crown is drawn there. No plain-depth cover view, no splashes, and it says so once.</summary>
 internal static unsafe partial class Weather
 {
     internal const string ShdSplashVs = "cx_splash_vs", ShdSplashFs = "cx_splash_fs";
@@ -184,8 +174,7 @@ internal static unsafe partial class Weather
     /// <summary>What about this pass cannot be seen going wrong: the crown-part count the draw multiplies by
     /// has to be the one the stage divides by; a splash's ring has to be the same physical size as the ripple
     /// the same drop leaves on the water beside it; the screen-size terms have to fade the ring rather than
-    /// grow it (CX-102's whole point) and widen only a sub-pixel droplet; the landing point has to come from
-    /// the cover map; and the clock has to wrap on a whole lifetime, or the field re-rolls in one frame.</summary>
+    /// grow it; and the clock has to wrap on a whole lifetime, or the field re-rolls in one frame.</summary>
     private static void SplashSelfCheck(Checker check)
     {
         string v = SplashVs;

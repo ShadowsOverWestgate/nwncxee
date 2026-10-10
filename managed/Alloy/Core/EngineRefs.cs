@@ -5,26 +5,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#193: the engine's C++ classes as C# types. Every pointer the renderer walks is an
-/// <c>IntPtr</c>; three different classes wear the same one, and nothing stopped a <c>SharedMaterial*</c>
-/// reaching a material-only read and returning garbage. The hazard was never unfamiliar syntax -- it was
-/// syntax that is UNIFORM across things that are not the same.
-/// <para><b>Why <c>readonly ref struct</c> and not a class.</b> The whole liveness protocol (Part::~Part,
-/// EntryLive, the identity gates) exists because these pointers are freed and recycled: #145 walked a freed
-/// part into GobAlphaMul, #150 chased a gob pointer into a freelist word. A ref struct cannot be a field,
-/// cannot go in an array, cannot be boxed and cannot cross an await -- it physically cannot be stashed, so
-/// the scar is a compile error rather than a comment.</para>
-/// <para><b>The tables keep storing raw <c>IntPtr</c>.</b> That is the design working, not a gap: storage
-/// stays visibly raw and unsafe, access becomes typed and scoped.</para>
-/// <para><b>Convention.</b> A PROPERTY is a single load. Anything that walks a vtable, calls a native
-/// function or can fail is a METHOD with a verb -- <see cref="TextureRef.ResolveName"/> is the canonical
-/// one. So much of this codebase is about WHEN a deref is safe that hiding a vtable call behind an
-/// innocent-looking property would be worse than the raw pointers were.</para>
-/// <para><b>CX-39.</b> The offsets are gone from this file: every read below goes through the generated
-/// view in <see cref="CX.Engine"/> (<c>tools/engine/views.py</c> from <see cref="EngineLayout"/>'s rows),
-/// which is the same single load. What stays here is what a generated view cannot say -- the null-guarded
-/// chases, the concepts the engine has no class for (<see cref="PartRef.IsInstance"/>), and the verbs that
-/// call native code.</para></summary>
+/// <summary>
+/// The engine's C++ classes as C# types: a <c>readonly ref struct</c> per class, so a pointer the engine may
+/// free and recycle cannot be stashed in a field, an array or across an await -- the liveness scar is a
+/// compile error, not a comment. A PROPERTY is a single load through the generated view; anything that walks a
+/// vtable, calls native code or can fail is a METHOD with a verb. The tables still store raw <c>IntPtr</c>.
+/// </summary>
 internal readonly unsafe ref struct PartRef
 {
     private readonly IntPtr _p;
@@ -55,7 +41,7 @@ internal readonly unsafe ref struct PartRef
     internal IntPtr Vtbl => *(IntPtr*)_p;
 
     /// <summary>Is this part an INSTANCE -- does it hang off a Gob? See <see cref="EngineLayout.PartGob"/>;
-    /// this is NOT a skin test, which is the misreading #134 corrected.</summary>
+    /// this is NOT a skin test.</summary>
     internal bool IsInstance => !Gob.IsNull;
 }
 
@@ -81,16 +67,10 @@ internal readonly unsafe ref struct MaterialRef
     internal IntPtr Params => View.Params;
     internal int ParamCount => View.ParamCount;
 
-    /// <summary>A numbered texture slot, live. A METHOD, not a property: it calls
-    /// <c>Material::GetTexture</c>, and the result is a BORROWED <c>CAurTexture*</c> that dies at the next
-    /// area transition -- never cached, re-fetched per frame (#33, #138).
-    /// <para>Null-safe on the RECEIVER, like every other accessor here: a null material has no textures, and
-    /// the alternative is the caller's own ternary at each of the dozen call sites. It is not null-safe on
-    /// the RESULT -- that is what <see cref="TextureRef.IsNull"/> is for.</para></summary>
-    /// <summary>#330: <c>Material::GetTexture(int)</c> @0x4c5810 as the two loads it is -- the
-    /// SharedMaterial's slot table wins when it holds one (<c>shared + 8 + (slot+13)*0x10</c>), else the
-    /// material's own slot at <c>mat + slot*0x10</c>. It was a <c>calli</c> paying a GC transition once per
-    /// owned part per frame, and the Chase bracket is where that showed.</summary>
+    /// <summary>A numbered texture slot, live: <c>Material::GetTexture</c> @0x4c5810 as the two loads it is --
+    /// the SharedMaterial's slot table when it holds one (<c>shared + 8 + (slot+13)*0x10</c>), else the
+    /// material's own slot at <c>mat + slot*0x10</c>. The result is a BORROWED <c>CAurTexture*</c> that dies
+    /// at the next area transition: re-fetched per frame, never cached. Null-safe on the receiver only.</summary>
     internal TextureRef Texture(int slot)
     {
         if (_p == IntPtr.Zero) return new(IntPtr.Zero);
@@ -108,7 +88,7 @@ internal readonly unsafe ref struct MaterialRef
     /// <summary>Slots a plain <c>Material</c> owns itself (<c>BindAllStandardTextures</c> @0x4c6e30 stops at
     /// i &lt; 3); anything higher is real only in a SharedMaterial's table.</summary>
     private const int OwnSlots = 3;
-    /// <summary>#275: a <c>.mtr</c> slot by its index, engine (<c>texture0..10</c>) or extender-owned (11+).</summary>
+    /// <summary>A <c>.mtr</c> slot by its index, engine (<c>texture0..10</c>) or extender-owned (11+).</summary>
     internal TextureRef TextureAt(int n)
         => n >= MaterialExtraSlots.First ? MaterialExtraSlots.Texture(Shared.Ptr, n) : Texture(n);
 }
@@ -126,7 +106,7 @@ internal readonly unsafe ref struct SharedRef
     internal bool Transparency => View.Transparency != 0;
     internal int SampleFb => View.SampleFb;
     internal bool Volumetric => View.Volumetric != 0;
-    /// <summary>#292: the <c>twosided</c> keyword -- draw this material's faces with culling OFF. See
+    /// <summary>The <c>twosided</c> keyword -- draw this material's faces with culling OFF. See
     /// <see cref="EngineLayout.SharedTwoSided"/> for the engine's own three-sub-list spelling of it.</summary>
     internal bool TwoSided => View.TwoSided != 0;
     /// <summary>Is a <c>customShaderVS</c>/<c>FS</c> resref named at all? The first byte of the inline
@@ -212,7 +192,7 @@ internal readonly unsafe ref struct VdoRef
     internal long ElemItems => (long)View.ElemItems;
     internal int ElemCount => View.ElemCount;
 
-    /// <summary>#284: <c>Build</c> ran and gave this VDO an element stream. See
+    /// <summary><c>Build</c> ran and gave this VDO an element stream. See
     /// <see cref="EngineLayout.VdoIndexed"/> for why the VAO drip refuses without it.</summary>
     internal bool Indexed => View.Indexed != 0;
     internal uint ElemToken => View.ElemToken;
@@ -222,13 +202,10 @@ internal readonly unsafe ref struct VdoRef
     internal uint DynMask => View.DynMask;
 }
 
-/// <summary>Everything a VAO-cache slot's harvest depends on, read off the live VDO: the engine VAO it was
-/// harvested from, the mode, the three pool tokens and the two attribute masks (which fix every stride and
-/// offset). Equal fingerprints mean the harvested layout is still the truth. A VDO freed and re-minted at
-/// the same address -- operator new recycles the 0x68-byte block, and no destructor notice exists for
-/// VDOs -- changes it, which pointer identity alone cannot see: the slot would keep serving the dead VDO's
-/// strides and buffers to the new one's parts, and they draw as screen-spanning nonsense until a full
-/// release wipes the cache.</summary>
+/// <summary>Everything a VAO-cache slot's harvest depends on, read off the live VDO: the engine VAO, the mode,
+/// the three pool tokens and the two attribute masks (which fix every stride and offset). Equal fingerprints
+/// mean the harvested layout is still the truth -- a VDO freed and re-minted at the same address (operator new
+/// recycles the 0x68-byte block, and VDOs get no death notice) draws as screen-spanning nonsense.</summary>
 internal readonly record struct VdoSig(uint Vao, int Mode, uint Elem, uint Vert, uint Dyn, uint VertMask, uint DynMask)
 {
     internal static VdoSig Of(IntPtr vdo)
@@ -253,12 +230,12 @@ internal readonly unsafe ref struct TextureRef
 
     /// <summary>The texture's name, through <c>GetReferenced</c> then <c>AsBasic</c>. Two vtable calls.</summary>
     internal string ResolveName() => AlloyCensus.TexName(_p);
-    /// <summary>This texture's GL id, vtable-checked -- see AurTex (#138): Material::GetTexture is a plain
+    /// <summary>This texture's GL id, vtable-checked -- see AurTex: Material::GetTexture is a plain
     /// field read, so the pointer it hands back can outlive the object.</summary>
     internal int ResolveTid() => AurTex.Tid(_p);
 }
 
-/// <summary>#193: the engine's own pure queries about a part or a material, taking the typed refs. The
+/// <summary>The engine's own pure queries about a part or a material, taking the typed refs. The
 /// <c>_orig*</c> trampolines deliberately do NOT move here -- those belong beside the hooks they chain.</summary>
 internal static unsafe class Engine
 {

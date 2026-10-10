@@ -3,12 +3,10 @@ using CX.Ui;
 
 namespace CX.Services.Dialog;
 
-/// <summary>The <c>dialog</c> group (spec §4.2) and the storage <see cref="DialogService"/> reads: the master
-/// (off = the stock panel from the next conversation node on; live per node, #591), the five User rows, the Advanced
-/// fade and <see cref="Text"/> rows, and the window rect as Hidden state -- <see cref="X"/>/<see cref="Y"/>/<see cref="W"/> with the <see cref="Placed"/>
-/// sentinel, false until the user first moves or resizes so a fresh install takes the auto layout instead of
-/// a (0,0) box. <see cref="Text"/> is the window's own size / typeface / outline. Touched from <c>DialogService.Initialize</c> so the group declares
-/// whether or not the hooks arm.</summary>
+/// <summary>The <c>dialog</c> group, read by <see cref="DialogService"/>: the master (off = the stock panel from
+/// the next conversation node on, since it is live per node), the User rows, the Advanced fade and
+/// <see cref="Text"/> rows (the window's own size / typeface / outline), and the rect as Hidden state, with
+/// <see cref="Placed"/> false until a first move or resize so a fresh install takes the auto layout.</summary>
 internal static class DialogKnobs
 {
     internal static readonly KnobGroup G;

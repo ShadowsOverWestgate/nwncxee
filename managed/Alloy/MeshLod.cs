@@ -33,22 +33,10 @@ internal static class Lod
 }
 
 /// <summary>
-/// Automatic mesh LOD. NWN models carry no LOD chain, so every mesh has always drawn its full triangle count
-/// at every distance and both GPU towers scale with area-in-view. This generates two simplified INDEX RUNS
-/// per eligible mesh -- roughly half and a fifth of its triangles -- and the staging walk picks one by the
-/// part's projected screen radius.
-/// <para><b>Reindex only.</b> Nothing here touches a vertex. The simplified runs hold the same index values
-/// the engine's own run held, so the vertex pools, the base vertex, the attribute formats and every VAO
-/// stream are the engine's, unchanged; the LOD runs live in one Alloy-owned element buffer and the only
-/// difference at draw time is which <c>ELEMENT_ARRAY_BUFFER</c> the VAO carries and which range the draw
-/// names. That is why a stand-down is free: drop back to the engine's range and the mesh is whole again.</para>
-/// <para><b>Generated off the frame.</b> Enrollment is a cold edge, but simplifying every tile of an area on
-/// it would be a multi-second hitch, so the enrollment walk only COPIES the range (indices plus the positions
-/// they address) and a single background worker does the quadric work. Results are collected on the render
-/// thread in <see cref="Pump"/>, which is the one place a GL buffer may be touched; until a mesh's runs land
-/// there it simply draws at full detail.</para>
-/// <para><b>Windows:</b> no new engine symbol and no new engine-memory read -- the two host shadows and the
-/// index range are the ones <c>NormalWeld</c> and the staging walk already read on both platforms.</para>
+/// Automatic mesh LOD. NWN models carry no LOD chain, so a mesh draws its full triangle count at every distance;
+/// this generates two simplified INDEX RUNS per eligible mesh -- roughly half and a fifth of its triangles --
+/// into one Alloy-owned element buffer, and <see cref="Level"/> picks one by the part's projected screen radius.
+/// Reindex only: no vertex is touched, so an absent level simply falls back to the finer run.
 /// </summary>
 internal static unsafe class MeshLod
 {
@@ -135,7 +123,7 @@ internal static unsafe class MeshLod
 
     private static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
 
-    /// <summary>LOD runs on file, claimed or landed -- the area edge's tally (CX-19).</summary>
+    /// <summary>LOD runs on file, claimed or landed -- the area edge's tally.</summary>
     internal static int TableCount => _table.Count;
 
     /// <summary>Should the enrollment walk copy this range out for the worker? Asked before anything is read,
@@ -183,11 +171,10 @@ internal static unsafe class MeshLod
         _jobs.Offer(j, j.Key, sig);
     }
 
-    /// <summary>CX-112's per-model source: queue a simplify straight off a parsed <c>MeshDef</c> instead of
-    /// copying one part's range back off the pools' host shadows. The parse has the whole mesh already, so the
-    /// copy and the index-range scan both go away; <see cref="Offer"/> stays until CX-114 deletes the per-part
-    /// path. Returns false when the mesh is outside the simplifier's bounds (too many corners or vertices, or
-    /// not a triangle list), which is a decline and not a silent skip.</summary>
+    /// <summary>Queue a simplify straight off a parsed <c>MeshDef</c>: the parse has the whole mesh already, so
+    /// neither the range copy nor the index-range scan <see cref="Offer"/> needs is wanted here. False = the
+    /// mesh is outside the simplifier's bounds (too many corners or vertices, or not a triangle list), which is
+    /// a decline, not a silent skip.</summary>
     internal static bool OfferModel(int slot, int item, CX.Alloy.Mdl.MeshDef mesh, ulong sig)
     {
         int count = mesh.Indices.Length, verts = mesh.Positions.Length;

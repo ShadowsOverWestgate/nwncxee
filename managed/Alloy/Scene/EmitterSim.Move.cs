@@ -6,7 +6,7 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-86: birth and motion. Spawn is <c>Particle::initialize</c> @0x4abbf0 with <c>randomPosition</c>
+/// Particle birth and motion. Spawn is <c>Particle::initialize</c> @0x4abbf0 with <c>randomPosition</c>
 /// @0x4ab7e0, <c>randomDirection</c> @0x4ab160 and <c>inheritVelocity</c> @0x4ab950; the three movers are
 /// <c>moveParticleStandard</c>'s body @0x4afa90, <c>moveParticleP2PBezier</c> @0x4b0230 and
 /// <c>moveParticleP2PGrav</c> @0x4b0d40.
@@ -98,12 +98,10 @@ internal static unsafe partial class EmitterSim
         p.Pos = e.M.Pos + e.M.Bx * (ox * Deci4) + e.M.By * (oy * Deci4);
     }
 
-    /// <summary><c>randomDirection</c>: tilt off the emitter's Z by up to half the spread, then spin that
-    /// tilt a full turn about Z. The cone cap that follows folds a direction pointing too far away from the
-    /// viewer back toward it -- which is what keeps a wide-spread impact effect facing the player.
-    /// <para>The engine's fold loop has no bound and terminates on float luck; this one stops after
-    /// <see cref="MaxConeFolds"/>, which on a frame hook is the difference between a wrong angle and a hung
-    /// client.</para></summary>
+    /// <summary><c>randomDirection</c>: tilt off the emitter's Z by up to half the spread, then spin that tilt a
+    /// full turn about Z. The cone cap folds a direction pointing too far from the viewer back toward it, which is
+    /// what keeps a wide-spread impact effect facing the player. The fold stops after
+    /// <see cref="MaxConeFolds"/> -- unbounded on a frame hook is a hung client.</summary>
     private static void Launch(ref Slot slot, ref Emitter e, Particle p)
     {
         float tilt = Rnd(ref slot.Rng, (int)(e.Spread * 0.5f * 100f) + 1) * Centi;
@@ -160,16 +158,10 @@ internal static unsafe partial class EmitterSim
         else if ((e.Flags & FInheritPart) != 0) { e.M.PrevWorldPos = e.M.Pos; e.M.PrevWorldRot = e.M.Orient; }
     }
 
-    /// <summary>The three inherit modes, factored out of the movers that each open with their own copy.
-    /// <para>Returns the particle's position expressed in the CURRENT emitter frame, and rotates its velocity
-    /// with it when the whole field is being carried. <c>inherit</c> rebases through the emitter's rotation
-    /// delta; <c>inherit_local</c> and <c>inherit_part</c> translate by their owner's motion.</para>
-    /// <para><b>Departure, on the record:</b> the p2p-gravity mover's own version of this composes the
-    /// owner's rotation delta as a second quaternion pair as well as translating. Alloy uses the translation
-    /// form for all three movers, which is exactly what the standard mover does -- so a p2p-gravity emitter
-    /// declaring <c>inherit_local</c> AND spinning its owner will drift where vanilla would carry it. Named
-    /// rather than reproduced: the engine's version reads two more transforms per particle for a combination
-    /// no stock effect uses.</para></summary>
+    /// <summary>The three inherit modes. Returns the particle's position in the CURRENT emitter frame, rotating
+    /// its velocity with it when the whole field is carried: <c>inherit</c> rebases through the emitter's rotation
+    /// delta, <c>inherit_local</c> and <c>inherit_part</c> translate by their owner's motion. Deliberate departure:
+    /// the p2p-gravity mover also composes its owner's rotation delta, so a spinning one drifts here.</summary>
     private static Vector3 Carry(ref Emitter e, Particle p, in Quat rebase)
     {
         int flags = e.Flags;

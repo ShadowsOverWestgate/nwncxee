@@ -6,29 +6,19 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// The Alloy frame's ONE framebuffer copy, and the water stage that reads it (ADR 0011 M3, #129). The copy
-/// is colour and depth of everything the Alloy frame has drawn up to <see cref="PassId.FbCopy"/> -- the
-/// opaque set, grass, the sky, the blended class with fade in it -- snapshotted into this class's own
-/// texture pair so the water stage can march them. The engine takes TWO such snapshots per frame
-/// (<c>Camera::CopyRenderSubframe</c> @0x4a6b90, before draw bucket 5 and again before bucket 6 in
-/// <c>Scene::RenderSinglePass</c> @0x46e5f0) because its bucket order is fixed, not because two are needed;
-/// the Alloy frame takes one. The bucket-5 copy the engine takes beside it is for a CONTENT shader to sample
-/// as <c>texFBColor</c>/<c>texFBDepth</c> (units 11/12, <c>Camera::BindRenderSubframeTextures</c> @0x4a6ab0) --
-/// no stock world shader reads it, and no Alloy program does either, so CX-90 draws that class off its
-/// material without a copy of its own. Ours holds LINEAR HDR, taken inside the Alloy bracket, so it could not
-/// have fed a display-space engine draw anyway.
-/// <para><c>water.enabled</c> off stands the whole thing down: no copy, no Alloy water program, and
-/// <see cref="BucketGate"/> leaves bucket 6 to the engine. Every look dial here is a <c>/water</c> key; the
-/// one boot decision is the tessellation segment count, which is geometry rather than look.</para>
+/// The Alloy frame's ONE framebuffer copy, and the water stage that reads it (ADR 0011): colour and depth of
+/// everything drawn up to <see cref="PassId.FbCopy"/>, snapshotted into this class's own texture pair so the
+/// water stage can march them. The engine takes TWO such copies per frame because its bucket order is fixed,
+/// not because two are needed; ours holds LINEAR HDR, so no engine draw could have read it anyway.
 /// </summary>
 internal static unsafe class FrameSnapshot
 {
     /// <summary>Texture units the copy binds on -- above the probe's cube, and clear of the grass push map
-    /// and the #139 resolve even though those are other programs. <see cref="TextureSlots"/> is the ladder
+    /// and the resolve even though those are other programs. <see cref="TextureSlots"/> is the ladder
     /// and the only place it is written down; do not paraphrase it here.</summary>
     internal const uint ColorUnit = TextureSlots.SnapshotColor, DepthUnit = TextureSlots.SnapshotDepth;
 
-    /// <summary>#339: the unit the engine's own noise texture binds on. The vanilla wave field IS that
+    /// <summary>The unit the engine's own noise texture binds on. The vanilla wave field IS that
     /// texture at four scales, so the stage cannot draw without it.</summary>
     internal const uint NoiseUnit = TextureSlots.WaterNoise;
 
@@ -38,16 +28,9 @@ internal static unsafe class FrameSnapshot
     /// <see cref="TextureSlots.WaterNoise"/> independently landed on.</summary>
     private const string NoiseResref = "solid_noise";
 
-    /// <summary>#339: the unit the SCENE's environment map binds on -- the reflection vanilla's water
-    /// carries and this port first shipped without.</summary>
+    /// <summary>The unit the SCENE's environment map binds on -- the reflection vanilla's water
+    /// carries.</summary>
     internal const uint EnvUnit = TextureSlots.WaterEnv;
-
-    /// <summary>The environment map. <c>Scene::Render</c> @0x4762d0 fills <c>Scene+0x1e8</c> ONCE per scene
-    /// from the TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>), falling back to
-    /// <c>AurTextureGetFallbackEnvironmentMap</c> (<c>chrome1</c>) when the tileset names none -- so it is
-    /// present even where the MATERIAL has no env map, which is the case the <c>[water]</c> census line's
-    /// <c>env=False</c> reports and which made this term look inapplicable. CX-110: that choice and that
-    /// fallback are <see cref="AlloyEnvMap"/>'s now.</summary>
 
     /// <summary><c>water.enabled</c> off stands the class down; on brings it back at the next pass. Armed
     /// and idling rather than un-installed, so the toggle is live either way.</summary>
@@ -81,15 +64,10 @@ internal static unsafe class FrameSnapshot
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
-    /// <summary>CX's own <c>solid_noise</c>, for the frames the engine's has no id in.
-    /// <para>In DB mode the engine never asks for it: <c>Scene::Render</c> @0x5762d0 is what loads the
-    /// resref into <c>Scene+0x1f8</c>, and DB mode does not run that body, so the first thing that ever
-    /// names the texture is this bind -- which creates the <c>CAurTexture</c> and leaves it queued on the
-    /// engine's <c>RefreshTextures</c> list. The registry answers from the resources instead, on CX's own
-    /// loader, so the wave field does not depend on the engine having drawn something first.</para>
-    /// <para>The acquire is once per session and the resident check is a table read; both run where the
-    /// pass runs, which is the game thread while <c>alloy.renderthread</c> is off (its outstanding work is
-    /// the handoff's, not this stage's).</para></summary>
+    /// <summary>CX's own <c>solid_noise</c>, for the frames the engine's has no id in. The engine never asks
+    /// for it here -- <c>Scene::Render</c> is what loads that resref and this path does not run it -- so the
+    /// registry answers from the resources on CX's own loader rather than creating a <c>CAurTexture</c> left
+    /// queued on the engine's <c>RefreshTextures</c> list. Acquired once per session.</summary>
     private static int OwnNoise()
     {
         if (!_ownNoiseAsked) { _ownNoiseAsked = true; _ownNoise = Db.TexRegistry.Acquire(NoiseResref); }
@@ -127,13 +105,6 @@ internal static unsafe class FrameSnapshot
     /// panel drawing from the world's copy would sample the world into a portrait.</summary>
     internal static void Revoke() => Ready = false;
 
-    /// <summary>ADR 0011 <see cref="PassId.FbCopy"/>: snapshot the currently bound draw target into the copy
-    /// pair. Blits colour and depth in one call, which is the engine's own mechanism for it
-    /// (<c>GLRender::CopyFramebuffer</c> @0x4c9930 is <c>glBlitFramebuffer</c> with a translated bit mask and
-    /// GL_NEAREST) -- so the depth half is not a workaround, it is what the engine already relies on working.
-    /// <para>Returns false, having logged once, whenever the copy cannot be taken. That is a full stand-down
-    /// and not a degraded draw: <see cref="Ready"/> stays false, the Alloy water stage does not run, and the
-    /// engine's bucket-6 walk (with its own copy) is left to draw water exactly as before #129.</para></summary>
     /// <summary>Copy only the rows and columns the water can cover (<c>/water rect 0</c> = whole frame).</summary>
     internal static bool Rect => Water.Rect.V;
     /// <summary>Margin around the water's screen rectangle, as a fraction of the viewport height.</summary>
@@ -141,12 +112,14 @@ internal static unsafe class FrameSnapshot
     /// <summary>The last copy's rectangle as a fraction of the frame; 1 = a whole-frame copy.</summary>
     internal static float LastRectFrac { get; private set; } = 1f;
 
-    /// <summary>The whole-frame copy. <paramref name="depth"/> false blits colour alone (CX-3): the grass root
+    /// <summary>The whole-frame copy. <paramref name="depth"/> false blits colour alone: the grass root
     /// blend reads only colour, and a depth(+stencil) blit costs a full-res copy plus the driver's decompress.</summary>
     internal static bool Copy(int* viewport, bool depth = true) => Copy(viewport, 0, 0, viewport[2], viewport[3], depth);
 
     /// <summary>The copy over one rectangle of the frame, source and destination at the same coordinates so
-    /// the stage's gl_FragCoord read stays 1:1. Texels outside the rectangle keep the previous copy.</summary>
+    /// the stage's gl_FragCoord read stays 1:1; texels outside it keep the previous copy. Returns false,
+    /// logged once, whenever the copy cannot be taken -- a full stand-down, not a degraded draw:
+    /// <see cref="Ready"/> stays false and the Alloy water stage does not run.</summary>
     internal static bool Copy(int* viewport, int x0, int y0, int x1, int y1, bool depth = true)
     {
         Ready = false;
@@ -192,13 +165,10 @@ internal static unsafe class FrameSnapshot
         return true;
     }
 
-    /// <summary><c>/water diag &lt;n&gt;</c>: read one pixel back out of BOTH framebuffers and say what is actually in
-    /// them. Costs a full pipeline stall, so it runs a handful of times per session and never otherwise.
-    /// <para>This exists because every cheaper signal about the copy is ambiguous. A raw depth texel displayed
-    /// as grey saturates to white for any real geometry (depth is nonlinear -- almost everything sits above
-    /// 0.95), and a colour view is filtered through the tonemap before a human sees it. The only unambiguous
-    /// answer to "did the blit land" is the same pixel read from the source and from the copy, as numbers.
-    /// Equal means the copy is exact and the fault is downstream in the stage; different means it is not.</para></summary>
+    /// <summary><c>/water diag &lt;n&gt;</c>: read one pixel back out of BOTH framebuffers and say what is in
+    /// them. Costs a full pipeline stall, so it runs a handful of times per session. Every cheaper signal is
+    /// ambiguous -- a raw depth texel saturates to white for any real geometry, a colour view is filtered
+    /// through the tonemap -- so the one unambiguous answer is that pixel from source and copy, as numbers.</summary>
     private static void Diagnose(uint src, int w, int h)
     {
         if (Gl.ReadPixels == null || Gl.ReadBuffer == null) return;
@@ -301,9 +271,10 @@ internal static unsafe class FrameSnapshot
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
 
-    /// <summary>The environment-map texture id for this pass, or 0 when there is none to sample. CX-110:
-    /// <see cref="AlloyEnvMap"/> makes the CHOICE (the area tileset's resref, else the engine's own
-    /// <c>chrome1</c> fallback) and holds it in the texture registry.</summary>
+    /// <summary>The environment-map texture id for this pass, or 0 when there is none to sample.
+    /// <see cref="AlloyEnvMap"/> makes the CHOICE -- the area tileset's own resref, else the engine's
+    /// <c>chrome1</c> fallback, so one is present even where the MATERIAL has no env map -- and holds it in
+    /// the texture registry.</summary>
     private static int SceneEnvTid() => AlloyEnvMap.Tid();
 
     /// <summary>Is the environment term live this pass? The stage reads it as a switch, because a missing
@@ -342,9 +313,9 @@ internal static unsafe class FrameSnapshot
     /// <summary>The GL id the noise texture last resolved to, on the <c>/water</c> line. Zero with water on
     /// screen is the whole diagnosis of a flat sea: no noise, no wave amplitude.</summary>
     private static int _noiseTid;
-    /// <summary>#456: what the resman actually handed back for <c>solid_noise</c>.</summary>
+    /// <summary>What the resman actually handed back for <c>solid_noise</c>.</summary>
     private static string _noiseName = "?";
-    /// <summary>The engine's own account of the noise texture, latched with the name (#456).</summary>
+    /// <summary>The engine's own account of the noise texture, latched with the name.</summary>
     private static string _noiseEng = "eng=?";
 
     /// <summary>Size the copy pair to the pass. The DEPTH half is allocated from what the engine's own
@@ -517,18 +488,15 @@ internal static unsafe class FrameSnapshot
     /// stage's composition is written down (ADR 0012).</summary>
     internal static string Fs => ShaderStages.Source(AlloyRenderer.ShdWaterFs);
 
-    /// <summary>#339's vertex stage: the lit pass's clip expression and nothing else. Deliberately not the
-    /// lit stage itself -- water is never skinned and never a wind-feature part -- and no longer a
-    /// non-projecting one, because the tessellation pair that used to project is gone with the custom
-    /// displacement. Vanilla water displaces in the FRAGMENT stage (fswater's parallax search over
+    /// <summary>The water vertex stage: the lit pass's clip expression and nothing else. Deliberately not the
+    /// lit stage itself -- water is never skinned and never a wind-feature part -- and not a tessellating one
+    /// either: vanilla water displaces in the FRAGMENT stage (fswater's parallax search over
     /// GetMainWaveOffset), so there is nothing for a tessellator to do.</summary>
     internal static string Vs => ShaderStages.Source(AlloyRenderer.ShdWaterVs);
 
-    /// <summary>#339's fragment stage, part one: the declarations, and the stock constants they carry.
-    /// <para>Every number here is <c>inc_water.shd</c>'s own <c>#define</c> at the quality mode this client
-    /// runs -- <c>settings.tml</c>'s <c>graphics.general.shader-quality = "High Quality"</c>, which the engine
-    /// injects as <c>SHADER_QUALITY_MODE 2</c> (the string is <c>#define SHADER_QUALITY_MODE %d</c> in
-    /// nwmain). Only that branch is ported: the two lower tiers are different shaders, and reproducing a look
-    /// nobody on this client sees is the kind of ladder that rots.</para></summary>
+    /// <summary>The water fragment stage, part one: the declarations, and the stock constants they carry.
+    /// Every number is <c>inc_water.shd</c>'s own <c>#define</c> at the quality mode this client runs
+    /// (<c>SHADER_QUALITY_MODE 2</c>). Only that branch is ported: the two lower tiers are different shaders,
+    /// and reproducing a look nobody on this client sees is the kind of ladder that rots.</summary>
     internal static string FsHead => ShaderSource.Get("cx_water_fhead.glsl");
 }

@@ -7,17 +7,14 @@ using CX.Framework;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// NUI scrollbars (every nuklear scrollbar: windows, groups, lists, text edits): a minimum thumb length and a gliding
-/// mouse wheel. Two hooks on the functions only <c>nk_do_scrollbarv/h</c> call. <see cref="SymbolMap.NkScrollbarBehavior"/>
-/// grows a too-short thumb in place (and the two empty rects the page clicks test) before the engine hit-tests it,
-/// scales the drag so the bigger thumb still follows the pointer, and turns a wheel step into a glide;
-/// <see cref="SymbolMap.NkDrawScrollbar"/> then places the grown thumb, since the caller re-derives only its position
-/// between the two (its length stays the one the behavior hook wrote). Page clicks, keys and the scroll buttons are the engine's own, untouched.
+/// NUI scrollbars (windows, groups, lists, text edits): a minimum thumb length and a gliding mouse wheel, from two
+/// hooks on the functions only <c>nk_do_scrollbarv/h</c> call. <see cref="SymbolMap.NkScrollbarBehavior"/> grows a
+/// too-short thumb in place (and the two empty page-click rects) before the hit-test, scales the drag, and glides a
+/// wheel step; <see cref="SymbolMap.NkDrawScrollbar"/> then places it, as the caller re-derives only position. Hot.
 /// </summary>
-/// <remarks>Hot: once per shown scrollbar per frame. Fixed tables, no allocation.</remarks>
 internal static unsafe class NuiScrollbars
 {
-    // nk_input, the same on both builds (the behavior reads them; CX-154, scrollbar facts §1.4).
+    // nk_input, the same on both builds (the behavior reads them).
     private const int InLeftDown = 0x10c, InLeftClicked = 0x110, InClickedX = 0x114, InDeltaX = 0x15c, InWheelX = 0x164;  // not-an-offset: nuklear input ABI, not an engine class
     /// <summary><c>nk_widget_state</c> ACTIVED: the behavior's drag arm ran.</summary>
     private const uint StateActived = 0x20;  // not-an-offset: nuklear state bit

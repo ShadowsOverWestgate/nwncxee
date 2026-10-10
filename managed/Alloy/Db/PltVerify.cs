@@ -8,22 +8,10 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-117's live check (<c>alloy.pltverify</c>), and the only one that can be wrong for a reason the
-/// off-device checks cannot see: it compares <b>Alloy's whole PLT chain against the engine's own finished
-/// composite</b>, on real content, in a real client.
-/// <para>The engine composites a PLT on the CPU into <c>CAurTextureBasic+0x58</c> at the tail of
-/// <c>ConstructImage</c> @0x48a5d0 (<c>ImageDecode</c> @0x4b6580, under <c>alloy.pltcpu</c>'s hold) and frees
-/// it again inside the build that follows. So at the return of the <c>ConstructImage</c> hook the finished
-/// RGBA image is sitting in CPU memory: no GL readback, no <c>glGetTexImage</c>, nothing on a hot path --
-/// read it there and compare. For each PLT texture, once per resref, up to a cap:</para>
-/// <list type="number">
-/// <item>Alloy's master palette against the engine's own <c>paletteimage</c>, byte for byte -- which is
-/// <c>PltPalettes</c> reproducing <c>AurSetPalette</c>'s grow, flip and copy.</item>
-/// <item>Alloy's composite -- <see cref="PltImage"/>'s decode of the file, the engine's scheme rows, and
-/// <see cref="PltImage.Resolve"/> -- against the engine's pixels, byte for byte.</item>
-/// </list>
-/// <para>Cold by construction: once per texture build, never per frame, and the whole thing is off unless the
-/// knob is set.</para></summary>
+/// <summary>The live check (<c>alloy.pltverify</c>): Alloy's whole PLT chain against the engine's own finished
+/// composite, on real content. The engine composites a PLT on the CPU into <c>CAurTextureBasic+0x58</c> at the
+/// tail of <c>ConstructImage</c> @0x48a5d0 and frees it in the build that follows, so the hook's return is the
+/// one place to read it -- no GL readback. Once per resref, up to a cap; off unless the knob is set.</summary>
 internal static unsafe class PltVerify
 {
     /// <summary>Textures checked before the verifier stands itself down. A session meets a few dozen distinct
@@ -188,7 +176,7 @@ internal static unsafe class PltVerify
     /// <summary>The resolved texture name at <c>+0xa8</c>, which is the PLT's resref.</summary>
     private static string NameOf(IntPtr tex)
     {
-        byte* p = (byte*)(tex + EngineLayout.TexBasicResolvedName);
+        byte* p = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref new CAurTextureBasic(tex).ResolvedName);
         int n = 0;
         while (n < 32 && p[n] != 0) n++;
         return n == 0 ? "" : System.Text.Encoding.ASCII.GetString(p, n);

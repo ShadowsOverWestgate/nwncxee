@@ -4,15 +4,10 @@ using System.Runtime.InteropServices;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>Who called us, by name. A seam slot is entered from the GAME, so the managed stack says nothing --
-/// the answer is on the native stack, and <c>backtrace</c> plus <c>dladdr</c> turns it into an exported symbol.
-/// The client is unstripped with ~24k dynamic exports, so a frame inside it names its function exactly.
-/// <para>This is for ATTRIBUTION on cold refusal paths only: it is the difference between "a facade was used
-/// after free" and "<c>CGuiPanel::CloseLayoutFile</c> deleted it and <c>CGuiTabSet::Activate</c> re-attached
-/// it", which is the difference between a CX bug and a game bug we are catching. Never on a hot path, and
-/// every result is interned so a repeat costs a dictionary hit.</para>
-/// <para>Linux only: <c>backtrace</c> and <c>dladdr</c> are glibc. On Windows the attribution is simply absent
-/// and the line says so, which is better than a wrong name.</para></summary>
+/// <summary>Who called us, by name. A seam slot is entered from the GAME, so the managed stack says nothing;
+/// <c>backtrace</c> plus <c>dladdr</c> turns the native frame into an exported symbol, exactly, because the
+/// client is unstripped. For ATTRIBUTION on cold refusal paths only, and every result is interned.
+/// <para>Linux only -- on Windows the attribution is absent and the line says so.</para></summary>
 internal static unsafe class SeamCallers
 {
     /// <summary>Interned caller names; the id is what a shell header stores.</summary>
@@ -59,9 +54,9 @@ internal static unsafe class SeamCallers
         return 0;
     }
 
-    /// <summary>CX-120 bring-up: the first few GAME frames above a slot, newest first, as one string. The
-    /// immediate caller of a position setter is always the same forwarder; the frame that chose the value is
-    /// two or three up. Cold -- a refusal path and a one-shot diagnostic only.</summary>
+    /// <summary>The first few GAME frames above a slot, newest first, as one string. The immediate caller of a
+    /// position setter is always the same forwarder; the frame that chose the value is two or three up. Cold --
+    /// a refusal path and a one-shot diagnostic only.</summary>
     internal static string Chain(int want)
     {
         if (_broken || OperatingSystem.IsWindows()) return "";

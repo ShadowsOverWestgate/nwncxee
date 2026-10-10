@@ -9,7 +9,7 @@ namespace CX.Alloy;
 /// <summary>One view's render state as ALLOY computes it, from the camera object's own fields: the viewport
 /// the view covers, the aspect the projection is built at, the projection and view matrices, and the depth
 /// range the view writes into -- everything <c>Camera::RenderScene</c> @0x4a7920 derives before it calls
-/// <c>Scene::Render</c> (<c>CX-109</c> §1).</summary>
+/// <c>Scene::Render</c>.</summary>
 internal struct AlloyView
 {
     /// <summary>Row-vector (<c>v * M</c>), the convention the rest of Alloy uses, and byte-identical to what
@@ -24,35 +24,10 @@ internal struct AlloyView
     internal bool Valid;
 }
 
-/// <summary>
-/// CX-109: Alloy's own camera-to-view/projection step. The per-view loop's arithmetic is Alloy's -- viewport,
-/// render scale, aspect, projection, view matrix and depth range all come out of the camera object's fields
-/// here, and nothing in Alloy reads <c>m_aurMtxStack</c> or the <c>CurrentCamera</c> latch for them any more.
-/// <see cref="World"/> is Alloy's own answer to "which camera is the world camera", latched by this class's
-/// own hook and valid for the whole frame.
-/// </summary>
-/// <remarks>
-/// <para><b>Why the engine's loop still runs.</b> The hook measures and then calls the original. The
-/// original's remaining consumers are all scene-side and belong to other tickets: the frustum planes at
-/// <c>Camera+0x4e8</c> that <c>ManageSceneBSP</c> @0x47fa80 culls with (CX-104), the MODEL matrix stack that
-/// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 composes every part's world matrix
-/// (<c>VertexPrimitive+0x18</c>) on (CX-103), the <c>CurrentCamera</c> global engine code inside
-/// <c>Scene::Render</c> reads, and the GUI views' viewport/upscale/depth-range state whose only consumer is
-/// the engine's own GUI traversal (tier 4). It also has to run because <c>Scene::Render</c> -- and so
-/// <see cref="RspShim"/> -- is reached through it. When CX-103 and CX-104 land, the world branch can stop
-/// calling it; <c>view.cameraloop 0</c> is the A/B that proves Alloy's numbers first, and
-/// <see cref="Describe"/> prints the two matrices' largest element difference against the engine's.</para>
-/// <para><b>The world view is the simple path, provably.</b> <c>Camera::UpscaleViewport</c> @0x5a44b0 returns
-/// false unless <c>|CAurora::GetGUIScale() - 1| &gt;= 0.09</c> AND the scene is one of ~20 named
-/// <c>sceneGUI_*</c> panels AND the camera has a viewport of its own -- so for the world camera (viewport
-/// 0x0) it is false on every client at every GUI scale. No GUI matrix, no <c>SetViewPortLight</c>, no per-view
-/// depth clear (the <c>Clear(2)</c> is GUI-only), depth range [0, 1], and the aspect is the screen's.</para>
-/// <para><b>Render scale vs GUI scale.</b> Alloy's own render scale (#391) is deliberately NOT here: it sizes
-/// the target the owned passes draw into, not the projection, and since it scales width and height by the
-/// same factor the aspect -- and so the projection -- is unchanged. GUI scale reaches a panel view through
-/// that camera's own viewport fields, which the engine's loop writes before this measures them, so a measured
-/// view carries it.</para>
-/// </remarks>
+/// <summary>Alloy's own camera-to-view/projection step: viewport, render scale, aspect, projection, view
+/// matrix and depth range all come out of the camera object's fields here, not off <c>m_aurMtxStack</c> or the
+/// <c>CurrentCamera</c> latch. <see cref="World"/> is Alloy's own answer to which camera is the world camera,
+/// latched by this class's own hook and valid for the whole frame.</summary>
 internal static unsafe class AlloyCamera
 {
     /// <summary>Degrees to radians, halved: <c>aurMatrixStack::Perspective</c> @0x4db1d0 computes
@@ -103,15 +78,10 @@ internal static unsafe class AlloyCamera
     /// <summary>The world view's measured state -- what the Alloy frame takes its view and projection from.</summary>
     internal static ref readonly AlloyView WorldView => ref _worldView;
 
-    /// <summary>CX-120: measure a view from the scene DATABASE's own camera record instead of from the
-    /// engine's <c>Camera::RenderScene</c>, which does not run in DB mode.
-    /// <para>This class's whole job is "turn a camera object into a view", and seam-scene has already done
-    /// exactly that arithmetic to publish the frame -- so the DB path HANDS the answer over rather than
-    /// re-deriving it from a camera record the renderer would have to read a second time. Re-deriving is how
-    /// the pass and the snapshot end up describing two different cameras one frame apart.</para>
-    /// <para>Without this the world view is never measured, <c>DrawOwned</c> refuses with "no measured world
-    /// camera" and -- because that refusal is an <c>AlloyGate.Fail</c> -- the session is over: the first DB
-    /// area rendered an empty world and said so on screen.</para></summary>
+    /// <summary>Measure a view from the scene database's own camera record. The seam has already done this
+    /// arithmetic to publish the frame, so it HANDS the answer over rather than letting the renderer re-derive
+    /// it -- re-deriving is how the pass and the snapshot end up describing two different cameras one frame
+    /// apart. Without a measured world view <c>DrawOwned</c> refuses, and that refusal fails the gate.</summary>
     internal static void NoteDbView(in AlloyView v, bool world)
     {
         _activeView = v;
@@ -123,16 +93,10 @@ internal static unsafe class AlloyCamera
     /// view and projection from.</summary>
     internal static ref readonly AlloyView ActiveView => ref _activeView;
 
-    /// <summary>The MODEL matrix every world-frame draw sits on: the IDENTITY.
-    /// <para>Derived, not assumed (<c>CX-109</c> §2). Every engine walk brackets its own
-    /// model writes with <c>Push</c>/<c>PopCurrentMatrix</c>; <c>Camera::ModifyGUIMatrix</c> @0x5a61e0 -- the
-    /// only unbalanced-looking writer -- cannot fire for the world view and is popped anyway; and
-    /// <c>AurRenderStrings</c> @0x436480 calls <c>LoadMatrixIdentity</c> with no <c>SetMatrixMode</c> once per
-    /// frame, in the mode the frame leaves selected, which is 2. Alloy's own world rendering is the second
-    /// witness: it mixes <c>VertexPrimitive+0x18</c> with world-space positions read from engine fields, and
-    /// those two only agree in one space.</para>
-    /// <para><see cref="Beams"/>, <see cref="SkyBox"/> and <see cref="Particles"/> each read the stack top
-    /// once a frame for exactly this value before CX-109.</para></summary>
+    /// <summary>The MODEL matrix every world-frame draw sits on: the IDENTITY. Derived, not assumed -- every
+    /// engine walk brackets its own model writes with <c>Push</c>/<c>PopCurrentMatrix</c>,
+    /// <c>Camera::ModifyGUIMatrix</c> @0x5a61e0 cannot fire for the world view and is popped anyway, and
+    /// <c>AurRenderStrings</c> @0x436480 loads identity once a frame in the mode the frame leaves selected.</summary>
     internal static Matrix4x4 ModelBase => Matrix4x4.Identity;
 
     /// <summary>The engine's own latch, for the <c>view.cameraloop 0</c> A/B ONLY.</summary>
@@ -211,7 +175,7 @@ internal static unsafe class AlloyCamera
         // world/area scene, and Scene::Render forks on the same field.
         var sc = new CX.Engine.Scene(scene);
         bool world = sc.BspRoot != IntPtr.Zero;
-        Build(cam, (byte*)(scene + EngineLayout.SceneName), out _activeView);
+        Build(cam, (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref sc.Name), out _activeView);
         if (world)
         {
             _worldViews++;
@@ -224,10 +188,8 @@ internal static unsafe class AlloyCamera
 
     /// <summary>Everything <c>Camera::RenderScene</c> derives before <c>Scene::Render</c>, for one camera:
     /// pure arithmetic over the camera's fields and the engine's own viewport, no GL and no engine call except
-    /// the UI-scale query.
-    /// <para>The rect is carried in FLOATS through the arithmetic and cast to int only for the viewport, which
-    /// is what the engine does: <c>SetViewPortLight</c> takes four <c>(int)</c> casts, while the aspect and the
-    /// ortho extent (<c>cam+0x4c8 = h * 0.01</c>) are computed from the raw floats.</para></summary>
+    /// the UI-scale query. The rect stays in FLOATS and is cast to int only for the viewport, as the engine
+    /// does -- the aspect and the ortho extent (<c>cam+0x4c8 = h * 0.01</c>) come from the raw floats.</summary>
     private static void Build(IntPtr cam, byte* sceneName, out AlloyView v)
     {
         v = default;
@@ -277,11 +239,10 @@ internal static unsafe class AlloyCamera
         v.Valid = true;
     }
 
-    /// <summary>Was this view's viewport rewritten for the game's UI scale? <c>Camera::UpscaleViewport</c>'s own
-    /// answer, asked rather than ported: the table behind it is ~20 hard-coded <c>sceneGUI_*</c> panel names
-    /// and a set of per-panel centring modes, which is the engine's GUI LAYOUT policy rather than render
-    /// arithmetic. Only ever asked for a camera that HAS a rect of its own -- the write-out block is gated on
-    /// exactly that, so the world view can never take this path.</summary>
+    /// <summary>Was this view's viewport rewritten for the game's UI scale? <c>Camera::UpscaleViewport</c>'s
+    /// own answer, asked rather than ported: the table behind it is ~20 hard-coded <c>sceneGUI_*</c> panel
+    /// names and per-panel centring modes -- GUI layout policy, not render arithmetic. Only ever asked for a
+    /// camera that HAS a rect of its own, so the world view can never take this path.</summary>
     private static bool Upscale(IntPtr cam, out float x, out float y, out float w, out float h)
     {
         x = y = w = h = 0f;
@@ -294,7 +255,9 @@ internal static unsafe class AlloyCamera
         for (int i = 0; i < 4; i++) vp[i] = _glViewport[i];
         float* into = stackalloc float[UpscaleFloats];
         for (int i = 0; i < UpscaleFloats; i++) into[i] = 0f;
-        if (new Camera(cam).CameraUpscaleViewport(vp, (float*)(cam + EngineLayout.CamViewX), into) == 0) return false;
+        var c = new Camera(cam);
+        // The engine's own argument: the viewport rect as four floats laid out from the first.
+        if (c.CameraUpscaleViewport(vp, (float*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref c.ViewX), into) == 0) return false;
         x = into[0]; y = into[1]; w = into[2]; h = into[3];
         _upscaled++;
         return true;
@@ -401,12 +364,10 @@ internal static unsafe class AlloyCamera
         return true;
     }
 
-    /// <summary>THE instrument this ticket ships: how far Alloy's own view and projection are from the
-    /// engine's, measured at the frame anchor -- which is the one place both are meant to describe the same
-    /// camera. Called once per Alloy frame; two 64-byte reads and 32 compares, and it is the evidence a live
-    /// session needs before the engine's loop can be dropped (see the class remarks).
-    /// <para>Nonzero is not automatically wrong: with TAA on the projection the pass uses carries the jitter,
-    /// and this is measured BEFORE it. Zero is the claim.</para></summary>
+    /// <summary>How far Alloy's own view and projection are from the engine's, measured at the frame anchor --
+    /// the one place both are meant to describe the same camera. Once per Alloy frame: two 64-byte reads and 32
+    /// compares. Nonzero is not automatically wrong, since with TAA on the pass's projection carries the jitter
+    /// and this is measured BEFORE it; zero is the claim.</summary>
     internal static void NoteParity()
     {
         if (!Owned || !_worldView.Valid || !EngineMatrices(out Matrix4x4 ev, out Matrix4x4 ep)) return;

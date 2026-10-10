@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using CX.Alloy.Db;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy.Seam;
@@ -9,19 +10,17 @@ public sealed unsafe partial class ObjectSlots
 {
     /// <summary><c>Gob::SetBehavior(CAurBehavior*)</c> @0x43ef90, in the engine's exact order: store the new
     /// pointer at +0x450 FIRST, then run the OLD behaviour's deleting destructor (its vtable slot 1), then
-    /// recompute the final scale -- a behaviour is how an object inherits its parent's scale, so replacing one
-    /// changes the scale fold. Storing before destroying matters: the old behaviour's destructor calls back
-    /// into the object, and it must not find itself still installed.</summary>
+    /// recompute the final scale (a behaviour names the parent an object inherits scale from). Storing before
+    /// destroying matters: the old destructor calls back into the object and must not find itself installed.</summary>
     [UnmanagedCallersOnly]
     private static void SetBehavior(nint self, nint behavior)
     {
         if (!Live(self, 22, out DbId id, out nint shell)) return;
         nint old = *(nint*)(shell + SeamLayout.GobBehavior);
         *(nint*)(shell + SeamLayout.GobBehavior) = behavior;
-        // CX-120 (seam-anim): the matching column write, so the behaviour the game installs actually SOLVES.
-        // The blocker the comment below described is gone: mode 0's BehaviorSolvers are no longer installed in
-        // DB mode, so the game's own Control runs, its Part::GetWorld call is virtual and lands on the seam's
-        // Part vtable, and DbAnim solves the engine's classes over columns instead.
+        // The matching column write, so the behaviour the game installs actually SOLVES: BehaviorSolvers is
+        // not installed, so the game's own Control runs, its Part::GetWorld call is virtual and lands on the
+        // seam's Part vtable, and DbAnim solves the engine's classes over columns.
         DbAnim.SetBehavior(id, behavior);
         if (old != 0 && old != behavior) BehaviorSeam.Destroy(old);
         BehaviorSeam.Rescale(id, shell);
@@ -40,10 +39,9 @@ public sealed unsafe partial class ObjectSlots
     }
 
     /// <summary><c>Gob::BehaviorMessage(char const*)</c> @0x437400: forward the message to the installed
-    /// behaviour's own <c>Message</c> slot and do nothing when there is none. This is the path
-    /// <c>RemoveAuroraObject</c> takes for a cross-scene attachment ("Dislodge") and the path
-    /// <c>CAurObject::DieWithoutParent</c> takes ("diewithoutparent 1"); both reach a GAME-constructed
-    /// behaviour through its own vtable, which is why the seam must never interpret the string itself.</summary>
+    /// behaviour's own <c>Message</c> slot, nothing when there is none. <c>RemoveAuroraObject</c> ("Dislodge")
+    /// and <c>CAurObject::DieWithoutParent</c> ("diewithoutparent 1") both reach a GAME-constructed behaviour
+    /// through its own vtable, which is why the seam must never interpret the string itself.</summary>
     [UnmanagedCallersOnly]
     private static void BehaviorMessage(nint self, nint message)
     {
@@ -72,38 +70,32 @@ public sealed unsafe partial class ObjectSlots
             DbId s = Facade.Scene(w, 44);
             return s.IsNull ? $"{w:x}=NO SCENE" : $"s{s.Index}g{s.Gen}\"{SceneDb.SceneName[s.Index]}\"";
         }
-        nint target = *(nint*)(beh + EngineLayout.BehaviorTarget);
+        nint target = new CAurBehavior(beh).Target.Ptr;
         nint targetShell = target == 0 ? 0 : Facade.GobBlock(target);
         return $"o{id.Index}\"{(id.IsNull ? "-" : SceneDb.ObjModel[id.Index]?.Name ?? "-")}\" "
             + $"db={(id.IsNull || SceneDb.ObjScene[id.Index].IsNull ? "none" : $"s{SceneDb.ObjScene[id.Index].Index}")} "
-            + $"word={Scene(Facade.SceneWord(shell))} kept={Scene(*(nint*)(beh + EngineLayout.CrossAttachKeptScene))} "
-            + $"latch={*(byte*)(beh + EngineLayout.CrossAttachLatch)} "
+            + $"word={Scene(Facade.SceneWord(shell))} kept={Scene(new CAurBehaviorCrossSceneAttach(beh).KeptScene)} "
+            + $"latch={new CAurBehaviorCrossSceneAttach(beh).Latch} "
             + $"target={(targetShell == 0 ? "null" : Scene(Facade.SceneWord(targetShell)))}";
     }
 }
 
-/// <summary>CX-120: how the seam deals with <c>CAurBehavior</c> objects. They are NOT CX's: the game allocates
-/// them, runs the engine's constructors in place and patches the vptr with its own
-/// (<c>GuiAurAttachToObject</c> @0x58b050 builds a <c>CAurBehaviorCrossSceneAttach</c> that way), and
-/// <c>CNWCModule</c>'s camera control writes their fields directly. So the seam stores the pointer in the
-/// shell at the engine's +0x450 and calls their vtables -- never their fields, never their allocation.
-/// <para>The slot indices are the measured ones: 10 slots, <c>Message</c> at +0x28, <c>GetType</c> at +0x30,
-/// <c>SetScene(CAurScene*, CAurScene*)</c> at +0x10 -- and the destructor pair collapses on Windows, so every
-/// index past the first shifts by one pointer there.</para></summary>
+/// <summary>How the seam deals with <c>CAurBehavior</c> objects. They are NOT CX's: the game allocates them,
+/// runs the engine's constructors in place, patches the vptr with its own and writes their fields directly, so
+/// the seam stores the pointer in the shell at the engine's +0x450 and calls their vtables -- never their
+/// fields, never their allocation. 10 measured slots; the destructor pair collapses on Windows.</summary>
 public static unsafe class BehaviorSeam
 {
     /// <summary>Linux byte offsets in a <c>CAurBehavior</c> vtable. Windows is one pointer earlier for every
-    /// slot after the destructor pair (the three cross-OS rules in
-    /// CX-183 section 3).</summary>
+    /// slot after the collapsed destructor pair.</summary>
     private static readonly int DeletingDtor = EngineLayout.SeamCAurBehaviorVtblDtorDeleting;
     private static readonly int MessageSlot = EngineLayout.SeamCAurBehaviorVtblMessage;
     private static readonly int GetTypeSlot = EngineLayout.SeamCAurBehaviorVtblGetType;
 
-    /// <summary>The type id <c>CAurBehaviorCrossSceneAttach::GetType</c> @0x58bff0 returns. It is an INTEGER
-    /// tag (<c>mov $0x314d18,%eax</c>; the Windows export <c>?GetType@CAurBehavior@@UEAAHXZ</c> carries the
-    /// <c>int</c> return Itanium drops), not the address of a string -- 0x314d18 is not inside any section of
-    /// the image. <c>RemoveAuroraObject</c> @0x58b210 compares against it to decide between "tell the
-    /// attachment to let go" and "detach from object and scene".</summary>
+    /// <summary>The type id <c>CAurBehaviorCrossSceneAttach::GetType</c> @0x58bff0 returns: an INTEGER tag,
+    /// not the address of a string -- 0x314d18 is in no section of the image, and the Windows export
+    /// <c>?GetType@CAurBehavior@@UEAAHXZ</c> carries the <c>int</c> return Itanium drops.
+    /// <c>RemoveAuroraObject</c> @0x58b210 compares against it to pick "let go" over "detach object+scene".</summary>
     public const int CrossSceneAttachType = 0x314d18;   // not-an-offset: an integer type tag, and 0x314d18 is not an address in this image
 
     /// <summary>The behaviour types the engine's own classes return, for a seam that needs to answer as one:
@@ -137,15 +129,10 @@ public static unsafe class BehaviorSeam
         *(nint*)(shell + SeamLayout.GobBehavior) = behavior;
     }
 
-    /// <summary>CX-120: construct the chase camera's behaviour exactly as <c>Camera::SetFollow</c> @0x5aa500
-    /// does -- <c>operator_new(0x90)</c> and the engine's own constructor, with the camera's <c>CAurObject</c>
-    /// sub-object (<c>camera + 8</c>) as the owner and <paramref name="target"/> as what it follows.
-    /// <para>The engine's allocator, not ours: the behaviour is destroyed through its own deleting destructor
-    /// (<see cref="Destroy"/>), which calls <c>operator delete</c>, so it has to have come from
-    /// <c>operator new</c>. 0x90 is the size that call site passes, read off the decompile rather than from
-    /// <c>sizeof</c> of anything we declare.</para>
-    /// <para>0 when either symbol is unresolved -- a loud, counted refusal: with no behaviour the camera never
-    /// moves, and a silent one would read as "the world is empty".</para></summary>
+    /// <summary>Construct the chase camera's behaviour as <c>Camera::SetFollow</c> @0x5aa500 does:
+    /// <c>operator_new(0x90)</c> plus the engine's own constructor, the camera's <c>CAurObject</c> sub-object
+    /// (<c>camera + 8</c>) as owner and <paramref name="target"/> as what it follows. The engine's allocator is
+    /// required -- <see cref="Destroy"/> calls <c>operator delete</c>; 0 is a loud refusal and the camera is still.</summary>
     public static nint NewCameraFollow(nint cameraShell, nint target)
     {
         if (cameraShell == 0 || target == 0) return 0;
@@ -214,10 +201,9 @@ public static unsafe class BehaviorSeam
     }
 
     /// <summary><c>Gob::CalculateFinalScale</c> @0x43eef0: the object's two scale channels times the PARENT's
-    /// final scale when a behaviour is installed (the behaviour is what names the parent), then the same push
-    /// down every attachment. The seam folds the parent through the attachment column instead of through the
-    /// behaviour's fields, because a behaviour's layout is the game's and reading it would be the one thing
-    /// ADR 0028 says the seam must not do.</summary>
+    /// final scale when a behaviour is installed (the behaviour names the parent), then the same push down
+    /// every attachment. The seam folds the parent through the attachment column, not the behaviour's fields,
+    /// whose layout is the game's and which ADR 0028 says the seam must not read.</summary>
     public static void Rescale(DbId id, nint shell)
     {
         float* ch = (float*)(shell + SeamLayout.GobScaleChannel);

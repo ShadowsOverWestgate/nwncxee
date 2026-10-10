@@ -5,18 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-188 step 4 (ADR 0029): the HOT-LIGHT DEBT pass -- one compute dispatch over the deferred frame
-/// that takes a creature's shadow back out of the baked term, once per pixel. The deferred stage compiles the
-/// walk's hot branch out (<c>CX_NO_HOT</c>), so this is where <c>lmSub</c> comes from: each 16x16 tile culls
-/// this frame's <see cref="PairShadows"/> pairs against its own view-space box, and the pixels of a tile that
-/// holds one evaluate the pair tile and subtract <c>lmShare * min(lmSub.x / lmLum + lmSub.y, 1)</c> -- the
-/// spec's own line, on the G-buffer's own lanes.
-/// <para><b>Why a second dispatch and not a branch in <see cref="DeferredLights"/>.</b> A tile with no pair
-/// over it exits at the first barrier having read NO G-buffer, and most tiles of a frame are that tile. Inside
-/// the deferred pass the same work would be charged to every pixel's register budget and to the one dispatch's
-/// own timing; here it is a term of its own on the period line, and <c>lightmap.moverlights 0</c> is a clean
-/// A/B of the whole feature. Adding and subtracting into the HDR image commutes, so only the memory barrier
-/// between the two passes matters, not their order.</para></summary>
+/// <summary>The HOT-LIGHT DEBT pass (ADR 0029): one compute dispatch over the deferred frame that takes a
+/// creature's shadow back out of the baked term, once per pixel -- each 16x16 tile culls this frame's
+/// <see cref="PairShadows"/> pairs against its own view-space box and subtracts the spec's own term. A second
+/// dispatch, not a branch in the light pass: a tile with no pair exits at the first barrier, G-buffer unread.</summary>
 internal static unsafe class PairDebt
 {
     /// <summary>The overridable compute stage's resref (hak-limit length).</summary>
@@ -37,24 +29,31 @@ internal static unsafe class PairDebt
 
     private static ExtenderLog? _log;
     private static readonly StandDown _down = new("PairDebt");
-    /// <summary><c>_prog</c> is the program the pass BINDS and <c>_progFull</c> the shipped one it goes back
-    /// to -- they differ only while <c>/alloy bench</c> walks the ablation ladder (<see cref="Ablate"/>).</summary>
-    private static uint _prog, _progFull, _bufStats;
-    private static AblateProgram _abl;
-    private static int _locRect, _locInvVp, _locProj, _locView, _locCubes, _locLmMovers, _locLightOcc;
-    private static int _runs;
-    private static uint _overTiles, _overPairs, _lastTiles, _lastPairs, _lastCov;
-    private static uint _covTiles;
-    private static GpuReadback _statsRead;
-    private static int _statsSeq, _statsFrame;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so neither a name
+    /// nor a uniform location from the dead context survives as a field nobody remembered to zero. The
+    /// harvest baselines ride here because the GPU counters they are deltas against go with the buffer.</summary>
+    private sealed class PairDebtState
+    {
+        public uint Prog, BufStats;
+        public int LocRect, LocInvVp, LocProj, LocView, LocCubes, LocLmMovers, LocLightOcc;
+        /// <summary>The last harvest's absolute counters; the period line reports the delta.</summary>
+        public uint LastTiles, LastPairs, LastCov;
+        public GpuReadback StatsRead;
+        public int StatsSeq, StatsFrame;
+    }
 
-    /// <summary>Is there a debt to take this frame? The pairs exist (which already requires
-    /// <see cref="DeferredLights.Active"/>, so a forward frame never reaches here), the atlas is allocated and
-    /// this program linked.</summary>
-    /// <summary>The debt pass failed for the session: <see cref="PairShadows.On"/> reads it so the pairing stands
-    /// down with it and the hot lights keep their dyn pages.</summary>
+    private static PairDebtState _gl = new();
+    private static int _runs;
+    private static uint _overTiles, _overPairs;
+    private static uint _covTiles;
+
+    /// <summary>The debt pass failed for the session: <see cref="PairShadows.On"/> reads it so the pairing
+    /// stands down with it and the hot lights keep their dyn pages.</summary>
     internal static bool StoodDown => _down.Failed;
 
+    /// <summary>Is there a debt to take this frame? The pairs exist (which already requires
+    /// <see cref="DeferredLights.Active"/>, so a forward frame never reaches here), the atlas is allocated
+    /// and this program linked.</summary>
     internal static bool Active => PairShadows.On && PairShadows.Count > 0 && PairShadows.Tex != 0
                                    && GBuffer.Ready && !GBuffer.Failed && Ready();
 
@@ -70,21 +69,21 @@ internal static unsafe class PairDebt
         if (viewport[2] <= 0 || viewport[3] <= 0) return;
         if (!Matrix4x4.Invert(*vp, out Matrix4x4 invVp)) return;
 
-        Gl.UseProgram(_prog);
+        Gl.UseProgram(_gl.Prog);
         // the light SSBO, the cluster table, the mover spheres -- and PairShadows' own table and atlas
         AlloyLights.BindForDraw();
         // ...and this pass's CxPass block, the cascade and cube arrays, and uLocalCubes, from the same frame
         // state and the same viewport the colour pass bound: CxLocalBakedVis reads the static cube through it.
-        AlloyRenderer.BindPass(_locCubes, viewport, near, far);
-        Gl.Uniform1i(_locLmMovers, LightmapBake.MoverMode);
+        AlloyRenderer.BindPass(_gl.LocCubes, viewport, near, far);
+        Gl.Uniform1i(_gl.LocLmMovers, LightmapBake.MoverMode);
         // unreached here (no glossy mirror walk in this stage), bound so the program is never left reading an
         // unset uniform that a later edit might make reachable
-        Gl.Uniform2f(_locLightOcc, Lighting.HiddenLights.V ? 1f : 0f, AlloyRenderer.GlossyRough);
-        Gl.Uniform4iv(_locRect, 1, viewport);
-        Gl.UniformMatrix4fv(_locInvVp, 1, 0, (float*)&invVp);
-        Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
-        Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindStats, _bufStats);
+        Gl.Uniform2f(_gl.LocLightOcc, Lighting.HiddenLights.V ? 1f : 0f, AlloyRenderer.GlossyRough);
+        Gl.Uniform4iv(_gl.LocRect, 1, viewport);
+        Gl.UniformMatrix4fv(_gl.LocInvVp, 1, 0, (float*)&invVp);
+        Gl.UniformMatrix4fv(_gl.LocProj, 1, 0, (float*)proj);
+        Gl.UniformMatrix4fv(_gl.LocView, 1, 0, (float*)view);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindStats, _gl.BufStats);
 
         BindUnit(TextureSlots.Gbuf0, GBuffer.Tex0);
         BindUnit(TextureSlots.Gbuf1, GBuffer.Tex1);
@@ -114,19 +113,19 @@ internal static unsafe class PairDebt
     /// <c>glGetBufferSubData</c>, which on NVIDIA waits out the whole queued frame.</summary>
     private static void Harvest()
     {
-        if (--_statsFrame > 0) return;
-        _statsFrame = HarvestEvery;
-        if (!GpuReadback.EntryPoints || !_statsRead.Ensure(StatsWords * sizeof(uint))) return;
+        if (--_gl.StatsFrame > 0) return;
+        _gl.StatsFrame = HarvestEvery;
+        if (!GpuReadback.EntryPoints || !_gl.StatsRead.Ensure(StatsWords * sizeof(uint))) return;
         // BUFFER_UPDATE: the copy reads a SHADER-written buffer, which SHADER_STORAGE alone does not order
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
-        int w = _statsSeq % GpuReadback.Slots, r = (_statsSeq + 1) % GpuReadback.Slots;
-        _statsSeq++;
-        _statsRead.Copy(_bufStats, 0, w, 0, StatsWords * sizeof(uint));
-        _statsRead.Fence(w);
-        uint* v = (uint*)_statsRead.Ready(r);
+        int w = _gl.StatsSeq % GpuReadback.Slots, r = (_gl.StatsSeq + 1) % GpuReadback.Slots;
+        _gl.StatsSeq++;
+        _gl.StatsRead.Copy(_gl.BufStats, 0, w, 0, StatsWords * sizeof(uint));
+        _gl.StatsRead.Fence(w);
+        uint* v = (uint*)_gl.StatsRead.Ready(r);
         if (v == null) return;
-        _overTiles += v[0] - _lastTiles; _overPairs += v[1] - _lastPairs; _covTiles += v[2] - _lastCov;
-        _lastTiles = v[0]; _lastPairs = v[1]; _lastCov = v[2];
+        _overTiles += v[0] - _gl.LastTiles; _overPairs += v[1] - _gl.LastPairs; _covTiles += v[2] - _gl.LastCov;
+        _gl.LastTiles = v[0]; _gl.LastPairs = v[1]; _gl.LastCov = v[2];
     }
 
     private static void BindUnit(uint unit, uint tex)
@@ -140,7 +139,7 @@ internal static unsafe class PairDebt
     /// shadow gone from the baked ground, and nothing in the log.</summary>
     private static bool Ready()
     {
-        if (_prog != 0) return true;
+        if (_gl.Prog != 0) return true;
         if (_down.Failed) return false;
         if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || Gl.BindImageTexture == null || Gl.BindBufferBase == null)
             return _down.Fail(_log, "compute, image stores or SSBO entry points are missing",
@@ -155,28 +154,31 @@ internal static unsafe class PairDebt
                               "the hot-light debt is off for the session");
         }
         uint b;
-        Gl.CreateBuffers(1, &b); _bufStats = b;
+        Gl.CreateBuffers(1, &b); _gl.BufStats = b;
         uint* zero = stackalloc uint[StatsWords] { 0, 0, 0, 0 };
-        Gl.NamedBufferData(_bufStats, (IntPtr)(StatsWords * sizeof(uint)), zero, Gl.DYNAMIC_DRAW);
-        _lastTiles = _lastPairs = _lastCov = 0; _statsFrame = 1;
-        _progFull = prog;
+        Gl.NamedBufferData(_gl.BufStats, (IntPtr)(StatsWords * sizeof(uint)), zero, Gl.DYNAMIC_DRAW);
+        _gl.LastTiles = _gl.LastPairs = _gl.LastCov = 0; _gl.StatsFrame = 1;
         Select(prog);
         _log?.Info("PairDebt: ready -- one 16x16 compute dispatch takes the creature shadows back out of the baked term");
         return true;
     }
 
-    /// <summary>Bind <paramref name="prog"/> and take its uniform locations. At link, and again whenever the
-    /// bench swaps an ablation variant in or out: a variant is its own program object.</summary>
+    /// <summary>The program this pass binds. Assigning points the pass at another build of its own stage, for
+    /// a diagnostic that measures one; the locations come with it, since a build is its own program object.</summary>
+    internal static uint Program { get => _gl.Prog; set => Select(value); }
+
+    /// <summary>Bind <paramref name="prog"/> and take its uniform locations -- at link, and again on each
+    /// change of <see cref="Program"/>.</summary>
     private static void Select(uint prog)
     {
-        _prog = prog;
-        _locRect = GlProgram.Loc(prog, "uRect");
-        _locInvVp = GlProgram.Loc(prog, "uInvVp");
-        _locProj = GlProgram.Loc(prog, "uProj");
-        _locView = GlProgram.Loc(prog, "uView");
-        _locCubes = GlProgram.Loc(prog, "uLocalCubes");
-        _locLmMovers = GlProgram.Loc(prog, "uLmMovers");
-        _locLightOcc = GlProgram.Loc(prog, "uLightOcc");
+        _gl.Prog = prog;
+        _gl.LocRect = GlProgram.Loc(prog, "uRect");
+        _gl.LocInvVp = GlProgram.Loc(prog, "uInvVp");
+        _gl.LocProj = GlProgram.Loc(prog, "uProj");
+        _gl.LocView = GlProgram.Loc(prog, "uView");
+        _gl.LocCubes = GlProgram.Loc(prog, "uLocalCubes");
+        _gl.LocLmMovers = GlProgram.Loc(prog, "uLmMovers");
+        _gl.LocLightOcc = GlProgram.Loc(prog, "uLightOcc");
         // the two cube arrays carry no layout(binding) -- the lib is shared with programs that bind them on
         // other units -- so they take theirs here, as every lit program does at its own link
         Gl.UseProgram(prog);
@@ -185,28 +187,10 @@ internal static unsafe class PairDebt
         Gl.UseProgram(0);
     }
 
-    /// <summary>CX-188: run the debt on the ablation ladder's rung <paramref name="stage"/> (1 = the G-buffer
-    /// read and the tile slab, 2 = + the pair cull and the sort), or on the shipped program at 0. Called by
-    /// <c>/alloy bench</c> and nothing else; it restores 0 on every step and at finish. False = that rung did
-    /// not link, which refuses THE STEP -- the shipped program stays bound. Rungs 1 and 2 subtract no debt, so
-    /// those steps draw the creature shadows missing from the baked ground.</summary>
-    internal static bool Ablate(int stage)
-    {
-        if (_progFull == 0) return stage == 0;
-        if (stage <= 0) { Select(_progFull); return true; }
-        uint p = _abl.Get(ShdCs, stage, _log, "PairDebt");
-        if (p == 0) { Select(_progFull); return false; }
-        Select(p);
-        return true;
-    }
-
     /// <summary>Context loss: the program and the stats buffer are gone.</summary>
     internal static void Forget()
     {
-        _prog = 0; _progFull = 0; _bufStats = 0;
-        _abl.Forget();
-        _statsRead.ContextLost();
-        _lastTiles = _lastPairs = _lastCov = 0;
+        _gl = new PairDebtState();
         _down.Forget();
     }
 

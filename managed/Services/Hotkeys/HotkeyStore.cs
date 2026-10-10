@@ -4,20 +4,11 @@ using CX.Framework;
 namespace CX.Services.Hotkeys;
 
 /// <summary>
-/// The consent list and its persistence -- scoped PER SERVER by a client-minted token. Consent is a
-/// capability, not a global switch: on consent the client mints a random token, records {token ->
-/// keys}, and hands the token to that server. On a later login the server proves prior consent by
-/// presenting that token back; the client looks it up and restores exactly that server's keys. A
-/// server that was never granted a token (including one replaying another's key list) has nothing to
-/// present, so the armed set stays EMPTY and every key becomes a fresh consent prompt.
+/// The consent list and its persistence, a capability scoped PER SERVER by a client-minted token: on consent
+/// the client mints one, records {token -> keys} and hands it over; a later login restores exactly that
+/// server's keys when it presents the token back. A server granted none (including one replaying another's
+/// list) arms nothing. Cfg is <see cref="Path"/>, SDL keycodes (SDLK, NOT Windows VK: f=102, F1=1073741882).
 /// </summary>
-/// <remarks>
-/// Effective armed set is per session: empty at startup and every login until a recognised token is
-/// presented. Cfg is cx-hotkeys.cfg in the client's user directory (see <see cref="Path"/>) --
-/// [token=&lt;hex&gt;] sections, one SDL keycode per
-/// line (SDLK, NOT Windows VK: f=102 not 70, F1=1073741882). Static, not DI: the hot key handler
-/// reads Armed directly; swaps publish an immutable snapshot atomically.
-/// </remarks>
 public static class HotkeyStore
 {
     /// <summary>The keys captured right now: what the server last asked for, narrowed to what the
@@ -43,7 +34,7 @@ public static class HotkeyStore
 
     /// <summary>
     /// Load the cfg on first real use, gated by <see cref="ConfigFile.Ready"/> -- the one place the pre-main
-    /// deferral rule lives (#164). This file's own reader stays hand-rolled: the format is sectioned
+    /// deferral rule lives. This file's own reader stays hand-rolled: the format is sectioned
     /// (<c>[token=..]</c> headers), not the flat key=value the shared walker covers.
     /// </summary>
     private static void EnsureLoaded(ExtenderLog log)
@@ -203,7 +194,11 @@ public static class HotkeyStore
         bool unknownEmpty = !Activate(ghost, log) && Armed.Count == 0 && Consented.Count == 0;
         BeginSession();                                           // reset to the real startup posture
         bool freshEmpty = Armed.Count == 0 && Consented.Count == 0 && _activeToken == null;
-        bool tokenOk = Mint().Length == 32;
+        // 32 lowercase hex characters, and never the same twice: a token a server could predict is a token
+        // it could present without ever having been granted one.
+        string t1 = Mint(), t2 = Mint();
+        bool tokenOk = t1.Length == 32 && t2.Length == 32 && t1 != t2;
+        foreach (char ch in t1) tokenOk &= (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
         log.Info(unknownEmpty && freshEmpty && tokenOk
             ? "HotkeyStore: fail-closed self-check passed"
             : "HotkeyStore: FAIL-CLOSED SELF-CHECK FAILED -- consent default is unsafe");
@@ -211,7 +206,7 @@ public static class HotkeyStore
 
     public static void Save(ExtenderLog log)
     {
-        // Same deferral rule as Load (#190). NOT retryable: the callers are one-shot
+        // Same deferral rule as Load. NOT retryable: the callers are one-shot
         // consent actions, so a grant made while the user dir is unresolved persists only in memory. Reachable
         // only if consent ever moves off the in-game modal, which runs long past pre-main.
         if (!ConfigFile.Ready) return;

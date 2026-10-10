@@ -5,26 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>Cel shading as a post-stack stage, on the client's own Toon video option
-/// (<c>CClientOptions::SetEnableFBEffectToon</c> @0x66ae70 ORs 0x20 into the option mask
-/// <c>ConfigureFBEffectPostProcessing</c> publishes as int param 2), and on that option's own three sliders.
-/// Nothing of the engine's <c>inc_postpr_toon</c> is carried over -- only the idea, and the dials the player
-/// already has.
-/// <para>The ink is a plane fit: each neighbour pair PREDICTS this pixel's depth (averaged in raw window z,
-/// the space a plane is affine in) and only the residual inks, taken relative to view distance. A flat
-/// surface at any grazing angle predicts itself exactly, so the stage cannot pen the floor the way an
-/// absolute <c>|dz|</c> threshold does, while a silhouette or a crease -- a break in the depth GRADIENT --
-/// fires at any distance. The colour edge is the same shape over display luminance, and both are one
-/// residual/threshold ratio, so the sliders mean what they say: Depth Edge Threshold is a fraction of view
-/// distance, Colour Edge Threshold a luminance step, and Edge Hardness the width of the ramp either side of
-/// the threshold (0 = off, as in the stock stage). Ink darkens the colour underneath rather than painting
-/// black, which keeps a lit scene from going flat.</para>
-/// <para>Bands are OFF by default (<c>/post toonbands 1</c>). On, they quantise LUMINANCE and rescale the
-/// colour, so hue and saturation survive the step (per-channel RGB quantisation is what makes the stock look
-/// muddy), with the levels at band CENTRES so shadows land on a dark step instead of crushing to black, and
-/// each boundary smoothstepped across one <c>fwidth</c>.</para>
-/// <para>The stage sits ahead of taa/aa in the stack, so the ink is what the anti-aliaser smooths.
-/// Live-UNVERIFIED: built against the option, not yet seen with it on.</para></summary>
+/// <summary>Cel shading as a post-stack stage, on the client's own Toon video option and its three sliders;
+/// nothing of the engine's <c>inc_postpr_toon</c> is carried over. The ink is a plane fit -- each neighbour
+/// pair PREDICTS this pixel's depth in raw window z and only the residual inks, taken relative to view
+/// distance -- so a flat surface at a grazing angle predicts itself. Ahead of taa/aa, so the ink is smoothed.</summary>
 internal static unsafe class ToonStage
 {
     /// <summary><c>POSTPROCESSING_TOON 0x0020</c> in <c>inc_postpr.shd</c>; confirmed as the bit the
@@ -103,7 +87,6 @@ internal static unsafe class ToonStage
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
-        check.Expect(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd, and the engine setter's `or $0x20`)");
         check.Expect(StageFs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is SSAO's");
         check.Expect(StageFs.Contains("CxViewDist(zx) - d0"), "the ink is a plane fit against the neighbours' prediction");
         // ...and the prediction is made in RAW depth, which is the property the string cannot assert. A plane

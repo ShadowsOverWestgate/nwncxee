@@ -4,12 +4,9 @@ using CX.Services.Anim;
 namespace CX.Alloy;
 
 /// <summary>
-/// Every Alloy pass's lifecycle, declared once (#175). This is the file the acceptance criterion means by
-/// "adding a pass requires touching one file": a new pass writes whatever methods it actually has and adds
-/// one entry here -- instead of writing up to eight methods and remembering to wire each into four separate
-/// hardcoded call lists, which is the convention that produced the gaps below.
-/// <para>Order is <see cref="FrameGraph"/>'s. A <c>null</c> slot is a pass that genuinely has no such
-/// concern; where a slot is missing and probably should not be, it says so on the line.</para>
+/// Every Alloy pass's lifecycle, declared once: a new pass writes whatever methods it actually has and adds
+/// one entry here. Order is <see cref="FrameGraph"/>'s. A <c>null</c> slot is a pass that genuinely has no
+/// such concern; where a slot is missing and probably should not be, the line says so.
 /// </summary>
 internal static class RenderPasses
 {
@@ -483,7 +480,7 @@ internal static class RenderPasses
         r.Seal();
     }
 
-    /// <summary>CX-112's off-device suite, adapted to the repo's one assert.</summary>
+    /// <summary>The MDL parser's off-device suite, adapted to the repo's one assert.</summary>
     private static void MdlParseCheckSelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "MdlParser.SelfCheck");

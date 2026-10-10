@@ -6,9 +6,9 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-57: the static world as Steam Audio's scene. The acoustic geometry is the geometry Alloy already
-/// owns -- tile parts and Static placeables, world space under an identity matrix, off the pools' host shadows
-/// (the <see cref="OfferChart"/> recipe) -- so sound hits exactly the walls the player sees.</summary>
+/// <summary>The static world as Steam Audio's scene. The acoustic geometry is the geometry Alloy already owns --
+/// tile parts and Static placeables, read off the pools' host shadows -- so sound hits exactly the walls the
+/// player sees.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>Owned slots in the static set right now: the settle signal the acoustic scene waits on. A linear
@@ -25,9 +25,9 @@ public sealed unsafe partial class AlloyRenderer
         => StaticAtEnroll(_oCls[i], _oGob[i], _oTileGob[i], _oMx[i], _vSkin[_oVao[i]], _oDangly[i], 0) == 0
            && _primTable != null && _primTable[_oPrim[i]] == Gl.TRIANGLES;
 
-    /// <summary>CX-120: the same question of a DATABASE slot. Every DB draw is TRIANGLES (the batch row says
-    /// so unconditionally), so what is left is "does this part hold still": a tile part always does, and an
-    /// object part does when its record says the object is static. Nothing here reads engine scene memory.</summary>
+    /// <summary>The same question of a database slot. Every DB draw is TRIANGLES, so all that is left is "does
+    /// this part hold still": a tile part always does, an object part when its record says Static. Reads no
+    /// engine scene memory.</summary>
     private static bool DbAcoustic(int i)
     {
         int part = _oDbPart[i];

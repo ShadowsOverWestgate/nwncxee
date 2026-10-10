@@ -3,11 +3,10 @@ using CX.Framework;
 namespace CX.Graphics;
 
 /// <summary>
-/// Minimal OpenGL 3.3-core entry points for the owned text draw. The client requests a CORE
-/// profile (verified: SDL_GL_SetAttribute PROFILE_MASK=CORE, 3.3), so there is no fixed-function
-/// pipeline -- everything goes through shaders/VAO/VBO. Modern GL (&gt;=1.3) isn't a guaranteed
-/// libGL export, so we resolve every pointer through the client's exported SDL_GL_GetProcAddress
-/// at first draw, when a context is current. All calls are blittable and allocation-free.
+/// The OpenGL entry points the owned draws call. The client requests a CORE profile (3.3), so
+/// there is no fixed-function pipeline -- everything goes through shaders/VAO/VBO. Modern GL is
+/// not a guaranteed libGL export, so every pointer resolves through the client's exported
+/// SDL_GL_GetProcAddress at first draw, with a context current; all calls are allocation-free.
 /// </summary>
 public static unsafe class Gl
 {
@@ -16,28 +15,28 @@ public static unsafe class Gl
     public const uint CONSTANT_ALPHA = 0x8003, ONE_MINUS_CONSTANT_ALPHA = 0x8004;
     /// <summary>glGetTexLevelParameteriv queries: the level's internal format, and its alpha channel width.</summary>
     public const uint TEXTURE_INTERNAL_FORMAT = 0x1003, TEXTURE_ALPHA_SIZE = 0x805F;
-    /// <summary>#211: the level queries the owned-texture copy sizes itself from -- is this level a block
+    /// <summary>The level queries the owned-texture copy sizes itself from -- is this level a block
     /// format, how many bytes does it occupy, and (when it is not) how wide is each channel.</summary>
     public const uint TEXTURE_COMPRESSED = 0x86A1, TEXTURE_COMPRESSED_IMAGE_SIZE = 0x86A0,
                       TEXTURE_RED_SIZE = 0x805C, TEXTURE_GREEN_SIZE = 0x805D, TEXTURE_BLUE_SIZE = 0x805E;
     public const uint TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001;
-    /// <summary>CX-52 step 4: the internal-format queries the block-format probe asks, and the swizzle the
+    /// <summary>The internal-format queries the block-format probe asks, and the swizzle the
     /// engine sets on a one-channel texture.</summary>
     public const uint INTERNALFORMAT_SUPPORTED = 0x826F, TEXTURE_COMPRESSED_BLOCK_WIDTH = 0x82B1,
                       TEXTURE_COMPRESSED_BLOCK_HEIGHT = 0x82B2, TEXTURE_COMPRESSED_BLOCK_SIZE = 0x82B3;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
     public const uint MULTISAMPLE = 0x809D, STENCIL_TEST = 0x0B90;
-    /// <summary>#292: the face <c>glCullFace</c> discards. BACK is the engine's own default
+    /// <summary>The face <c>glCullFace</c> discards. BACK is the engine's own default
     /// (<c>Scene::RenderDrawBucket</c> @0x46d060 restores <c>SetCullFace(1)</c> on every exit).</summary>
     public const uint BACK = 0x0405;
-    /// <summary>#125: GL_DEPTH_CLAMP. The Alloy sky replays a dome the engine drew under its OWN projection
+    /// <summary>GL_DEPTH_CLAMP. The Alloy sky replays a dome the engine drew under its OWN projection
     /// (far 1000.0) beneath the world's, so it can cross the world far plane; clamping keeps the far-plane
     /// fragments rather than letting them clip into a hole at the horizon.</summary>
     public const uint DEPTH_CLAMP = 0x864F;
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE_MINUS_SRC_COLOR = 0x0301;
     public const uint COLOR_ATTACHMENT1 = 0x8CE1;
     public const uint COLOR_ATTACHMENT2 = 0x8CE2, COLOR_ATTACHMENT3 = 0x8CE3;
-    /// <summary>CX-188: the four the deferred G-buffer attaches on (<c>GBuffer.FirstAttachment</c>).</summary>
+    /// <summary>The four the deferred G-buffer attaches on (<c>GBuffer.FirstAttachment</c>).</summary>
     public const uint COLOR_ATTACHMENT4 = 0x8CE4, COLOR_ATTACHMENT5 = 0x8CE5,
                       COLOR_ATTACHMENT6 = 0x8CE6, COLOR_ATTACHMENT7 = 0x8CE7;
     public const uint POLYGON_OFFSET_FILL = 0x8037;
@@ -45,12 +44,12 @@ public static unsafe class Gl
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
     public const uint BYTE = 0x1400, SHORT = 0x1402;
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
-    /// <summary>#212: the two scratch targets glCopyBufferSubData copies between, and the size query that
+    /// <summary>The two scratch targets glCopyBufferSubData copies between, and the size query that
     /// says how much. Copy targets exist so a buffer can be read and written without disturbing whatever the
     /// caller had bound for drawing.</summary>
     public const uint COPY_READ_BUFFER = 0x8F36, COPY_WRITE_BUFFER = 0x8F37, BUFFER_SIZE = 0x8764;
     public const uint VERTEX_SHADER = 0x8B31, FRAGMENT_SHADER = 0x8B30, GEOMETRY_SHADER = 0x8DD9;
-    /// <summary>#147: the tessellation pair, and the primitive mode that feeds them. GL 4.0+, so core on the
+    /// <summary>The tessellation pair, and the primitive mode that feeds them. GL 4.0+, so core on the
     /// 4.6 context the Alloy pass already requires -- water is the one class whose geometry is coarse enough
     /// to need subdividing and cheap enough to afford it.</summary>
     public const uint TESS_CONTROL_SHADER = 0x8E88, TESS_EVALUATION_SHADER = 0x8E87;
@@ -64,27 +63,27 @@ public static unsafe class Gl
     public const uint R8 = 0x8229, RED = 0x1903;
     /// <summary>glClearBufferfv's buffer selector.</summary>
     public const uint COLOR = 0x1800;
-    /// <summary>#243: the hi-Z pyramid's format -- one float per texel, holding the MAX window depth of the
+    /// <summary>The hi-Z pyramid's format -- one float per texel, holding the MAX window depth of the
     /// region it covers.</summary>
     public const uint R32F = 0x822E, RG32F = 0x8230;
     public const uint TEXTURE_MIN_FILTER = 0x2801, TEXTURE_MAG_FILTER = 0x2800;
     public const uint TEXTURE_WRAP_S = 0x2802, TEXTURE_WRAP_T = 0x2803, TEXTURE_WRAP_R = 0x8072;
     public const int  NEAREST = 0x2600, LINEAR = 0x2601, CLAMP_TO_EDGE = 0x812F, REPEAT = 0x2901;
-    // Cube map (shadow cubes, #65 slice 6). Faces are POSITIVE_X + 0..5 (+X,-X,+Y,-Y,+Z,-Z).
+    // Cube map (shadow cubes). Faces are POSITIVE_X + 0..5 (+X,-X,+Y,-Y,+Z,-Z).
     public const uint TEXTURE_CUBE_MAP = 0x8513, TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515, TEXTURE_BINDING_CUBE_MAP = 0x8514;
     public const uint TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_BINDING_2D_ARRAY = 0x8C1D, SAMPLER_BINDING = 0x8919;
-    /// <summary>Cube map array (GL 4.0) -- the local-light shadow cubes (#95). Layer 6*cube + face, so
+    /// <summary>Cube map array (GL 4.0) -- the local-light shadow cubes. Layer 6*cube + face, so
     /// <c>glFramebufferTextureLayer</c> addresses one face. <c>TEXTURE_CUBE_MAP_SEAMLESS</c> is a global
     /// enable, not a texture parameter: it makes filtering blend across face borders, which is what removes
     /// the seam the interim cubes fought with an over-scanned face frustum.</summary>
     public const uint TEXTURE_CUBE_MAP_ARRAY = 0x9009, TEXTURE_BINDING_CUBE_MAP_ARRAY = 0x900A,
                       TEXTURE_CUBE_MAP_SEAMLESS = 0x884F;
     public const uint UNPACK_ALIGNMENT = 0x0CF5, UNPACK_ROW_LENGTH = 0x0CF2;
-    /// <summary>#265: the BCn transcode's readback alignment and its two S3TC targets (EXT_texture_compression_s3tc,
+    /// <summary>The BCn transcode's readback alignment and its two S3TC targets (EXT_texture_compression_s3tc,
     /// universally present -- the engine's own DDS path uploads these very enums).</summary>
     public const uint PACK_ALIGNMENT = 0x0D05,
                       COMPRESSED_RGB_S3TC_DXT1 = 0x83F0, COMPRESSED_RGBA_S3TC_DXT5 = 0x83F3;
-    /// <summary>#265: the rest of the readback's pixel-store surface -- row shape, and the two PBO bindings
+    /// <summary>The rest of the readback's pixel-store surface -- row shape, and the two PBO bindings
     /// that would silently turn a client pointer into a buffer offset.</summary>
     public const uint PACK_ROW_LENGTH = 0x0D02, PACK_SKIP_ROWS = 0x0D03, PACK_SKIP_PIXELS = 0x0D04,
                       PIXEL_PACK_BUFFER = 0x88EB, PIXEL_UNPACK_BUFFER = 0x88EC,
@@ -94,9 +93,9 @@ public static unsafe class Gl
     public const uint ACTIVE_TEXTURE = 0x84E0, TEXTURE_BINDING_2D = 0x8069, ARRAY_BUFFER_BINDING = 0x8894;
     public const uint SCISSOR_BOX = 0x0C10;
     public const uint FRAMEBUFFER_BINDING = 0x8CA6, DEPTH_WRITEMASK = 0x0B72, DEPTH_FUNC = 0x0B74, DEPTH_RANGE = 0x0B70;
-    // FBO / depth-pass (shadow map, #65 slice 3).
+    // FBO / depth-pass (shadow map).
     public const uint FRAMEBUFFER = 0x8D40, DEPTH_ATTACHMENT = 0x8D00, FRAMEBUFFER_COMPLETE = 0x8CD5;
-    // Alloy world draw (#81): engine-VAO attribute harvest in the 4.6 context.
+    // Alloy world draw: engine-VAO attribute harvest in the 4.6 context.
     public const uint ELEMENT_ARRAY_BUFFER = 0x8893, ELEMENT_ARRAY_BUFFER_BINDING = 0x8895;
     public const uint VERTEX_ATTRIB_ARRAY_ENABLED = 0x8622, VERTEX_ATTRIB_ARRAY_SIZE = 0x8623,
                       VERTEX_ATTRIB_ARRAY_STRIDE = 0x8624, VERTEX_ATTRIB_ARRAY_TYPE = 0x8625,
@@ -107,23 +106,23 @@ public static unsafe class Gl
                       ATTACHMENT_TEXTURE = 0x1702, FRAMEBUFFER_SRGB = 0x8DB9;
     public const uint DEPTH_COMPONENT = 0x1902, DEPTH_COMPONENT24 = 0x81A6, DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_INT = 0x1405;
     public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, GREATER = 0x0204, ALWAYS = 0x0207, NONE = 0;
-    /// <summary>GL_EQUAL. #364: the highlight mask tests a cutout batch against the depth its own colour
+    /// <summary>GL_EQUAL. The highlight mask tests a cutout batch against the depth its own colour
     /// pass wrote with the discard applied, so only the surviving fragments match.</summary>
     public const uint EQUAL = 0x0202;
-    /// <summary>#132: the current clear colour, as glGetFloatv reads it back -- the engine's own value, so
+    /// <summary>The current clear colour, as glGetFloatv reads it back -- the engine's own value, so
     /// the Alloy HDR target starts from what the engine cleared to instead of from a guess.</summary>
     public const uint COLOR_CLEAR_VALUE = 0x0C22;
-    /// <summary>#129: the depth-attachment probe the Alloy framebuffer copy sizes itself from. A blit of
+    /// <summary>The depth-attachment probe the Alloy framebuffer copy sizes itself from. A blit of
     /// DEPTH_BUFFER_BIT needs the two attachments to agree on format, so the copy allocates from what the
     /// engine's own attachment reports rather than assuming 24-bit. DEPTH (0x1801) is the attachment POINT
     /// the query takes for the default framebuffer, where DEPTH_ATTACHMENT is not a legal name.</summary>
     public const uint FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE = 0x8216, FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE = 0x8217,
                       DEPTH = 0x1801, STENCIL = 0x1802, STENCIL_ATTACHMENT = 0x8D20;
-    /// <summary>#214: FLOAT vs UNSIGNED_NORMALIZED for an attachment's components. The one thing bit widths
+    /// <summary>FLOAT vs UNSIGNED_NORMALIZED for an attachment's components. The one thing bit widths
     /// cannot tell apart -- DEPTH_COMPONENT32 and DEPTH_COMPONENT32F both report 32 -- and a depth blit
     /// between the two is INVALID_OPERATION, so the owned depth allocation has to ask.</summary>
     public const uint FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE = 0x8211, UNSIGNED_NORMALIZED = 0x8C17;
-    /// <summary>#214: the engine's own glClearDepth value, read in the engine context beside
+    /// <summary>The engine's own glClearDepth value, read in the engine context beside
     /// COLOR_CLEAR_VALUE. Per-context state, so the owned 4.6 context cannot be asked for it.</summary>
     public const uint DEPTH_CLEAR_VALUE = 0x0B73;
     public const uint DEPTH_COMPONENT32F = 0x8CAC, DEPTH24_STENCIL8 = 0x88F0, DEPTH_STENCIL = 0x84F9,
@@ -131,18 +130,18 @@ public static unsafe class Gl
                       DEPTH_COMPONENT32 = 0x81A7, DEPTH32F_STENCIL8 = 0x8CAD,
                       FLOAT_32_UNSIGNED_INT_24_8_REV = 0x8DAD, UNSIGNED_SHORT = 0x1403,
                       RENDERBUFFER_INTERNAL_FORMAT = 0x8D44;
-    /// <summary>#121's IBL probe: a half-float colour cube, mip-filtered by roughness. RGBA16F because the
+    /// <summary>The IBL probe: a half-float colour cube, mip-filtered by roughness. RGBA16F because the
     /// probe stores LINEAR radiance -- an 8-bit target would band the sky and clip anything a torch overbrights.
     /// <c>TEXTURE_MAX_LEVEL</c> caps the chain glGenerateMipmap builds, which is also the LOD the shader's
     /// roughness maps onto.</summary>
     public const uint RGBA16F = 0x881A, RGBA = 0x1908, HALF_FLOAT = 0x140B, TEXTURE_MAX_LEVEL = 0x813D;
     /// <summary>The unsized base format. Never a legal glTexStorage2D internalformat -- named so that a
-    /// driver answering it for TEXTURE_INTERNAL_FORMAT can be refused rather than promoted (#360).</summary>
+    /// driver answering it for TEXTURE_INTERNAL_FORMAT can be refused rather than promoted.</summary>
     public const uint RGB = 0x1907;
     public const int LINEAR_MIPMAP_LINEAR = 0x2703, LINEAR_MIPMAP_NEAREST = 0x2701;
-    /// <summary>#243: the hi-Z pyramid's minification filter -- an INTERPOLATED max is not a max.</summary>
+    /// <summary>The hi-Z pyramid's minification filter -- an INTERPOLATED max is not a max.</summary>
     public const int NEAREST_MIPMAP_NEAREST = 0x2700;
-    /// <summary>#139's HDR resolve: the split read/draw binding points glBlitFramebuffer works between, and
+    /// <summary>The HDR resolve: the split read/draw binding points glBlitFramebuffer works between, and
     /// the level clamps that keep a bloom chain's read level out of the range the draw level is attached in
     /// (sampling a level of a texture another level of which is the current attachment is only defined while
     /// BASE/MAX_LEVEL exclude it).</summary>
@@ -150,7 +149,7 @@ public static unsafe class Gl
     public const uint TEXTURE_BASE_LEVEL = 0x813C;
     /// <summary>The per-texture component swizzle. Default is the identity (R,G,B,A), but the engine sets it
     /// for its single-channel legacy formats -- so a texture COPIED rather than re-uploaded has to carry
-    /// these across or it samples differently from the original it is standing in for (#360).</summary>
+    /// these across or it samples differently from the original it is standing in for.</summary>
     public const uint TEXTURE_SWIZZLE_R = 0x8E42, TEXTURE_SWIZZLE_G = 0x8E43,
                       TEXTURE_SWIZZLE_B = 0x8E44, TEXTURE_SWIZZLE_A = 0x8E45;
     /// <summary>Additive blend factors, for the bloom chain's upsample accumulation.</summary>
@@ -158,7 +157,7 @@ public static unsafe class Gl
     /// <summary>Non-multisample completeness codes, told apart so the HDR target can say WHY it stood down --
     /// a multisampled engine attachment beside a single-sample colour texture is the expected refusal.</summary>
     public const uint FRAMEBUFFER_INCOMPLETE_MULTISAMPLE = 0x8D56;
-    /// <summary>#127 grass softening. <c>TEXTURE_MAX_ANISOTROPY</c> is core since 4.6 (same value as the old
+    /// <summary>Grass softening. <c>TEXTURE_MAX_ANISOTROPY</c> is core since 4.6 (same value as the old
     /// EXT), and <c>MAX_TEXTURE_MAX_ANISOTROPY</c> is the driver's ceiling to clamp against.
     /// <c>TEXTURE_LOD_BIAS</c> is sampler state, so it can be set per-draw through a sampler object without
     /// touching the engine's own texture parameters.</summary>
@@ -167,38 +166,38 @@ public static unsafe class Gl
     /// <summary>Sample count of the bound draw framebuffer. 1 (or 0) means alpha-to-coverage has nothing to
     /// modulate and the Alloy grass pass falls back to dithering its cutout edge.</summary>
     public const uint SAMPLES = 0x80A9, SAMPLE_BUFFERS = 0x80A8;
-    /// <summary>#127: the grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
+    /// <summary>The grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
     public const uint RGBA8 = 0x8058;
-    /// <summary>#674: the lightmap's irradiance page format and its packed pixel type, and a PBO readback's
+    /// <summary>The lightmap's irradiance page format and its packed pixel type, and a PBO readback's
     /// usage hint.</summary>
     public const uint R11F_G11F_B10F = 0x8C3A, UNSIGNED_INT_10F_11F_11F_REV = 0x8C3B, STREAM_READ = 0x88E1;
-    /// <summary>#211: the sized formats an unsized engine upload has to be promoted to before
+    /// <summary>The sized formats an unsized engine upload has to be promoted to before
     /// <see cref="TexStorage2D"/> will take it, and the unsized enums the engine actually uses
     /// (<c>glTexImage2D</c> @0x4cad3d passes GL_RGB/GL_RGBA/GL_RED verbatim).</summary>
     public const uint RGB8 = 0x8051, RG8 = 0x822B, RG = 0x8227, RGB_ = 0x1907, RGBA_ = 0x1908, RG16F = 0x822F;
-    /// <summary>#127: alpha-to-coverage -- the fragment's alpha becomes a COVERAGE MASK over the target's
+    /// <summary>Alpha-to-coverage -- the fragment's alpha becomes a COVERAGE MASK over the target's
     /// samples. Each sample is still written whole or not at all, so it is antialiasing without ever
     /// producing a partially transparent depth-writing fragment. Inert where SAMPLES is 1.</summary>
     public const uint SAMPLE_ALPHA_TO_COVERAGE = 0x809E;
-    /// <summary>CX-189: the implementation's sample ceiling for a multisampled target.</summary>
+    /// <summary>The implementation's sample ceiling for a multisampled target.</summary>
     public const uint MAX_SAMPLES = 0x8D57;
     public const uint TEXTURE_COMPARE_MODE = 0x884C, TEXTURE_COMPARE_FUNC = 0x884D, COMPARE_REF_TO_TEXTURE = 0x884E;
-    // clustered forward+ on the Alloy path (#83): compute dispatch, SSBOs and the GPU timer for the
-    // cluster-build budget. All 4.6-core, so they exist only inside the #80 share-listed context.
+    // The light rig and the deferred pass: compute dispatch, SSBOs and the GPU timer for their budgets.
+    // All 4.6-core, so they exist only inside the share-listed context.
     public const uint COMPUTE_SHADER = 0x91B9, SHADER_STORAGE_BUFFER = 0x90D2;
-    /// <summary>CX-43: the pass block's target (<c>cx_pass.glsl</c>'s <c>CxPass</c>).</summary>
+    /// <summary>The pass block's target (<c>cx_pass.glsl</c>'s <c>CxPass</c>).</summary>
     public const uint UNIFORM_BUFFER = 0x8A11;
     public const uint SHADER_STORAGE_BARRIER_BIT = 0x2000;
-    /// <summary>#243: the two barrier bits the cull dispatch needs after it -- its writes are consumed as
+    /// <summary>The two barrier bits the cull dispatch needs after it -- its writes are consumed as
     /// indirect commands and as a parameter-buffer count, neither of which SHADER_STORAGE alone covers.</summary>
     public const uint COMMAND_BARRIER_BIT = 0x0040, BUFFER_UPDATE_BARRIER_BIT = 0x0200;
-    /// <summary>CX-24: a compute write consumed as a divisor-1 vertex attribute (the grass scatter's stream).</summary>
+    /// <summary>A compute write consumed as a divisor-1 vertex attribute (the grass scatter's stream).</summary>
     public const uint VERTEX_ATTRIB_ARRAY_BARRIER_BIT = 0x0001;
-    /// <summary>CX-51: an image store read back by the next level's dispatch (image) and by the lit stage (fetch).</summary>
+    /// <summary>An image store read back by the next level's dispatch (image) and by the lit stage (fetch).</summary>
     public const uint SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x0020, TEXTURE_FETCH_BARRIER_BIT = 0x0008, TEXTURE_UPDATE_BARRIER_BIT = 0x0100, WRITE_ONLY = 0x88B9, READ_WRITE = 0x88BA;
-    /// <summary>CX-46: a compute write to a buffer the lit stage then reads as a uniform block (the probe's SH9).</summary>
+    /// <summary>A compute write to a buffer the lit stage then reads as a uniform block (the probe's SH9).</summary>
     public const uint UNIFORM_BARRIER_BIT = 0x0004;
-    /// <summary>CX-188: an image store into a texture a LATER PASS renders to as an attachment -- the deferred
+    /// <summary>An image store into a texture a LATER PASS renders to as an attachment -- the deferred
     /// pass writes the HDR target, which grass and the blended class go on blending into.</summary>
     public const uint FRAMEBUFFER_BARRIER_BIT = 0x0400;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
@@ -209,20 +208,20 @@ public static unsafe class Gl
                       MAX_TEXTURE_IMAGE_UNITS = 0x8872;
     public const uint RENDERBUFFER_SAMPLES = 0x8CAB, TEXTURE_SAMPLES = 0x9106, TEXTURE_2D_MULTISAMPLE = 0x9100, RENDERBUFFER_BINDING = 0x8CA7;
     public const uint TIME_ELAPSED = 0x88BF, QUERY_RESULT = 0x8866, QUERY_RESULT_AVAILABLE = 0x8867, TIMESTAMP = 0x8E28;
-    /// <summary>glBeginQuery target counting fragments that passed depth+stencil (#119): the overdraw meter
+    /// <summary>glBeginQuery target counting fragments that passed depth+stencil: the overdraw meter
     /// for the Alloy colour pass. Not ANY_SAMPLES_PASSED -- that one is boolean and answers a different
     /// question.</summary>
     public const uint SAMPLES_PASSED = 0x8914;
     public const uint PRIMITIVES_GENERATED = 0x8C87;
     public const uint FRAGMENT_SHADER_INVOCATIONS = 0x82F4;
-    // #93 multidraw-indirect from persistent-mapped storage. The MAP_* bits are glBufferStorage flags AND
+    // Multidraw-indirect from persistent-mapped storage. The MAP_* bits are glBufferStorage flags AND
     // glMapBufferRange flags: the map's set must be a subset of the storage's or the map fails.
     public const uint DRAW_INDIRECT_BUFFER = 0x8F3F;
     /// <summary>GL_PARAMETER_BUFFER (GL 4.6): where <see cref="MultiDrawElementsIndirectCount"/> reads its
     /// draw count from, so the count never has to reach the CPU.</summary>
     public const uint PARAMETER_BUFFER = 0x80EE;
     public const uint MAP_WRITE_BIT = 0x0002, MAP_PERSISTENT_BIT = 0x0040, MAP_COHERENT_BIT = 0x0080;
-    /// <summary>#244: the read side of the same flag set -- for mapping an existing buffer back to the host,
+    /// <summary>The read side of the same flag set -- for mapping an existing buffer back to the host,
     /// which is a readback and belongs to diagnostics, not to a frame.</summary>
     public const uint MAP_READ_BIT = 0x0001;
     public const uint SYNC_GPU_COMMANDS_COMPLETE = 0x9117, SYNC_FLUSH_COMMANDS_BIT = 0x0001;
@@ -248,7 +247,7 @@ public static unsafe class Gl
     /// <summary>glDrawBuffers: which colour attachments the bound FBO writes.</summary>
     public static delegate* unmanaged<int, uint*, void> DrawBuffers;
     public static delegate* unmanaged<int, uint*, void> GenTextures, GenVertexArrays, GenBuffers, DeleteBuffers;
-    /// <summary>#212: glCopyBufferSubData (GL 3.1) -- readTarget, writeTarget, readOffset, writeOffset, size.
+    /// <summary>glCopyBufferSubData (GL 3.1) -- readTarget, writeTarget, readOffset, writeOffset, size.
     /// The GPU-side buffer copy owned geometry is made of.</summary>
     public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void> CopyBufferSubData;
     public static delegate* unmanaged<uint, uint, int*, void> GetBufferParameteriv;
@@ -261,7 +260,7 @@ public static unsafe class Gl
     /// <summary>Per-LEVEL texture state -- the internal format and channel sizes. The one way to ask a
     /// texture whether it actually carries alpha, which no engine-side opacity flag answers reliably.</summary>
     public static delegate* unmanaged<uint, int, uint, int*, void> GetTexLevelParameteriv;
-    /// <summary>glGetRenderbufferParameteriv (GL 3.0): target, pname, out. #129 reads
+    /// <summary>glGetRenderbufferParameteriv (GL 3.0): target, pname, out. The depth-copy probe reads
     /// RENDERBUFFER_INTERNAL_FORMAT off the engine's depth attachment -- a depth BLIT requires the two
     /// formats to be identical, and the attachment's bit widths do not distinguish a packed D24S8 from a
     /// plain D24.</summary>
@@ -270,7 +269,7 @@ public static unsafe class Gl
     /// only way to ask what the SAMPLER returns rather than what the format declares.</summary>
     public static delegate* unmanaged<uint, int, uint, uint, void*, void> GetTexImage;
     public static delegate* unmanaged<uint, int, void> PixelStorei;
-    /// <summary>glCompressedTexImage2D: the #265 transcode's upload -- pre-encoded BCn blocks, allocating form.</summary>
+    /// <summary>glCompressedTexImage2D: the BCn transcode's upload -- pre-encoded blocks, allocating form.</summary>
     public static delegate* unmanaged<uint, int, uint, int, int, int, int, void*, void> CompressedTexImage2D;
     /// <summary>glPatchParameteri: how many vertices make one patch. Three -- the Alloy pass feeds the
     /// engine's own triangle index buffer straight through as patches.</summary>
@@ -359,7 +358,7 @@ public static unsafe class Gl
     /// a NULL data fills zeros. Server-side, so no client upload into a buffer the GPU may still be reading.</summary>
     public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void> ClearBufferSubData;
     public const uint R32UI = 0x8236, RED_INTEGER = 0x8D94;
-    /// <summary>CX-188: the G-buffer's three integer words and the upload format its clear names, plus the
+    /// <summary>The G-buffer's three integer words and the upload format its clear names, plus the
     /// shadow visibility record's key pair (<c>cx_shrec</c>: the four packed slots and the surface key).</summary>
     public const uint RGBA32UI = 0x8D70, RGBA_INTEGER = 0x8D99, RG32UI = 0x823C;
     /// <summary>Zero the first <paramref name="bytes"/> of <paramref name="buf"/> on the GPU. A client-side
@@ -380,7 +379,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, uint, void> UniformBlockBinding;
     public static delegate* unmanaged<uint, uint, byte*, void> BindAttribLocation;
     public static delegate* unmanaged<uint, int, int*, byte*, void> GetProgramInfoLog;
-    // FBO / depth-pass entry points (#65 slice 3).
+    // FBO / depth-pass entry points.
     public static delegate* unmanaged<int, uint*, void> GenFramebuffers, DeleteFramebuffers;
     public static delegate* unmanaged<uint, uint, void> BindFramebuffer;
     public static delegate* unmanaged<uint, uint, uint, uint, int, void> FramebufferTexture2D;
@@ -389,25 +388,25 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, uint, int, int, void> FramebufferTextureLayer;
     /// <summary>glFramebufferTexture (GL 3.2): target, attachment, texture, level -- attaches EVERY layer of
     /// an array texture at once (a layered attachment), which is what lets a stage route draws by
-    /// <c>gl_Layer</c> (#307's layered bake).</summary>
+    /// <c>gl_Layer</c> (the layered bake).</summary>
     public static delegate* unmanaged<uint, uint, uint, int, void> FramebufferTexture;
     /// <summary>glTexImage3D: target, level, internalFormat, w, h, depth, border, format, type, data.</summary>
     public static delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void> TexImage3D;
     public static delegate* unmanaged<uint, uint> CheckFramebufferStatus;
     /// <summary>glBlitFramebuffer (GL 3.0): srcX0,srcY0,srcX1,srcY1, dstX0,dstY0,dstX1,dstY1, mask, filter.
-    /// Colour blits convert format (RGBA8 -&gt; RGBA16F is legal); depth blits do NOT, which is why #139's
+    /// Colour blits convert format (RGBA8 -&gt; RGBA16F is legal); depth blits do NOT, which is why the
     /// HDR target shares the engine's depth attachment rather than copying it.</summary>
     public static delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void> BlitFramebuffer;
     /// <summary>glTextureBarrier (GL 4.5): makes a texture that is also the bound draw target readable, for
     /// the one legal shape -- each fragment reads its own texel once, then writes it.</summary>
     public static delegate* unmanaged<void> TextureBarrier;
     /// <summary>glGenerateMipmap: builds the whole chain from level 0 on the bound texture. The probe's
-    /// roughness blur IS this chain (#121).</summary>
+    /// roughness blur IS this chain.</summary>
     public static delegate* unmanaged<uint, void> GenerateMipmap;
     public static delegate* unmanaged<float, float, float, float, void> ClearColor;
     public static delegate* unmanaged<uint, void> DrawBuffer, ReadBuffer, DepthFunc, Clear;
     /// <summary>glReadPixels: x, y, w, h, format, type, out. Stalls the pipeline -- diagnostic paths only
-    /// (#129's /water diag reads the framebuffer copy back once to settle what is actually in it).</summary>
+    /// (the /water diag reads the framebuffer copy back once to settle what is actually in it).</summary>
     public static delegate* unmanaged<int, int, int, int, uint, uint, void*, void> ReadPixels;
     public static delegate* unmanaged<byte, void> DepthMask;
     public static delegate* unmanaged<float, float, void> PolygonOffset;
@@ -434,35 +433,35 @@ public static unsafe class Gl
     /// basevertex*. One call submits a whole batch group (ADR 0006 phase 1). Null on ancient drivers.</summary>
     public static delegate* unmanaged<uint, int*, uint, void**, int, int*, void> MultiDrawElementsBaseVertex;
     /// <summary>glDrawElementsBaseVertex (GL 3.2): mode, count, type, indices, basevertex -- one run of one
-    /// mesh, the lightmap bake's per-rect draw (#674).</summary>
+    /// mesh, the lightmap bake's per-rect draw.</summary>
     public static delegate* unmanaged<uint, int, uint, void*, int, void> DrawElementsBaseVertex;
     /// <summary>glTexSubImage3D (GL 1.2): target, level, x, y, z, w, h, depth, format, type, data -- one rect
-    /// of one page layer (#674).</summary>
+    /// of one page layer.</summary>
     public static delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, void*, void> TexSubImage3D;
 
-    // Alloy world draw (#81)
+    // Alloy world draw
     public static delegate* unmanaged<uint, uint, int*, void> GetVertexAttribiv;
     public static delegate* unmanaged<uint, uint, void**, void> GetVertexAttribPointerv;
     public static delegate* unmanaged<uint, uint, uint, int*, void> GetFramebufferAttachmentParameteriv;
     public static delegate* unmanaged<uint, uint, uint, uint, void> FramebufferRenderbuffer;
     /// <summary>glBindRenderbuffer (GL 3.0): target, name. Only ever used to ask a renderbuffer its own
-    /// internal format (#129's depth-copy probe); the binding is restored to 0 immediately.</summary>
+    /// internal format (the depth-copy probe); the binding is restored to 0 immediately.</summary>
     public static delegate* unmanaged<uint, uint, void> BindRenderbuffer;
     /// <summary>glBindTextureUnit (GL 4.5 DSA): unit, texture. One call where ActiveTexture+BindTexture+
-    /// ActiveTexture was three -- the Alloy colour pass changes texture state ~4000 times a frame (#151).</summary>
+    /// ActiveTexture was three -- the Alloy colour pass changes texture state ~4000 times a frame.</summary>
     public static delegate* unmanaged<uint, uint, void> BindTextureUnit;
     /// <summary>ARB_bindless_texture: texture -> 64-bit handle, and residency. Presence of the extension is
     /// checked by string (GLX hands back non-null pointers for unsupported extensions).</summary>
     public static delegate* unmanaged<uint, ulong> GetTextureHandleARB;
     public static delegate* unmanaged<ulong, void> MakeTextureHandleResidentARB;
-    /// <summary>#211: the other half of residency. A texture must not be deleted while a handle to it is
-    /// resident -- the handle survives the object and a draw that reads it is #220's corruption.</summary>
+    /// <summary>The other half of residency. A texture must not be deleted while a handle to it is
+    /// resident -- the handle survives the object, and a draw that reads a dead one draws garbage.</summary>
     public static delegate* unmanaged<ulong, void> MakeTextureHandleNonResidentARB;
     /// <summary>glGetStringi (GL 3.0): pname, index -- the core-profile extension enumeration.</summary>
     public static delegate* unmanaged<uint, uint, byte*> GetStringi;
     public static delegate* unmanaged<int, uint*, void> DeleteVertexArrays;
     public static delegate* unmanaged<uint, void> DeleteProgram;
-    // #83 clustered forward+
+    // compute: the cluster build, the deferred lighting dispatch and the bakes
     public static delegate* unmanaged<uint, uint, uint, void> DispatchCompute;
     public static delegate* unmanaged<uint, void> MemoryBarrier;
     /// <summary>glBindImageTexture (GL 4.2): unit, texture, level, layered, layer, access, format.</summary>
@@ -475,7 +474,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, int*, void> GetQueryObjectiv;
     public static delegate* unmanaged<uint, uint, ulong*, void> GetQueryObjectui64v;
     public static delegate* unmanaged<int, int, int, int, void> Uniform3i;
-    // #93 Alloy caster submission. All 4.6-core, so they exist only inside the #80 share-listed context;
+    // Alloy caster submission. All 4.6-core, so they exist only inside the share-listed context;
     // every one is null-checked before the path arms.
     /// <summary>glBufferStorage (GL 4.4): target, size, data, flags. Immutable store -- the only way to get
     /// a mapping that survives use, which is what "persistent-mapped" means.</summary>
@@ -490,36 +489,28 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, void*, int, int, void> MultiDrawElementsIndirect;
     /// <summary>glMultiDrawElementsIndirectCount (GL 4.6 / ARB_indirect_parameters): mode, type, indirect
     /// (byte offset into the bound DRAW_INDIRECT_BUFFER), drawcount (byte offset into the bound
-    /// PARAMETER_BUFFER -- a GPU-side count, which is the whole point), maxdrawcount, stride.
-    /// <para>#238: the one entry point a GPU-culled draw list needs and the only one missing. Without it the
-    /// count a compute cull produces has to come back to the CPU to be passed as an argument, which is a
-    /// stall on the very frame the cull was meant to make cheaper. Bound here ahead of its first caller
-    /// because binding it is free and being blocked on it later is not.</para>
-    /// <para><b>Non-null proves nothing.</b> GLX hands back a pointer for essentially any name, supported or
-    /// not, so the first caller must gate on the extension STRING (GL 4.6 or <c>GL_ARB_indirect_parameters</c>)
-    /// the way <c>AlloyRenderer.HasBindless</c> does -- never on a null check. The ARB-suffixed lookup below
-    /// is for the platforms where that spelling is the only one, not a capability test.</para></summary>
+    /// PARAMETER_BUFFER -- a GPU-side count, so a compute cull's result never returns to the CPU),
+    /// maxdrawcount, stride. GLX returns non-null for any name, so a caller gates on the extension STRING.</summary>
     public static delegate* unmanaged<uint, uint, void*, IntPtr, int, int, void> MultiDrawElementsIndirectCount;
     /// <summary>glVertexAttribDivisor (GL 3.3): index, divisor. 1 = the attribute advances once per
     /// INSTANCE rather than per vertex, which is what makes an instance stream an instance stream.</summary>
     public static delegate* unmanaged<uint, uint, void> VertexAttribDivisor;
     /// <summary>glDrawArraysInstancedBaseInstance (GL 4.2): mode, first, count, instancecount, baseinstance.
-    /// The base-instance form is the one #127 needs: every grass patch is a contiguous run inside ONE
-    /// instance buffer, so a patch draws by naming its offset instead of rebinding a pointer. Note
-    /// <c>gl_InstanceID</c> does NOT include the base -- divisor-1 vertex attributes do, which is why the
-    /// per-blade data is an attribute stream and not an SSBO indexed by the id.</summary>
+    /// A grass patch is a contiguous run inside ONE instance buffer, so it draws by naming its offset
+    /// instead of rebinding a pointer. <c>gl_InstanceID</c> does NOT include the base; divisor-1 vertex
+    /// attributes do, which is why the per-blade data is an attribute stream, not an SSBO indexed by id.</summary>
     public static delegate* unmanaged<uint, int, int, int, uint, void> DrawArraysInstancedBaseInstance;
     /// <summary>glDrawElementsInstancedBaseVertexBaseInstance (GL 4.2): mode, count, type, indices, instancecount,
-    /// basevertex, baseinstance. CX-95's GUI draws name their record through <c>gl_BaseInstance</c>.</summary>
+    /// basevertex, baseinstance. The GUI draws name their record through <c>gl_BaseInstance</c>.</summary>
     public static delegate* unmanaged<uint, int, uint, void*, int, int, uint, void> DrawElementsInstancedBaseVertexBaseInstance;
     /// <summary>glDrawArraysIndirect (GL 4.0): mode, indirect (byte offset into the bound DRAW_INDIRECT_BUFFER).
-    /// CX-24: the grass scatter writes the instance count, so it never reaches the CPU.</summary>
+    /// the grass scatter writes the instance count, so it never reaches the CPU.</summary>
     public static delegate* unmanaged<uint, void*, void> DrawArraysIndirect;
     public static delegate* unmanaged<uint, uint, IntPtr> FenceSync;
     public static delegate* unmanaged<IntPtr, uint, ulong, uint> ClientWaitSync;
     public static delegate* unmanaged<IntPtr, void> DeleteSync;
 
-    // CX-44 direct state access: edits touch no binding, so the engine's bind cache stays true. No fallback;
+    // Direct state access: edits touch no binding, so the engine's bind cache stays true. No fallback;
     // GlContextService.Available is the one gate (it checks both contexts).
     public static delegate* unmanaged<int, uint*, void> CreateBuffers, CreateVertexArrays;
     /// <summary>glCreateTextures: target, n, names. The target is fixed at creation, unlike glGenTextures.</summary>
@@ -545,7 +536,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, int, void> TextureParameteri;
     public static delegate* unmanaged<uint, uint, int*, void> GetTextureParameteriv;
     public static delegate* unmanaged<uint, int, uint, int*, void> GetTextureLevelParameteriv;
-    /// <summary>CX-52 step 4: glGetInternalformativ: target, internalformat, pname, count, params.</summary>
+    /// <summary>glGetInternalformativ: target, internalformat, pname, count, params.</summary>
     public static delegate* unmanaged<uint, uint, uint, int, int*, void> GetInternalformativ;
     /// <summary>glGetTextureImage: texture, level, format, type, bufSize, pixels.</summary>
     public static delegate* unmanaged<uint, int, uint, uint, int, void*, void> GetTextureImage;

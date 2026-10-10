@@ -5,21 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>where an emitter's animated tracks land.</b> seam-anim samples every
-/// controller the pose columns do not carry and hands it to <c>DbAnim.ChannelSink</c>; with no sink installed
-/// those tracks are sampled by nobody and counted as such. This is the sink for emitter parts.
-/// <para><b>Sparse on purpose.</b> An emitter declares about thirty-five animatable channels
-/// (<see cref="Ctl"/>'s <c>Em*</c> block, file ids 80..472) and a real one animates two or three. A dense
-/// column over every emitter would be megabytes to hold a handful of floats, so a block is allocated on the
-/// first write an emitter receives and freed when its part dies -- an emitter that animates nothing costs
-/// one int.</para>
-/// <para><b>Blend targets, not samples</b>, the same contract the light columns keep: a controller writes
-/// <c>lerp(column, key, weight)</c>, so a crossfade between two animations crossfades the emitter's rates
-/// too. The block is seeded from the node's rest keys on its first write, because nothing else knows when an
-/// emitter starts being animated.</para>
-/// <para>The particle simulation does not read this yet -- <c>EmitterSim</c> is still engine-keyed. This is
-/// the half that has to exist before it can: the values are sampled, blended and queryable, and the
-/// "sampled by NOBODY" counter stops counting them.</para></summary>
+/// <summary><b>Where an emitter's animated tracks land:</b> the sink <c>DbAnim.ChannelSink</c> calls for
+/// emitter parts, read back by <see cref="EmitterSim"/>. Sparse -- an emitter declares ~35 channels
+/// (<see cref="Ctl"/>'s <c>Em*</c> block, ids 80..472) and animates two or three, so a block is allocated on
+/// its first write and freed with its part. Writes BLEND: <c>lerp(column, key, weight)</c> off the rest keys.</summary>
 internal static class DbEmitterChannels
 {
     /// <summary>Emitters that may animate at once. An area's worth of animated emitters is a handful; past
@@ -90,10 +79,9 @@ internal static class DbEmitterChannels
         return b < 0 ? rest : _value[b * Channels + ch];
     }
 
-    /// <summary>CX-188: this part's block index, or -1 when no animation has ever written it. The fill reads
-    /// about thirty channels per emitter per frame and <see cref="Value"/> re-asked this question for every
-    /// one of them (3,0% of the game thread, with <see cref="ChannelOf"/> beside it); asked once, the whole
-    /// unanimated case is the node's rest keys and this table is not touched at all.</summary>
+    /// <summary>This part's block index, or -1 when no animation has ever written it. The fill reads about
+    /// thirty channels per emitter per frame; asked once here rather than per channel in <see cref="Value"/>
+    /// (3,0% of the game thread), the whole unanimated case never touches this table.</summary>
     internal static int BlockOf(int part)
         => (uint)part < SceneDb.MaxParts ? _blockOf[part] - 1 : -1;
 

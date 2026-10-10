@@ -24,10 +24,9 @@ internal readonly unsafe struct MoviePlate
     { Sx = sx; Sy = sy; U0 = u0; U1 = u1; V0 = v0; V1 = v1; }
 
     /// <summary>Fit a <paramref name="frameW"/>x<paramref name="frameH"/> frame into the viewport, preserving
-    /// its aspect. The port of <c>CExoMoviePlayerInternal::ShowFrame</c>'s ortho: the engine builds
-    /// <c>SetOrthoTransform(-right, right, -top, top)</c> around a fixed [-1,1] quad, which is the same
-    /// picture as a [-1/right, 1/right] quad in clip space -- and the GUI scale the engine multiplies into
-    /// both terms cancels, so it is not a term here.</summary>
+    /// its aspect. The port of <c>ShowFrame</c>'s ortho: the engine's <c>SetOrthoTransform(-right, right,
+    /// -top, top)</c> around a fixed [-1,1] quad is the same picture as a [-1/right, 1/right] clip-space quad,
+    /// and the GUI scale it multiplies into both terms cancels, so that is not a term here.</summary>
     internal static MoviePlate Fit(int frameW, int frameH, int texW, int texH, int vpW, int vpH)
     {
         float a = (float)frameW / vpW, b = (float)frameH / vpH;
@@ -48,29 +47,10 @@ internal readonly unsafe struct MoviePlate
     }
 }
 
-/// <summary>
-/// CX-99 (map CX-94, <c>CX-172</c> §3): the movie's pixels are CX's.
-/// </summary>
-/// <remarks>
-/// <para><b>What moved, and what deliberately did not.</b> A movie bypasses the whole frame:
-/// <c>Update</c> @0x430030 skips its clear, its string layer and its present while one plays, and
-/// <c>CExoMoviePlayerInternal::RenderFrame</c> @0x11694b0 runs its own loop -- decode a packet, sleep off
-/// <c>GetFrameTimeOffset</c>, repeat until a video frame lands -- then <c>EndScene(1)</c> and
-/// <c>SwapBuffers</c>. That loop IS the A/V clock (the audio is queued to OpenAL from the same
-/// <c>UpdateMovie</c> call), so none of it is touched. The one thing swallowed is
-/// <c>ShowFrame</c> @0x1165e30, which is the clear plus the one textured quad and nothing else.</para>
-/// <para><b>Where it draws.</b> In the ENGINE's context with CX's own core-profile program, the way the UI
-/// layer draws today -- not inside the 4.6 bracket. The movie texture is the engine's, the movie is not a
-/// world frame, and <see cref="PresentTarget"/> exists precisely because the 4.6 context must not write
-/// framebuffer 0 on Windows. CX-101 unifies every CX 2D surface into Alloy's present; this is one of its
-/// inputs, not a second present path.</para>
-/// <para><b>The gate is the session's renderer choice</b> (<c>alloy.enabled</c>, read as <c>Boot</c>), not
-/// <see cref="AlloyGate"/>: movies play at the main menu, where the frame verdict is <c>Idle</c> by
-/// construction, and a gate that asked for a world frame would never fire on the intro. Nothing is hooked
-/// at all in vanilla mode, so the engine's movie is bit-identical there.</para>
-/// <para>Cold by frame standards -- once per decoded video frame, ~24-30 a second -- but allocation-free
-/// anyway, because it runs on the render thread.</para>
-/// </remarks>
+/// <summary>The movie's pixels are CX's. One hook, on <c>ShowFrame</c> @0x1165e30 -- the clear plus the one
+/// textured quad -- leaving the engine its decode loop, which IS the A/V clock. It draws in the ENGINE's
+/// context, not the 4.6 bracket, and is gated on <c>alloy.enabled</c> rather than <see cref="AlloyGate"/>:
+/// movies play at the main menu, where the frame verdict is <c>Idle</c> by construction.</summary>
 public sealed unsafe partial class MovieService : IExtenderService
 {
     private static ExtenderLog? _log;
@@ -80,8 +60,8 @@ public sealed unsafe partial class MovieService : IExtenderService
     {
         _log = log;
         SelfCheck(log);
-        // #263's shape: read off the knob, not asked of AlloyGate, so this does not depend on service
-        // discovery order -- and so vanilla installs nothing.
+        // Read off the knob, not asked of AlloyGate, so this does not depend on service discovery order --
+        // and so vanilla installs nothing.
         if (!Renderer.Enabled.Boot)
         { log.Info("Movies: standing down (alloy.enabled=0) -- the engine draws its own movie quad"); return; }
         _orig = hooks.InstallMovieShowFrame(&OnShowFrame);
@@ -99,14 +79,9 @@ public sealed unsafe partial class MovieService : IExtenderService
     private const int Stale = 2;
 
     /// <summary>Is a movie covering the screen? While one is, <see cref="UiHostService"/> holds the window
-    /// roll-call back -- chat over a cinematic is not a feature.
-    /// <para>The ticket's open question, answered: <c>CGuiMan::UpdateAndRender</c> @0x580450 gates its whole
-    /// render block -- the view loop, <c>Nui__Render</c> AND <c>nk_sdl_render</c> -- on
-    /// <c>GetIsPlayingMovie() == 0</c> (@0x580568, <c>je</c> past it), so on Linux the roll-call's normal site
-    /// simply does not run during a movie. <c>UiHostService.OnSwap</c>'s FALLBACK roll-call is a
-    /// different story: it draws at the present, after <c>ShowFrame</c>, and on Windows it is not a fallback
-    /// at all -- <c>nk_sdl_render</c> is not exported there, so the chain never installs and every CX window
-    /// lands on top of the movie. This flag is what stops that.</para></summary>
+    /// roll-call back -- chat over a cinematic is not a feature. The engine's own <c>CGuiMan</c> site is
+    /// already gated on <c>GetIsPlayingMovie()</c>; this flag is what stops <c>UiHostService.OnSwap</c>'s
+    /// present-time roll-call, which on Windows is the only one there is, landing on top of the movie.</summary>
     internal static bool OnScreen => _idle < Stale;
 
     private static void AgePresent() { if (_idle < Stale) _idle++; }
@@ -130,8 +105,8 @@ public sealed unsafe partial class MovieService : IExtenderService
     private static bool _progTried, _vaoUp;
     private static bool _stood, _announced;
 
-    /// <summary>ADR 0025 / CX-45: our own mechanism failing is loud and hands the frame back -- never a quiet
-    /// fallback. Said once per session; the engine's quad draws every frame after it.</summary>
+    /// <summary>Our own mechanism failing is loud and hands the frame back -- never a quiet fallback (ADR 0025).
+    /// Said once per session; the engine's quad draws every frame after it.</summary>
     private static bool Stand(string why)
     {
         if (_stood) return false;
@@ -185,8 +160,7 @@ public sealed unsafe partial class MovieService : IExtenderService
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, tex);
         // A sampler object, never glTexParameteri: the texture is the engine's and it caches what it set on
-        // it (#237). The engine's own filter here is NEAREST (RenderFrame opens the loop with
-        // SetTextureParameteri(0, 2, 4) and (0, 3, 4), and 4 is GL_NEAREST); LINEAR is a deliberate difference.
+        // it. Its own filter here is NEAREST; LINEAR is a deliberate difference.
         if (_sampler == 0 && (_sampler = Gl.LinearClampSampler()) == 0 && !_samplerSaid)
         {
             _samplerSaid = true;
@@ -196,9 +170,8 @@ public sealed unsafe partial class MovieService : IExtenderService
         Gl.DrawArrays(Gl.TRIANGLE_STRIP, 0, 4);
         if (_sampler != 0 && Gl.BindSampler != null) Gl.BindSampler(0, 0);
 
-        // #210 (G1): raw GL in the engine's context went past GLRender's shadow cache, and the decode loop
-        // binds this very texture again on its next packet -- a stale cache entry there would upload the
-        // next frame into whatever WE left bound.
+        // Raw GL in the engine's context goes past GLRender's shadow cache, and the decode loop binds this
+        // very texture again on its next packet -- a stale entry there would upload into what WE left bound.
         UiHostService.HandBack();
         Gl.DrainErrors(4);
 

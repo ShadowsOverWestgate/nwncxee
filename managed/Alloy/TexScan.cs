@@ -6,20 +6,16 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>What the texture consumers used to read back from the GPU, computed instead from the engine's
-/// decoded image at the upload funnel, where it is still in memory: the cutout hole fraction the caster
-/// pass masks on, the mean colour the fog converges on, and the RGBA copy the BCn transcode encodes from.
-/// <para>No <c>glGetTexImage</c> anywhere on the owned path any more. On radeonsi a readback of a texture
-/// the engine's context also draws with re-lays the texture out under that context's cached descriptors
-/// and the driver reports a GPU reset (the tester's first-frame abort on v0.2.10, single upload + shadows);
-/// NVIDIA merely returns the pixels. Reading the decoded image reads nothing the GPU owns.</para>
-/// <para>Layout from <c>GLRender::CreateTexture</c> @0x4ca2b0 (decompiled 2026-09-06): the CAurTexture
-/// virtuals hand out the pixel pointer, sheet width/height, bytes per pixel, the cell grid, the compressed
-/// flag, the header skip and the format index into <c>textureFormatTranslationTable</c> @0x12f5080, where
-/// 7 = DXT1 (0x83F0) and 8 = DXT5 (0x83F3). Uncompressed sheets are cut into cells; compressed data is one
-/// image. The engine never uploads DXT3.</para></summary>
+/// <summary>
+/// What the texture consumers need, computed from the engine's decoded image at the upload funnel where it is
+/// still in memory: the cutout hole fraction the caster pass masks on, the mean colour the fog converges on, and
+/// the RGBA copy the BCn transcode encodes from. No <c>glGetTexImage</c> on the owned path: on radeonsi a readback
+/// of a texture the engine's context also draws with re-lays it out and the driver reports a GPU reset.
+/// </summary>
 internal static unsafe class TexScan
 {
+    /// <summary>The engine's own format indices into its format translation table; it never uploads DXT3. An
+    /// uncompressed sheet is cut into cells, compressed data is one image.</summary>
     private const int FmtDxt1 = 7, FmtDxt5 = 8;
     /// <summary>The last engine format code the compressed branch did not recognise; for the funnel diagnostic.</summary>
     internal static int LastRefusedFormat = -1;
@@ -46,7 +42,7 @@ internal static unsafe class TexScan
 
     /// <summary>What the ENGINE says this texture is, straight off its own virtuals -- the counterpart to
     /// <see cref="TexProbe.TexFormat"/>, which says what GL holds. When the two disagree the upload is the
-    /// suspect; when they agree the resource is (#456).</summary>
+    /// suspect; when they agree the resource is.</summary>
     internal static string Describe(IntPtr tex)
     {
         if (tex == IntPtr.Zero) return "eng=?";
@@ -106,8 +102,8 @@ internal static unsafe class TexScan
         return true;
     }
 
-    /// <summary>CX-52 step 4: a format the engine names by its same-sized stand-in (BC7 as DXT5 and so on) is scanned
-    /// from its own decode; one with no CPU decoder here (BC6H, SNORM RGTC -- none carries alpha) is left unscanned.
+    /// <summary>A format the engine names by its same-sized stand-in (BC7 as DXT5 and so on) is scanned from its
+    /// own decode; one with no CPU decoder here (BC6H, SNORM RGTC -- none carries alpha) is left unscanned.
     /// ponytail: a full level-0 decode on the main thread; move it to cx-bcn if such textures show in the Tex zone.</summary>
     private static bool ScanDecoded(byte* data, int w, int h, DdsReader.Fmt f, int cut, ref Result r)
     {
@@ -215,8 +211,8 @@ internal static unsafe class TexScan
     private static int Expand5(int v) => (v << 3) | (v >> 2);
     private static int Expand6(int v) => (v << 2) | (v >> 4);
 
-    /// <summary>Box-filter mip chain in place, colour alpha-weighted (#499): level i+1 written from level i. <paramref name="off"/> and the
-    /// sizes are the chain the caller laid out with <see cref="Chain"/>.</summary>
+    /// <summary>Box-filter mip chain in place, colour alpha-weighted: level i+1 written from level i.
+    /// <paramref name="off"/> and the sizes are the chain the caller laid out with <see cref="Chain"/>.</summary>
     internal static void BuildMips(byte* px, int levels, int* lw, int* lh, long* off)
     {
         for (int i = 1; i < levels; i++)

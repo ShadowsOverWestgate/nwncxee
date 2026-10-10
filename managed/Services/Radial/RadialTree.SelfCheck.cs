@@ -40,11 +40,9 @@ internal static unsafe partial class RadialTree
     }
 
     /// <summary>A fake root laid out per the resolved <see cref="EngineLayout"/> rows (so the same check runs on either
-    /// platform's offsets), with a planted vptr, a text bubble + CAurString pair whose vtable carries managed fake
-    /// line readers at the resolved slots, a CGuiIcon blob with a count label, sentinel and set
-    /// callbacks, the event-object global redirected at a stack cell so the bracket's restore can be asserted, and a
-    /// faked <c>CreateSubMenu</c> so Materialize's parent link and BuildItems' row mapping are covered. Teardown is an
-    /// engine call with no fake -- plumbing only, live-unverified.</summary>
+    /// platform's offsets), with a planted vptr, a text bubble + CAurString pair whose vtable carries managed fake line
+    /// readers, a CGuiIcon blob with a count label, sentinel and set callbacks, the event-object global redirected at a
+    /// stack cell so the bracket's restore can be asserted, and a faked <c>CreateSubMenu</c>. Teardown has no fake.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);

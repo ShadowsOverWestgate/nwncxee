@@ -4,11 +4,9 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#206: the two texture readbacks the census triage prints, on the submission side of the
-/// extraction boundary. They belong to no pass -- they are pure GL queries -- but they are the reason
-/// <c>Alloy/Scene/</c> used to hold nineteen <c>Gl.*</c> calls, so they live out here where GL is allowed.
-/// <para>Both are triage only: engine opacity flags and the file header have each been wrong once in this
-/// investigation, and glGetTexImage readback is the ground truth that settled it.</para></summary>
+/// <summary>The two texture readbacks the census triage prints. They belong to no pass -- pure GL queries, so
+/// they live out here on the submission side where GL is allowed. Triage only: engine opacity flags and the file
+/// header can each be wrong, and a <c>glGetTexImage</c> readback is the ground truth that settles it.</summary>
 internal static unsafe class TexProbe
 {
     /// <summary>Triage only: what GL actually holds for this texture. The engine's opacity flags and the
@@ -25,11 +23,10 @@ internal static unsafe class TexProbe
         return $"fmt=0x{fmt:x} asize={asize} {w}x{h}";
     }
 
-    /// <summary>#129: what <c>textureLod(uTex, vec2(0.5), 20.0)</c> actually returns for this texture -- the
-    /// stage's whole liquid colour. LOD 20 CLAMPS to <c>TEXTURE_MAX_LEVEL</c>, so a texture with no mip chain
-    /// answers with one centre texel of the ripple pattern instead of the average the shader is asking for,
-    /// and the pool takes that texel's colour. Prints the level landed on and its mean, so "the water is the
-    /// wrong colour" becomes a number that can be compared between two areas.</summary>
+    /// <summary>What <c>textureLod(uTex, vec2(0.5), 20.0)</c> actually returns -- the stage's whole liquid colour.
+    /// LOD 20 CLAMPS to <c>TEXTURE_MAX_LEVEL</c>, so a texture with no mip chain answers with one centre texel of
+    /// the ripple pattern instead of the average the shader asks for, and the pool takes that texel's colour.
+    /// Prints the level landed on and its mean.</summary>
     internal static string TexTopMip(int tid)
     {
         if (tid <= 0 || !GlContextService.Available) return "top=?";

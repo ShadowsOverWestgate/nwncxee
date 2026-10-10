@@ -7,42 +7,11 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-110: Alloy's wind. Its own clock, its own pair of noise fields, its own point-source list and its own
-/// evaluation -- a port of <c>WindManager::updateTimer</c> @0x491200,
-/// <c>WindManager::GetGlobalWind</c> @0x490ab0, <c>pointSourceWindVector</c> @0x4907d0 and
-/// <c>fillNoiseField</c> @0x490e20 (<c>CX-109</c> §5). Everything that felt wind used
-/// to call <c>Scene::GetWindVector</c> @0x460c60 per particle and per dangly vertex; now the clock advances
-/// once per world frame and the field is Alloy's.
+/// Alloy's wind: its own clock, noise-field pair, point-source list and evaluation, ported from
+/// <c>WindManager</c>'s <c>updateTimer</c> @0x491200, <c>GetGlobalWind</c> @0x490ab0,
+/// <c>pointSourceWindVector</c> @0x4907d0 and <c>fillNoiseField</c> @0x490e20. The engine's manager is still read
+/// each tick for the game's TUNING (base <c>+0x20</c>, deviation <c>+0x848</c>/<c>+0x84c</c>, period <c>+0x858</c>).
 /// </summary>
-/// <remarks>
-/// <para><b>What is still read off the engine's manager, and why.</b> The base wind vector
-/// (<c>WindManager+0x20</c>), the yaw/pitch deviation limits (<c>+0x848</c>/<c>+0x84c</c>) and the field
-/// period (<c>+0x858</c>) are the game's TUNING, not the clock: the base is what a server's nwscript or the
-/// <c>setglobalwind</c> console command writes, and the other three are what
-/// <c>WindManager::SetMaximumDeviation</c>/<c>SetUpdateTimeoutValue</c> write. Reading them each tick means a
-/// scripted wind still blows. In normal play the base is ZERO -- the Scene builds its manager with the default
-/// ctor @0x491b90 and <c>Scene::SetGlobalWind</c> @0x45f0a0 has no callers at all -- so every bit of felt
-/// vanilla wind is the point-source term, which is why <c>/dangly breeze</c> exists.</para>
-/// <para><b>The point sources are hooked, not polled.</b> <c>WindManager::AddPointSourceWind</c> @0x491dc0 is
-/// the one way a source is ever created -- <c>Gob::Animate</c> @0x49dc91 registers every MOVED creature
-/// (radius 1.0, life <c>magnitude(delta)</c>, strength <c>Gob+0x1a0</c>, gated on <c>Gob+0x199</c>, which
-/// <c>Gob::SetWind</c> @0x436f40 sets through <c>CAurObject</c> vtable <c>+0x1c0</c> from
-/// <c>CNWCObject::SetWind</c> @0x8e8df0 every <c>CNWCCreature</c> update while the client's creature-wind
-/// option <c>CClientOptions+0x21</c> is on) and <c>ExplosionEmitter::Update</c> @0x4b259e every detonation.
-/// So a hook on it is the whole population. CX's own gusts (<see cref="AurXform.Gust"/>) go through the same
-/// function and land in the same list. The original still runs, which keeps <c>view.wind 0</c> a working A/B.
-/// <para><b>Which is why the clock hangs off the engine's OWN clock site</b> and not off the Alloy frame.
-/// <c>Scene::Render</c> @0x476520 calls <c>WindManager::updateTimer</c> once per world frame in its
-/// <c>Scene+0x188</c> branch, whatever the renderer is doing -- while the gust hook fires whatever the
-/// renderer is doing too. Driving the age from <see cref="RspShim.Run"/> (the first cut) meant that on any
-/// run of frames without an Alloy pass -- a shim stand-down, a refused world frame -- sources were added and
-/// never aged: the table pinned at its cap, the field froze, and <see cref="DanglyPhysics"/> (which runs on
-/// vanilla frames too) sampled a few hundred dead gusts per vertex. <see cref="NewFrame"/> is the belt to
-/// that brace: a frame with no world <c>Scene::Render</c> at all (the main menu) ages at the present
-/// instead, so exactly one age happens per frame either way.</para></para>
-/// <para>Hot: <see cref="Wind"/> is called per particle and per dangly vertex. It allocates nothing, and the
-/// two noise fields and the source table are fixed arrays taken once at type init.</para>
-/// </remarks>
 internal static unsafe class AlloyWind
 {
     /// <summary>The noise field is 16x16 (<c>fillNoiseField</c>'s <c>float (*)[16]</c>) and every lookup is
@@ -55,14 +24,10 @@ internal static unsafe class AlloyWind
     private const int YawOffset = 8;
     /// <summary>Cells per world unit in a noise lookup: <c>abs((int)pos.x * 4) &amp; 15</c>.</summary>
     private const int CellsPerUnit = 4;
-    /// <summary>Live point sources Alloy holds (24 bytes each, so 96 KiB). Vanilla's list is a growing
-    /// <c>CExoArrayList</c> and this is a ceiling, sized against the real population rather than a guess:
-    /// <c>Gob::Animate</c> registers one source per MOVED creature per frame with a life of
-    /// <c>magnitude(delta)</c> -- about 0.05 s for a walking creature, i.e. roughly three frames at 60 fps --
-    /// so 4096 is on the order of a thousand simultaneously-moving creatures, far past what an NWN area holds.
-    /// Over it the newest source is dropped and counted; never a silent grow.
-    /// <para>Note the cost this shares with vanilla: <see cref="PointWind"/> walks the whole list per sample,
-    /// exactly as <c>pointSourceWindVector</c> @0x4907d0 does, so a crowd is as expensive here as there.</para></summary>
+    /// <summary>Live point sources Alloy holds (24 bytes each, so 96 KiB) -- a ceiling, not vanilla's growing
+    /// <c>CExoArrayList</c>: <c>Gob::Animate</c> registers one per MOVED creature per frame with a life of
+    /// <c>magnitude(delta)</c>, roughly three frames at 60 fps, so this is a thousand simultaneous movers. Over
+    /// it the newest is dropped and counted, never a silent grow; <see cref="PointWind"/> walks it per sample.</summary>
     private const int MaxSources = 4096;
     /// <summary>Fallbacks for the tuning fields when the Scene has no WindManager to read them from. The
     /// default ctor's values @0x491b90: 130.0 yaw, 0.0 pitch, 0.5 s period.</summary>
@@ -167,9 +132,8 @@ internal static unsafe class AlloyWind
     }
 
     /// <summary>A gust raised by CX itself, for the paths where the engine's <c>AddPointSourceWind</c> is
-    /// never called: DB mode owns <c>Gob::Animate</c> and the particle step, so a moved creature's gust and a
-    /// detonation's go straight into this list. Same four arguments as the engine's, same list. Hot-adjacent
-    /// (a handful per frame) and allocation-free.</summary>
+    /// never called: CX owns <c>Gob::Animate</c> and the particle step, so a moved creature's gust and a
+    /// detonation's go straight into this list. Hot-adjacent (a handful per frame) and allocation-free.</summary>
     internal static void AddGust(Vector3 pos, float radius, float life, float strength)
     {
         if (_armed) Add(pos, radius, life, strength);
@@ -192,19 +156,9 @@ internal static unsafe class AlloyWind
     // ---- the clock --------------------------------------------------------------------------------------
 
     /// <summary>The engine's own clock site: <c>Scene::Render</c> @0x476520, once per WORLD frame, ahead of
-    /// <c>AddPartsToDrawBuckets</c> and so ahead of everything that samples the wind -- the particle step, the
-    /// dangly solve, the grass. Cold, and the original always runs so the engine's own list keeps ageing for
-    /// the <c>view.wind 0</c> A/B.
-    /// <para><b>SL4: the original is not optional, and "no reader on an Alloy frame" is the wrong question.</b>
-    /// MEASURED (objdump @0x49131e..0x491361): <c>updateTimer</c> is the ONLY code in the client that expires
-    /// a <c>PointSourceWind</c> -- it decrements each entry's remaining life at <c>+0x14</c>, drops the count
-    /// at <c>+0x18</c> and compacts the tail. <c>Gob::Animate</c> @0x49dc91 ADDS one per moved wind-enabled
-    /// creature per frame, so skipping the original would grow that <c>CExoArrayList</c> without bound for as
-    /// long as anything walks. Its one provably dead product is the <c>windSpeed * dt</c> triple at
-    /// <c>+0x2c..0x34</c>, which nothing in the binary reads; the interpolated field pair and the source list
-    /// are live. Skipping it would also shift libc <c>rand()</c> by the 341 draws <c>fillNoiseField</c>
-    /// @0x490e20 takes per elapsed period (~682/s at the default 0.5 s), which is a change to every other
-    /// consumer of the engine's global PRNG.</para></summary>
+    /// <c>AddPartsToDrawBuckets</c> and so ahead of every wind sampler. Cold. The original is NOT optional --
+    /// <c>updateTimer</c> alone expires a <c>PointSourceWind</c> (remaining life at <c>+0x14</c>) while
+    /// <c>Gob::Animate</c> @0x49dc91 adds one per moved creature per frame, so skipping it grows that list.</summary>
     [UnmanagedCallersOnly]
     private static void OnUpdateTimer(IntPtr windManager, float dt)
     {
@@ -213,8 +167,8 @@ internal static unsafe class AlloyWind
     }
 
     /// <summary>One present, from <see cref="AlloyRenderer.EndFrame"/>. A frame with no world
-    /// <c>Scene::Render</c> never reached <see cref="OnUpdateTimer"/>, so the age runs here instead -- see the
-    /// class remarks. Exactly one of the two runs per frame.</summary>
+    /// <c>Scene::Render</c> never reached <see cref="OnUpdateTimer"/>, so the age runs here instead: unaged,
+    /// the table pins at its cap and the field freezes. Exactly one of the two runs per frame.</summary>
     internal static void NewFrame()
     {
         if (_armed && _tickedSeq != _frameSeq) { _lateTicks++; Tick(IntPtr.Zero, _dt != null ? *_dt : 0f); }
@@ -274,11 +228,9 @@ internal static unsafe class AlloyWind
     // ---- the field --------------------------------------------------------------------------------------
 
     /// <summary><c>WindManager::fillNoiseField</c> @0x490e20: five octaves, block sizes 16, 8, 4, 2, 1, one
-    /// draw per block added to every cell of it, amplitude <c>rand() % (500 / (16 / step)) / 1000</c>. Sums to
-    /// roughly [0, 0.97] with a mean near 0.48.
-    /// <para>DIFFERENCE from vanilla: the draws come from Alloy's own splitmix64 rather than libc
-    /// <c>rand()</c>, so the field is a different field of the same shape -- and, unlike vanilla's, it does
-    /// not consume the engine's global PRNG sequence.</para></summary>
+    /// draw per block added to every cell of it, amplitude <c>rand() % (500 / (16 / step)) / 1000</c>; sums to
+    /// roughly [0, 0.97], mean near 0.48. DIFFERENCE from vanilla: the draws are Alloy's own splitmix64, so the
+    /// field is a different field of the same shape and the engine's global PRNG sequence is left alone.</summary>
     private static void Fill(float[] f)
     {
         Array.Clear(f);
@@ -324,11 +276,10 @@ internal static unsafe class AlloyWind
 
     // ---- the evaluation ---------------------------------------------------------------------------------
 
-    /// <summary>The port of <c>WindManager::GetGlobalWind</c>: the point sources at <paramref name="at"/>,
-    /// plus the base wind scaled by <c>dt * noise</c>, the whole sum then rotated by a spatially-varying
-    /// yaw/pitch pair. HOT -- per particle, per dangly vertex -- and allocation-free.
-    /// <para>Note the asymmetry, which is the engine's: the BASE term is a displacement over
-    /// <paramref name="dt"/> while the point-source term is not.</para></summary>
+    /// <summary>The port of <c>WindManager::GetGlobalWind</c>: the point sources at <paramref name="at"/>, plus
+    /// the base wind scaled by <c>dt * noise</c>, the sum rotated by a spatially-varying yaw/pitch pair. HOT --
+    /// per particle, per dangly vertex -- and allocation-free. The engine's asymmetry is kept: the BASE term is
+    /// a displacement over <paramref name="dt"/>, the point-source term is not.</summary>
     internal static Vector3 Wind(Vector3 at, float dt)
     {
         int ix = Cell(at.X), iy = Cell(at.Y);

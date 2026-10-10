@@ -6,18 +6,15 @@ using CX.Framework;
 namespace CX.Services.Nameplate;
 
 /// <summary>
-/// Every native read the overhead plate/bubble needs, in one place. No UI types, no GL: a service
-/// or table calls in here and gets managed values back. Every engine field is read through its typed view;
-/// the offsets are <see cref="EngineLayout"/> rows, provenance CX-179 and
-/// <c>docs/engine-layout.md</c>.
-/// <para>The standing rule from #33/#138/#145 applies to every pointer below: a <c>CNWCObject*</c> is
-/// BORROWED. Nothing here stores one; callers hold object <b>ids</b> and re-resolve through
-/// <see cref="GameObject"/> every frame, treating null as the despawn signal.</para>
+/// Every native read the overhead plate/bubble needs, in one place. No UI types, no GL: a service or table calls
+/// in here and gets managed values back, and every engine field is read through its typed view.
+/// <para>Every <c>CNWCObject*</c> below is BORROWED. Nothing here stores one; callers hold object <b>ids</b> and
+/// re-resolve through <see cref="GameObject"/> every frame, treating null as the despawn signal.</para>
 /// </summary>
 public static unsafe class NameplateNative
 {
-    // Every engine offset this file reads is an EngineLayout row (CX-40): the pointer it is handed is always
-    // the CNWCObject base subobject, which is what `ObjItemPlated` is measured from.
+    // Every engine offset this file reads is an EngineLayout row: the pointer it is handed is always the
+    // CNWCObject base subobject, which is what `ObjItemPlated` is measured from.
 
     /// <summary>Set once by the service so the one-shot layout probe has somewhere to complain.</summary>
     private static ExtenderLog? _log;
@@ -31,13 +28,10 @@ public static unsafe class NameplateNative
     /// <summary>Hand this file the log. From <c>NameplateService.Initialize</c>, before any hook fires.</summary>
     public static void UseLog(ExtenderLog log) => _log = log;
 
-    /// <summary>Portrait size byte: the suffix appended to the base resref. Verified by decompiling
-    /// <c>CNWPortrait::GetPortrait(unsigned char)</c> (nm <c>0x81e910</c>), whose suffix table is
-    /// <c>{ "", "T", "S", "M", "L", "H" }</c> indexed by the byte -- so 1 is TINY (a 16x25 image), which is
-    /// what the engine's own bubble asks for and why our portraits were blurry. 3 is MEDIUM (64x100).
-    /// <para>Upsizing is safe without a fallback of ours: that same function walks a ladder of its own --
-    /// it asks <c>CExoResMan::Exists</c> for the requested suffix and then for +1, -1, +2, -2, +3, -3, +4, -4
-    /// before giving up, so a creature with no <c>_m</c> resolves to <c>_l</c> or <c>_s</c> on its own.</para></summary>
+    /// <summary>Portrait size byte: the suffix appended to the base resref. <c>CNWPortrait::GetPortrait</c>
+    /// (nm <c>0x81e910</c>) indexes <c>{ "", "T", "S", "M", "L", "H" }</c> by it, so 1 is TINY (16x25, what the
+    /// engine's own bubble asks for) and 3 is MEDIUM (64x100). Upsizing needs no fallback of ours: that function
+    /// walks +1, -1, +2, -2... through <c>CExoResMan::Exists</c>, so a creature with no <c>_m</c> finds <c>_l</c>.</summary>
     private const byte PortraitSizePlate = 3;
 
     /// <summary>CResRef is 17 bytes (char[16] + a length byte); a 16-byte buffer smashes the stack canary.</summary>
@@ -78,12 +72,12 @@ public static unsafe class NameplateNative
     public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;  // not-an-offset: an object type enum
 
     /// <summary>Object types whose chat lines the engine prefixes with <c>"[speaker]: "</c>: the <c>0x680</c> mask
-    /// (7, 9, 10) tested at <c>HandleServerToPlayerChat</c>'s tail (CX-179). Creatures get none.</summary>
+    /// (7, 9, 10) tested at <c>HandleServerToPlayerChat</c>'s tail. Creatures get none.</summary>
     public static bool SpeakerPrefixed(byte type) => type < 11 && ((1 << type) & SpeakerPrefixMask) != 0;
 
     private const int SpeakerPrefixMask = 0x680;  // not-an-offset: an object-type bitmask
 
-    /// <summary>The server has retired this object -- it gets neither element (acceptance §9).</summary>
+    /// <summary>The server has retired this object -- it gets neither element.</summary>
     public static bool Retired(IntPtr obj) => obj != IntPtr.Zero && new CNWCObject(obj).Retired == 1;
 
     /// <summary>The object's own bubble panel, or a null view when it has none yet.</summary>
@@ -91,21 +85,10 @@ public static unsafe class NameplateNative
         => obj == IntPtr.Zero ? default : new CNWCObject(obj).Bubble;
 
     /// <summary>
-    /// The engine's own projected anchor for this object's bubble panel, EXACTLY as stored. False when there
-    /// is no bubble (nothing to anchor to yet).
-    /// <para>Space, settled by disassembling <c>Camera::MapToScreen(Vector, bool)</c> @0x4a3d60:
-    /// <c>UpdatePopUpBubble</c> calls it with the bool <b>false</b> (<c>xor %esi,%esi</c> @0x7e8520), which
-    /// takes the branch at <c>je 0x4a4008</c> and skips the normalise-and-flip tail entirely. What is stored
-    /// is therefore the raw GL window transform: <c>planelineintersection</c> resolves to
-    /// <c>t = -(d + n·p0)/(n·dir) = -1/P.z</c> against the plane <c>z = -1</c>, so eye space is -Z-forward
-    /// (the convention Alloy's <c>ViewForward = (0,0,-1)</c> already runs on), and the tail is
-    /// <c>vp.y + h/2 + Y'·(h/2)/tan(fov/2)</c> -- i.e. <c>(ndc.y + 1)/2 · h + vp.y</c>, character for
-    /// character the GL window transform. So: <b>pixels, BOTTOM-left origin, y UP</b>, in the CAMERA's
-    /// viewport rect and divided by the GUI scale. Corroborating: the bool-true tail computes
-    /// <c>1 - y/h</c> (@0x4a3ff9), which only makes sense flipping a bottom-up pixel into a top-down
-    /// normalised coordinate.</para>
-    /// <para><see cref="PlateLayout.ToDrawSpace"/> is what turns this into the top-left, y-down pixels a
-    /// <c>Window</c> draws in; nothing else may consume these two floats directly.</para>
+    /// The engine's own projected anchor for this object's bubble panel, EXACTLY as stored; false when there is no
+    /// bubble yet. <c>UpdatePopUpBubble</c> calls <c>Camera::MapToScreen</c> with the flip tail skipped, so these
+    /// are the raw GL window transform: <b>pixels, BOTTOM-left origin, y UP</b>, in the CAMERA's viewport rect and
+    /// divided by the GUI scale. <see cref="PlateLayout.ToDrawSpace"/> is the only thing that may consume them.
     /// </summary>
     public static bool AnchorRaw(IntPtr obj, out float x, out float y)
     {
@@ -117,8 +100,8 @@ public static unsafe class NameplateNative
         return true;
     }
 
-    /// <summary>Clear the bubble's "live text owns me" latch. Load-bearing: under the mode-0 suppression
-    /// nothing else ever clears it, and <c>MouseOver</c> refuses to build a plate while it is 1 -- without
+    /// <summary>Clear the bubble's "live text owns me" latch. Load-bearing: under the text-bubble mode 0
+    /// suppression nothing else ever clears it, and <c>MouseOver</c> refuses to build a plate while it is 1 -- without
     /// this a creature's plate dies permanently the first time it speaks.</summary>
     public static void ClearLiveTextLatch(IntPtr obj)
     {
@@ -128,10 +111,10 @@ public static unsafe class NameplateNative
 
     private static readonly GuiPanelUnToggleOffFn _unToggleOff = EngineFn.GuiPanelUnToggleOff;
 
-    /// <summary>Clear the bubble's hide bit so <c>UpdatePopUpBubble</c> projects its anchor again (#591). A bubble
-    /// that idled under the vanilla mode carries the bit (<c>ToggleOff</c>), and the mode-0 walk only deactivates
-    /// it; under mode 0 the panel is never active, so <c>CGuiPanel::UnToggleOff</c> is the bit clear and nothing
-    /// else. Cold: once per hover, spoken line or floaty, from the hooks.</summary>
+    /// <summary>Clear the bubble's hide bit so <c>UpdatePopUpBubble</c> projects its anchor again. A bubble
+    /// that idled under a drawing bubble mode carries it (<c>ToggleOff</c>) and <c>SetChatBubbleMode(0)</c>'s
+    /// walk only Deactivates, so <c>CGuiPanel::UnToggleOff</c> is the bit clear and nothing else. Cold: once
+    /// per hover, spoken line or floaty, from the hooks.</summary>
     public static void UnfreezeAnchor(IntPtr obj)
     {
         CGuiInGamePopUpBubble b = Bubble(obj);
@@ -140,15 +123,15 @@ public static unsafe class NameplateNative
 
     /// <summary>Is the engine currently showing its feedback plate for this object? The per-class flag set at
     /// the top of <c>ShowFeedbackBubbleText</c> and cleared in <c>MouseOff</c> -- the pollable "hovered or
-    /// Tab-highlighted" state, which is why acceptance §1/§8 need no key tracking of our own.</summary>
+    /// Tab-highlighted" state, which is why no key tracking of our own is needed.</summary>
     public static bool Plated(IntPtr obj, byte type)
     {
         if (obj == IntPtr.Zero) return false;
         if (!_probed && type == TypeCreature)
         {
             _probed = true;
-            // #432: the plate flag and the portrait slot are this file's two probe-able offsets, and a
-            // creature is the one instance that carries both.
+            // The plate flag and the portrait slot are this file's two probe-able offsets, and a creature
+            // is the one instance that carries both.
             if (!EngineLayout.Probe("CNWCCreature", obj, _log) | !EngineLayout.Probe("CNWCObject", obj, _log))
             {
                 _layoutRot = true;
@@ -174,11 +157,10 @@ public static unsafe class NameplateNative
         return m is 1 or 2 or 3 ? m : 0;
     }
 
-    /// <summary>Does the object's override text still equal <paramref name="cached"/>? HOT: compares the
-    /// engine's bytes against the cached string in place, so a steady plate allocates nothing and a server
-    /// that flips "Sneaking" on mid-hover is caught on the next frame. Latin1, matching <see cref="Chars"/>.
-    /// <para>A length compare alone would not do: <c>CExoString</c> assignment can land a different payload of
-    /// the same length in the same block, and status labels are all near-identical lengths.</para></summary>
+    /// <summary>Does the object's override text still equal <paramref name="cached"/>? HOT: compares the engine's
+    /// bytes against the cached string in place, so a steady plate allocates nothing. Latin1, matching
+    /// <see cref="Chars"/>. A length compare alone would not do -- <c>CExoString</c> assignment can land a
+    /// different payload of the same length in the same block, and status labels are near-identical lengths.</summary>
     public static bool OverrideTextIs(IntPtr obj, string cached)
     {
         if (obj == IntPtr.Zero) return cached.Length == 0;
@@ -192,7 +174,7 @@ public static unsafe class NameplateNative
     }
 
     /// <summary>The override text verbatim -- NOT trimmed. The leading space / leading LF the server sends is
-    /// the splice itself (<c>sow-codebase</c> <c>TextBubbleService.ComposeOverride</c> emits its own
+    /// the splice itself (the server's composer emits its own
     /// separators), so trimming it would glue "Poisoned" onto the injury line without its space and drop the
     /// break before "Sneaking". COLD -- allocates, called only on the change edge.</summary>
     public static string OverrideText(IntPtr obj)
@@ -226,10 +208,9 @@ public static unsafe class NameplateNative
     }
 
     /// <summary>The live game camera's forward axis in world space: the camera quaternion applied to
-    /// <c>(0,0,-1)</c>. Used to reject objects BEHIND the camera, which the engine's own projection does not:
-    /// <c>planelineintersection</c> tests its denominator only for equality with zero (@0x5b403f), never its
-    /// sign, so a point behind the camera projects to a mirrored on-screen anchor. False when there is no
-    /// module camera.</summary>
+    /// <c>(0,0,-1)</c>. Used to reject objects BEHIND the camera, which the engine's own projection does not --
+    /// <c>planelineintersection</c> tests its denominator only against zero (@0x5b403f), never its sign, so a
+    /// point behind the camera projects to a mirrored on-screen anchor. False when there is no module camera.</summary>
     public static bool CameraForward(out float x, out float y, out float z)
     {
         x = 0f; y = 0f; z = 0f;

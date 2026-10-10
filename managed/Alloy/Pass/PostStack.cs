@@ -6,29 +6,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #375: the display-space post stack -- the ordered set of full-screen stages that run AFTER
+/// The display-space post stack (ADR 0020) -- the full-screen stages that run AFTER
 /// <see cref="PostChain.Composite"/> has resolved the linear frame, on the 8-bit-referred image the engine's
-/// own <c>fsfbpostpr</c> chain used to run on inside <c>Camera::DoFrameBufferEffects</c>. ADR 0020.
-/// <para>Shape: the resolve writes into this class's target instead of the engine's whenever at least one
-/// stage is live this frame; each stage reads the previous output on <see cref="TextureSlots.PostHdr"/>
-/// (and the frame's depth on <see cref="TextureSlots.PostBloom"/>), draws the full-screen triangle into the
-/// other ping-pong texture, and the LAST stage draws into the engine's target with the resolve's dither. A
-/// stage that does not build is dropped from the stack with a log line; the frame keeps resolving without
-/// it. Nothing here can stand the Alloy frame down -- there is always the resolve to fall back to.</para>
-/// <para>The gamma stage is the first citizen because it is a correctness bug rather than a lost look: the
-/// engine runs <c>inc_postpr_gam</c>'s <c>pow(c, Gamma/2.2)</c> whenever the client's gamma option is not
-/// 2.2, and Alloy simply never applied it. Both the gate and the value are the engine's own globals --
-/// <c>CClientOptions::SetGamma</c> @0x66b0f0 stores the option as float param 0x0b (the <c>Gamma</c>
-/// uniform, <c>GLRender::ConnectShaderData</c>) and folds bit 0x10 into the option mask that
-/// <c>ConfigureFBEffectPostProcessing</c> @0x66ad40 publishes as int param 2, the preamble's
-/// <c>POSTPROCESSING_TYPES_ENABLED</c>. Read per frame, so the slider moves the Alloy frame live.</para>
-/// <para>CX-93: the SHARPEN and VIBRANCE stages joined it for a different reason -- they used to reach the
-/// frame as stock <c>inc_postpr_shrp</c>/<c>inc_postpr_vibr</c> text compiled inside
-/// <see cref="FbPostStage"/>'s hosted chain, which is the engine GLSL CX-93 removed from Alloy programs. Each
-/// is a stage on its own option bit now, like gamma and toon; the hosted chain compiles with the option mask
-/// at 0. Sharpen also could not LINK in the hosted stage: its stock text reads <c>fogStart</c>/<c>fogEnd</c>
-/// out of <c>inc_fog</c>, which that stage skips, so turning the option on took the whole content chain down
-/// with it.</para>
+/// own <c>fsfbpostpr</c> chain ran on. Each stage reads the previous output and the LAST draws into the
+/// engine's target; a stage that does not build is dropped with a log line, the frame resolving without it.
 /// </summary>
 internal static unsafe class PostStack
 {
@@ -39,21 +20,20 @@ internal static unsafe class PostStack
     /// <c>Gamma</c> uniform. Clamped to [0, 1000] by the setter.</summary>
     private const uint GammaParam = 0x0b;   // not-an-offset: engine shader-param index
     /// <summary><c>POSTPROCESSING_GAMMA 0x0010</c> in <c>inc_postpr.shd</c> -- the same value in both stock
-    /// shader generations (base_shaders.bif and ovr.bif) and in sow-topdata's fork; SetGamma sets it iff
+    /// shader generations (base_shaders.bif and ovr.bif) and in the split-include forks; SetGamma sets it iff
     /// |g - 2.2| &gt;= 9e-5.</summary>
     internal const int MaskGamma = 0x10;   // not-an-offset: engine FB-effect mask bit
     /// <summary><c>POSTPROCESSING_TOON 0x0020</c> -- the client's Toon video option; see
     /// <see cref="ToonStage"/> for the engine setter this was read off.</summary>
     internal const int MaskToon = ToonStage.MaskToon;
-    /// <summary>CX-93: <c>POSTPROCESSING_SHARPEN 0x0001</c> and <c>POSTPROCESSING_VIBRANCE 0x0008</c> in
-    /// <c>inc_postpr.shd</c> -- the client's Sharpen and Vibrance video options, each now a stage of this
+    /// <summary><c>POSTPROCESSING_SHARPEN 0x0001</c> and <c>POSTPROCESSING_VIBRANCE 0x0008</c> in
+    /// <c>inc_postpr.shd</c> -- the client's Sharpen and Vibrance video options, each a stage of this
     /// stack rather than a stock include compiled inside the hosted chain.</summary>
     internal const int MaskSharpen = 0x01, MaskVibrance = 0x08;   // not-an-offset: engine FB-effect mask bits
     /// <summary><c>GetGlobalShaderParamf(7)</c>: the Vibrance amount, uploaded to stock programs as the
-    /// <c>Vibrance</c> uniform. <c>GLRender::SetUniforms</c> @0x4ccbf0 writes
-    /// <c>m_globalShaderConstantsf[7]</c> into the location <c>ConnectShaderData</c> @0x4ce8e0 bound for
-    /// "Vibrance" (PROG_FIXED+0x1db4); the base is the same one <see cref="GammaParam"/> indexes, so the two
-    /// cross-check each other.</summary>
+    /// <c>Vibrance</c> uniform (<c>GLRender::SetUniforms</c> @0x4ccbf0 writes
+    /// <c>m_globalShaderConstantsf[7]</c> into it). The base is the one <see cref="GammaParam"/> indexes, so
+    /// the two cross-check each other.</summary>
     private const uint VibranceParam = 7;   // not-an-offset: engine shader-param index
     /// <summary>The engine's own reference gamma: the stage is the identity at exactly this value.</summary>
     internal const float EngineGamma = 2.2f;
@@ -64,7 +44,7 @@ internal static unsafe class PostStack
     /// <summary><c>enableFBeffects</c>, the engine's console gate on the whole framebuffer-effect walk
     /// (<c>DoFrameBufferEffects</c> returns at once when it is 0). Null reads as on.</summary>
     private static int* _fbEffects;
-    /// <summary>#352: <c>Camera::m_nFramebufferEffectsEnabled</c>, whose bit 2 is the engine's own "the post
+    /// <summary><c>Camera::m_nFramebufferEffectsEnabled</c>, whose bit 2 is the engine's own "the post
     /// program runs" answer. Null (unresolved) reads as off.</summary>
     private static uint* _fbMask;
     /// <summary>Latched: the display-space target could not be completed on this context. Distinct from the
@@ -148,7 +128,7 @@ internal static unsafe class PostStack
         },
     };
 
-    /// <summary>#352: the hosted-chain stage, the one the stack drops and rebuilds on its own.</summary>
+    /// <summary>The hosted-chain stage, the one the stack drops and rebuilds on its own.</summary>
     private static readonly Stage _fbpost = Array.Find(_stages, static s => s.Name == "fbpost")!;
     private static uint _fbo;
     private static uint _tex0, _tex1;
@@ -222,14 +202,14 @@ internal static unsafe class PostStack
     private static bool GammaActive(int mask) => GammaBit(mask) && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>The cel stage's gate, the engine's: the Toon option bit, under the same console gate.</summary>
     private static bool ToonActive(int mask) => (mask & MaskToon) != 0 && (_fbEffects == null || *_fbEffects != 0);
-    /// <summary>CX-93: the sharpen stage's gate, the engine's own option bit under the console gate.</summary>
+    /// <summary>The sharpen stage's gate, the engine's own option bit under the console gate.</summary>
     internal static bool SharpenActive(int mask) => (mask & MaskSharpen) != 0 && (_fbEffects == null || *_fbEffects != 0);
-    /// <summary>CX-93: the vibrance stage's, the same shape. A zero amount still runs the stage, which is the
+    /// <summary>The vibrance stage's, the same shape. A zero amount still runs the stage, which is the
     /// engine's behaviour too -- and the shader is the identity at zero.</summary>
     internal static bool VibranceActive(int mask) => (mask & MaskVibrance) != 0 && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>The client's Vibrance amount.</summary>
     private static float Vibrance() => _gspF == null ? 0f : _gspF(VibranceParam);
-    /// <summary>#352: the hosted chain's gate, the engine's: effect 2's bit, under the console gate.</summary>
+    /// <summary>The hosted chain's gate, the engine's: effect 2's bit, under the console gate.</summary>
     private static bool FbPostActive()
         => Post.FbPost.V && _fbMask != null && (*_fbMask & FbPostStage.EffectPost) != 0 && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>The client's shader quality option (int param 7), the preamble's <c>SHADER_QUALITY_MODE</c>.</summary>
@@ -260,22 +240,21 @@ internal static unsafe class PostStack
     }
 
     /// <summary>Decide this frame's stack and, if any stage is live, hand back the framebuffer the resolve's
-    /// colour should go into (its first ping-pong texture attached). 0 = no stage: the resolve draws into
-    /// the engine's target as before. Binds its own framebuffer to attach, so the caller rebinds the
-    /// engine's target after it -- which the depth hand-back needs anyway.
-    /// <para>#352: the hosted chain is built against the option mask as the engine's preamble is, so a moved
-    /// option drops it here to rebuild on this frame (the engine reloads its shaders on the same change).</para></summary>
+    /// colour should go into (its first ping-pong texture attached). 0 = no stage: the resolve draws into the
+    /// engine's target as before. Binds its own framebuffer to attach, so the caller rebinds the engine's
+    /// target after it -- which the depth hand-back needs anyway.</summary>
     internal static uint Begin(int w, int h) => Begin(w, h, w, h);
 
     /// <summary>Is this frame's stack upsampling: the resolve and every stage but the last at render size,
     /// the taa stage's history and its write at display size. Decided in <see cref="Begin"/>.</summary>
     internal static bool Upsampling { get; private set; }
 
-    /// <summary>...with the render size apart from the display size. The stages are asked about the DISPLAY
-    /// size (the taa history lives there); the ping-pong is at render size only when the taa stage is live
-    /// and the dial is on, so a frame whose taa stage is not ready falls back to the bilinear upscale.</summary>
-    /// <summary>#642: whether the taa stage ran this frame -- the receiver dithers only when something integrates it.</summary>
+    /// <summary>Whether the taa stage ran this frame -- the receiver dithers only when something
+    /// integrates it.</summary>
     internal static bool TaaLive;
+    /// <summary>...with the render size apart from the display size. The stages are asked about the DISPLAY
+    /// size (the taa history lives there); the ping-pong is at render size only when the taa stage is live and
+    /// the dial is on, so a frame whose taa stage is not ready falls back to the bilinear upscale.</summary>
     internal static uint Begin(int rw, int rh, int dw, int dh)
     {
         _pending = 0; Upsampling = false;
@@ -389,7 +368,7 @@ internal static unsafe class PostStack
         string vs = ShaderStages.Source(PostChain.ShdPostVs), fs = ShaderStages.Source(st.Resref);
         if (st == _fbpost)
         {
-            // #352 AC: a chain with no inc_postpr (any non-SoW module, or vanillabridge=0) would compile the
+            // #352 AC: a chain with no inc_postpr (a module that ships none, or vanillabridge=0) would compile the
             // pass-through stub and run a no-op draw every frame while reporting itself hosted. Splice first;
             // an untouched text means every region missed, and that is a stand-down, not a stage.
             FbPostStage.Arm(Mask(), Quality());
@@ -435,28 +414,28 @@ internal static unsafe class PostStack
         _log?.Info($"PostStack: the {st.Name} stage is dropped to rebuild -- {why}");
     }
 
-    /// <summary>#352: from <c>Programs.DropSpliced</c> on the module-unload edge: the hosted chain is
+    /// <summary>From <c>Programs.DropSpliced</c> on the module-unload edge: the hosted chain is
     /// spliced from the resource chain, so it has a module lifetime like the lit program's regions.</summary>
     internal static void DropSpliced()
     {
         if (_fbpost.Prog != 0 || _fbpost.Failed) Drop(_fbpost, "module changed, rebuilds from this module's resource chain");
     }
 
-    /// <summary>The gamma stage's resref (#92 override point), same rules as every post-chain stage.</summary>
+    /// <summary>The gamma stage's resref (an override point), same rules as every post-chain stage.</summary>
     internal const string ShdGammaFs = "cx_postgam_fs";
-    /// <summary>The cel stage's resref (#92 override point), same rules as every post-chain stage.</summary>
+    /// <summary>The cel stage's resref (an override point), same rules as every post-chain stage.</summary>
     internal const string ShdToonFs = "cx_toon_fs";
-    /// <summary>CX-93: the sharpen and vibrance stages' resrefs (#92 override points).</summary>
+    /// <summary>The sharpen and vibrance stages' resrefs (override points).</summary>
     internal const string ShdSharpenFs = "cx_sharpen_fs", ShdVibranceFs = "cx_vibrance_fs";
 
-    /// <summary>CX-93: the client's Sharpen video option as Alloy's own stage -- the stock file's asymmetric
+    /// <summary>The client's Sharpen video option as Alloy's own stage -- the stock file's asymmetric
     /// edge darkening and global lift, without its AA (the stack has SMAA/TAA) or its fog falloff (whose
     /// uniforms could never resolve in a hosted post stage).</summary>
     internal static string SharpenStageFs => ShaderSource.Get("cx_sharpen_f.glsl");
-    /// <summary>CX-93: the client's Vibrance video option as Alloy's own stage -- the stock maths, which is
+    /// <summary>The client's Vibrance video option as Alloy's own stage -- the stock maths, which is
     /// the definition of the effect, on the engine's own amount.</summary>
     internal static string VibranceStageFs => ShaderSource.Get("cx_vibrance_f.glsl");
-    /// <summary>#389: the taa stage's resref (#92 override point, like every stack stage). Only the copy-out of
+    /// <summary>The taa stage's resref (an override point, like every stack stage). Only the copy-out of
     /// the history is overridable here; the accumulator (<see cref="TaaStage.TaaFs"/>) is embedded.</summary>
     internal const string ShdTaaFs = "cx_taa_fs";
 
@@ -494,15 +473,16 @@ internal static unsafe class PostStack
             // The whole point: the same expression as inc_postpr_gam.shd, exponent Gamma/2.2, so a client at
             // 2.2 is the identity and every other value moves the Alloy frame exactly as it moves vanilla's.
             check.Expect(GammaStageFs.Contains("vec3(uGamma / 2.2)"), "gamma is pow(c, g/2.2), the stock stage's exponent");
-            check.Expect(MaskGamma == 0x10, "POSTPROCESSING_GAMMA is 0x10 (inc_postpr.shd)");
-            check.Expect(GammaBit(MaskGamma) && !GammaBit(MaskGamma - 1) && !GammaBit(0), "the gate is the mask bit");
+            // The option bits are the engine's own, written out here rather than restated from the consts:
+            // POSTPROCESSING_GAMMA is 0x10 and POSTPROCESSING_TOON 0x20 (inc_postpr.shd, and the setter's
+            // `or $0x20`), so a const that drifted off them fails instead of redefining the question.
+            check.Expect(GammaBit(0x10) && !GammaBit(0x0f) && !GammaBit(0), "the gamma gate is inc_postpr's 0x10 bit");
             check.Expect(MathF.Abs(MathF.Pow(0.5f, EngineGamma / 2.2f) - 0.5f) < 1e-6f, "2.2 is the identity");
             Post.Stack.V = false; check.Expect(Begin(4, 4, 4, 4) == 0, "post.stack off bypasses the stack: Begin hands the frame back");
             Post.Stack.V = true;
             check.Expect(Post.Stack.Default && Post.FbPost.Default, "the stack and the hosted chain default ON: /post reset lifts both bypasses");
             check.Expect(PostChain.Describe().Contains("stack"), "/post reports the stack");
-            check.Expect(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd)");
-            check.Expect(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
+            check.Expect(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(0x20), "the toon gate is inc_postpr's 0x20 bit");
             check.Expect(ToonStage.SelfCheck(log), "the toon stage's own checks");
             // CX-93: sharpen and vibrance sit between the cel stage and the chain -- inc_postpr's own order
             // for them, and ahead of anything a content fork appends to it.

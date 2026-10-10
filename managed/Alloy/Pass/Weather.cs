@@ -5,16 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>Alloy weather (map #614): the client's weather state, captured at the engine's own entry points,
-/// and the vanilla emitter silenced at its source. <c>CNWCArea::SetWeather(type, density)</c> is the one
-/// call that carries state -- <c>CNWCArea::Update</c> ramps density through it over the 6 s fade and it
-/// deletes/creates the six stock fx objects itself -- so with the master on the hook forwards density 0
-/// (the engine's own "no weather" path, nothing to suppress downstream) and keeps the real value here.
-/// Master off forwards untouched: the stock emitter draws as before. The two edge calls are logged only.
-/// An interior area (<see cref="FrameInputs.Interior"/>) draws and soaks nothing whatever weather it was given;
-/// the stock emitter is silenced there too, since the master promises nothing gets in.
-/// <para>Rain vs snow is the weathertypes.2da row's Model; the rows are the two text knobs so a server's
-/// own 2DA is one setting, not a build. ponytail: read the 2DA through <c>C2DA</c> if a third kind appears.</para></summary>
+/// <summary>Alloy weather: the client's weather state, captured at the engine's own entry points, and the
+/// vanilla emitter silenced at its source -- with the master on, the <c>CNWCArea::SetWeather(type, density)</c>
+/// hook forwards density 0 (the engine's own "no weather" path) and keeps the real value here, and off it
+/// forwards untouched. Rain vs snow is the weathertypes.2da row's Model, read as two text knobs.</summary>
 internal static unsafe partial class Weather
 {
     internal enum Kind : byte { None, Rain, Snow }
@@ -22,7 +16,7 @@ internal static unsafe partial class Weather
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<string> RainRows, SnowRows, SnowSkip;
-    /// <summary>Chained, not installed: CX-55's model prefetch is the other consumer of this symbol. The
+    /// <summary>Chained, not installed: the model prefetch is the other consumer of this symbol. The
     /// priority only fixes the order the two read it in; both forward.</summary>
     private const int TileSetPriority = 100;
     private static TileSetGetFn* _tileSetSlot;
@@ -36,7 +30,7 @@ internal static unsafe partial class Weather
     private static AreaStopWeatherFn _origStop;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
     private static bool _off;
-    /// <summary>Row -> kind, 32 rows: weathertypes.2da has 11 on SoW, 3 stock.</summary>
+    /// <summary>Row -> kind, 32 rows: weathertypes.2da has 3 stock rows; content adds more (11 measured).</summary>
     private static readonly Kind[] _kinds = new Kind[32];
 
     /// <summary>The engine's weather as of the last SetWeather: the 2DA row, its kind, and density 0..1.
@@ -179,7 +173,7 @@ internal static unsafe partial class Weather
     }
 
     /// <summary>A live master flip re-issues the engine's own SetWeather to the current area with the captured
-    /// state, so off brings the stock emitter back mid-storm and on takes it away, in the same area (#616 A/B).</summary>
+    /// state, so off brings the stock emitter back mid-storm and on takes it away, in the same area.</summary>
     private static void MasterChanged()
     {
         if (_off || _origSet == null || Type == 0 || Density <= 0f) return;

@@ -8,52 +8,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>
-/// <para>This file is the SERVICE -- hook install, the frame anchor, the pass-generation clock, the iterator's
-/// suppression answer, and the end-of-frame report. The frame path lives in siblings, one responsibility each:
-/// <c>.Table</c> (the ownership and staging arrays), <c>.Enroll</c> (the ownership walk), <c>.Frame</c>
-/// (per-pass dispatch), <c>.Batches</c> (build), <c>.Target</c> (framebuffer plumbing), <c>.Uniforms</c> (per-pass
-/// scene terms), <c>.Shaders</c> (the embedded GLSL), with the contract predicates out in <see cref="ShaderContract"/>.
-/// The tables and the walks that read them are one class, because a boundary there would be a copy or an
-/// indirection per part per frame (#173). What is NOT table is not in it: <see cref="Issue"/> (submit),
-/// <see cref="Highlight"/> (the owned highlight) and <see cref="Programs"/> (link, and the program handles) are
-/// ADR 0014 modules reaching the columns through <c>using static</c>; the period tallies sit in
-/// <see cref="Counters"/> and the one-shot budgets in <see cref="Diag"/> (CX-699).</para>
-/// <para>Alloy is the only renderer of the 3D world (ADR 0016): every part is drawn from owned resources inside
-/// the 4.6 context bracket, texture ids re-fetched every frame so animated textures keep cycling. Parts the
-/// engine would draw LIT go through the clustered forward+ program over <see cref="AlloyLights"/>' unbounded
-/// light SSBO and are SHADED from their material (the stock .mtr map slots and parameter names feed a GGX lobe);
-/// parts the engine draws unlit keep the flat variant, their vanilla look. A lit part that cannot be shaded
-/// faithfully (no normal stream, lit program down) is NOT DRAWN rather than painted flat (#83, #120, #264).</para>
-/// <para>Submission is MULTIDRAW-BATCHED: draw count follows the (program, VDO, texture, primitive) group count,
-/// not the part count. Per-part state -- model matrix, texture rotation, material ambient/diffuse -- lives in a
-/// persistent per-draw SSBO indexed by ownership slot through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>, so one
-/// <c>glMultiDrawElementsBaseVertex</c> covers a group. The draw block is two phases: build (revalidate every
-/// part, stage its record, cut the batch at each key change) then issue (one bind set + one multidraw per
-/// batch) (#84, #242).</para>
-/// <para>WHERE the Alloy block runs is load-bearing: CX-89 made the anchor a direct call out of
-/// <see cref="RspShim.Run"/> (<see cref="FrameAnchor"/>), at the step <c>Scene::FadeDoors</c> used to hold --
-/// after the scene fog and the door fade, before anything draws. CX-109: the view and projection come from
-/// <see cref="AlloyCamera.WorldView"/> -- Alloy's own, computed at this view's <c>Camera::RenderScene</c> out
-/// of the camera object's fields -- so the anchor no longer depends on when the engine happens to write
-/// <c>m_aurMtxStack</c>.</para>
-/// <para>Ownership is a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>), rebuilt wholesale
-/// at a frame boundary (enrollment, on a scene-walk delta, before the Alloy block) -- the frame-atomic swap. The
-/// only mid-frame mutation is revocation. <c>vanilla=1</c> in cx.cfg is the restart-only kill switch (#263).
-/// Hot path allocates nothing.</para>
-/// <para>Creatures arrive through the same <c>RenderDrawBucket</c> bracket (buckets 2 and 3, from
-/// <c>Scene::RenderDynamicGeometry</c>). Instances are MOVERS, whose transform this pass reads live at draw time,
-/// and <c>PartTriMesh::Mat</c>'s alpha multiply, colour multiply and self-illum add are folded into the per-draw
-/// record every frame -- a creature FADES through one of them, so opacity is per-frame state, never capture
-/// state. A true skinmesh (no skinning branch in the Alloy vertex stages) or an instance state no Alloy program
-/// expresses refuses against the GOB, and the enrollment sweep hands that whole creature back rather than
-/// half-own one (#128, #258).</para>
-/// <para>Water reflections need NOTHING from this pass: <c>Camera::CopyRenderSubframe</c> is a
-/// <c>CopyFramebuffer</c> plus a bind of the copy to texture units 11/12 (<c>texFBColor</c>/<c>texFBDepth</c>),
-/// taken after buckets 0/1/7 and before the bucket-5 water walk, and <c>fswater.shd</c> ray-marches that
-/// snapshot in screen space. Alloy parts reflect because they are already in the attachments the snapshot
-/// copies (#85).</para>
-/// </summary>
+/// <summary>The SERVICE -- hook install, the frame anchor, the pass-generation clock, the iterator's
+/// suppression answer and the end-of-frame report. Alloy draws the whole 3D world (ADR 0016); its lit program
+/// is forward except for point lights, which a G-buffer twin and <see cref="DeferredLights"/> add (ADR 0029).
+/// The frame path lives in the siblings: <c>.Table</c>, <c>.Enroll</c>, <c>.Frame</c>, <c>.Batches</c>.</summary>
 public sealed unsafe partial class AlloyRenderer : IExtenderService
 {
     internal const int LogEvery = 900;
@@ -62,94 +20,78 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// a module unload) produces no line, which reads as "never armed" rather than "not yet". Report once
     /// early, then settle into the long cadence.</summary>
     internal const int FirstLogAt = 120;
-    /// <summary>Ownership capacity. Beyond this the surplus is not drawn (#264: no engine walk behind a refusal).
-    /// A ceiling that should not be reachable rather than a budget to tune: ~29x the 5631 parts a large stock
-    /// area carries, ~400 bytes per slot across the arrays below (62.5MB resident). A cap under the population
-    /// is worse than "some tiles render vanilla": WHICH parts spill is a first-come-first-served walk of
-    /// PartTable's hash table, whose order shifts with population, so every enrollment re-picks the winners and
-    /// tiles flip renderer under a static camera. The group lookup it feeds is a hash for the same reason -- a
-    /// linear walk is 13.4 billion compares at this cap.
-    /// <para>ponytail: still first-come-first-served, so an area past even this would flicker. The fix is a
-    /// DETERMINISTIC near-to-far spill (the surplus is always the fog-compressed far geometry), not a bigger
-    /// number.</para></summary>
+    /// <summary>Ownership capacity; the surplus is not drawn, there being no engine walk behind a refusal. A
+    /// ceiling that should not be reachable rather than a budget to tune: ~29x the parts a large stock area
+    /// carries, ~400 bytes per slot (62.5MB resident). WHICH parts spill is a first-come-first-served hash
+    /// walk, so ponytail: an area past even this flickers, and the fix is a deterministic near-to-far spill.</summary>
     internal const int MaxOwned = 163840, MaxVdos = 4096;
-    /// <summary>#84 batch-sort texture keys: distinct diffuse textures the sort can separate, and the
+    /// <summary>Batch-sort texture keys: distinct diffuse textures the sort can separate, and the
     /// open-addressed slot table that interns them (power of two, ~2x MaxMats for a 0.5 load factor). Overflow
-    /// shares the last key, which costs batch size and nothing else -- the live flush key is the texture id.
-    /// <para>Raised with <see cref="MaxOwned"/>: a large area logged exactly 1024 textures, i.e. saturated,
-    /// which turns the last key into a bucket every unseen texture shares and costs the sort its whole
-    /// point. Cheap to fix -- the tables are one int and one short per slot.</para></summary>
+    /// shares the last key, which costs batch size and nothing else -- the live flush key is the texture id --
+    /// but a saturated table makes that key a bucket every unseen texture shares, costing the sort its point.</summary>
     internal const int MaxMats = 16384, MatHashBits = 15, MatHash = 1 << MatHashBits;
-    /// <summary>Floats per CxDraw record: std430 <c>mat4 + vec4 rot + vec4 amb + vec4 dif + vec4 emi
-    /// + vec4 pbr + vec4 spc + vec4 feat + mat4 prev + vec4 ext0..ext2</c> = 288 bytes (#392 grew it from 176,
-    /// ADR 0026 from 240), whose alignment (16) already divides the size, so the array stride is 288 with no
-    /// padding.</summary>
+    /// <summary>Floats per CxDraw record: std430 <c>mat4 + vec4 rot + vec4 amb + vec4 dif + vec4 emi + vec4
+    /// pbr + vec4 spc + vec4 feat + mat4 prev + vec4 ext0..ext2</c> = 288 bytes, whose alignment (16) already
+    /// divides the size, so the array stride is 288 with no padding.</summary>
     internal const int DrawFloats = 72;
     /// <summary>ADR 0026: where the three material-extension vec4s (<c>ext0..ext2</c>) start -- after
     /// <c>prev</c>, so no older field moved.</summary>
     internal const int ExtFloat = 60;
-    /// <summary>CX-52: ext2.z, the one lane ADR 0026 leaves spare -- <c>_recArrive</c>, the diffuse's arrival time.</summary>
+    /// <summary>ext2.z, a lane ADR 0026 leaves spare -- <c>_recArrive</c>, the diffuse's arrival time.</summary>
     internal const int ArriveFloat = ExtFloat + 10;
-    /// <summary>CX-120: ext2.w, the last spare lane -- the tile's fog-of-war term as HIDDEN, i.e.
-    /// <c>1 - reveal</c>, so that <b>0 means explored</b>. The polarity is the whole point: a spare lane is
-    /// zero in every record nobody writes to it -- which is every record in engine mode -- and the first
-    /// version of this carried REVEAL, so an unwritten 0 read as "never seen" and the lit stage fogged the
-    /// entire world to black. Caught by looking at a live screenshot; the harness passed it.</summary>
+    /// <summary>ext2.w, the tile's fog-of-war term as HIDDEN (<c>1 - reveal</c>), so that <b>0 means
+    /// explored</b>. The polarity is the whole point: a spare lane is zero in every record that does not write
+    /// it, and carrying REVEAL made an unwritten 0 read as "never seen" -- the lit stage fogged the world to
+    /// black.</summary>
     internal const int RevealFloat = ExtFloat + 11;
-    /// <summary>#392: where <c>prev</c>, the previous frame's model matrix, starts in the record.</summary>
+    /// <summary>Where <c>prev</c>, the previous frame's model matrix, starts in the record.</summary>
     internal const int PrevFloat = 44;
-    /// <summary>#242: record slots the persistent buffer can hold -- one per ownership slot, plus the sky's
-    /// reserved block immediately above them. The sky's parts are not in the ownership table (they are
-    /// captured off the engine's matrix stack) and are restaged every pass, so they take a fixed block at the
-    /// top rather than a slot each.</summary>
+    /// <summary>Record slots the persistent buffer can hold -- one per ownership slot, plus the sky's reserved
+    /// block immediately above them. The sky's parts are not in the ownership table (they are captured off the
+    /// engine's matrix stack) and are restaged every pass, so they take a fixed block at the top.</summary>
     internal const int MaxRecords = MaxOwned + MaxSkyDraws;
     /// <summary>SSBO binding point of the per-draw block. Must match <c>DrawBufDecl</c>'s literal; 0..3 belong
     /// to <see cref="AlloyLights"/> (lights, cluster counts, cluster indices, stats).</summary>
     internal const uint BindDraw = 4;
-    /// <summary>#137: SSBO binding of the Alloy pass's bone block. 0..3 are AlloyLights', 4 is the per-draw
-    /// record, 5 and 6 belong to <see cref="CasterPass"/>. Must match <c>BoneBufDecl</c>'s literal.
-    /// <para>Its own block rather than a share of the caster pass's: that one is written at the shadow
-    /// bracket and read at the next bake, this one is written and read inside a single colour pass, and
-    /// coupling two lifetimes to save 256KB buys a class of bug nobody can see.</para></summary>
+    /// <summary>SSBO binding of the Alloy pass's bone block. 0..3 are AlloyLights', 4 is the per-draw record,
+    /// 5 and 6 belong to <see cref="CasterPass"/>; must match <c>BoneBufDecl</c>'s literal. Its own block
+    /// rather than a share of the caster pass's: that one is written at the shadow bracket and read at the
+    /// next bake, this one is written and read inside a single colour pass.</summary>
     internal const uint BindBones = 7;
-    /// <summary>CX-26: last frame's bone block, read by the mover sweep alone.</summary>
+    /// <summary>Last frame's bone block, read by the mover sweep alone.</summary>
     internal const uint BindBonesPrev = 26;
-    /// <summary>#153 bindless: SSBO binding of the per-draw texture-handle block (8 uvec2 per record).
-    /// 0..3 = the light rig, 4 = draws, 5 = caster records, 6 = caster bones, 7 = Alloy bones.</summary>
+    /// <summary>SSBO binding of the per-draw texture-handle block (8 uvec2 per record). 0..3 = the light rig,
+    /// 4 = draws, 5 = caster records, 6 = caster bones, 7 = Alloy bones.</summary>
     internal const uint BindTexH = 8;
-    /// <summary>#242: SSBO binding of the per-DRAW index array -- draw n of this pass names the record slot
-    /// it reads. 0..3 are AlloyLights', 4 the records, 5/6 CasterPass', 7 the bones, 8 the handles. Must
-    /// match <c>DrawBufDecl</c>'s literal.</summary>
+    /// <summary>SSBO binding of the per-DRAW index array -- draw n of this pass names the record slot it
+    /// reads. 0..3 are AlloyLights', 4 the records, 5/6 CasterPass', 7 the bones, 8 the handles. Must match
+    /// <c>DrawBufDecl</c>'s literal.</summary>
     internal const uint BindDrawIdx = 9;
     /// <summary>Bones per skinned part, fixed by the engine: <c>GLRender::m_bones</c> is a 64 x mat4 static
     /// array and the vertex stream's indices address it directly. The matrices already sit in GLSL's
     /// column-major order (see <see cref="SymbolMap.GlRenderBones"/>), so a snapshot is a straight memcpy.
     /// </summary>
     internal const int BoneCount = 64, BoneFloats = BoneCount * 16;
-    /// <summary>Skinned parts posed per frame, INITIAL capacity. 4KB each, so 512 slots is 2MB and covers a
-    /// crowd. #262: no longer a ceiling -- the stage doubles rather than drop a creature, and the high-water
-    /// mark is reported. <see cref="CasterPass"/> keeps it as a hard cap; a shadow that does not bake is a
-    /// missing shadow, not a missing creature.</summary>
+    /// <summary>Skinned parts posed per frame, INITIAL capacity: 4KB each, so 512 slots is 2MB and covers a
+    /// crowd. Not a ceiling -- the stage doubles rather than drop a creature, and the high-water mark is
+    /// reported. <see cref="CasterPass"/> keeps it as a hard cap: a shadow that does not bake is a missing
+    /// shadow, not a missing creature.</summary>
     internal const int MaxBoneSlots = 512;
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;
-    /// <summary>#146: map slot 6 of the block, the ambient-occlusion map -- a baked visibility term in .r,
-    /// sampled straight onto the ambient. #275: sourced from <c>.mtr</c> <see cref="AoTexture"/> (texture11),
-    /// past the engine's own vocabulary, so it can never collide with a community model's texture7; the
-    /// engine's own FB-effect SSAO is a screen-space pass that keeps running underneath it, untouched.
-    /// <para>Unlike the flow map this is probed on EVERY shared material -- there is no shader feature that
-    /// announces it. That costs one <c>Material::GetTexture</c> per enrolled part, and a batch split only
-    /// where a material actually declares one.</para></summary>
+    /// <summary>Map slot 6 of the block, the ambient-occlusion map -- a baked visibility term in .r, sampled
+    /// straight onto the ambient, sourced from <c>.mtr</c> <see cref="AoTexture"/> (texture11) past the
+    /// engine's own vocabulary so it cannot collide with a community model's texture7. Probed on EVERY shared
+    /// material, since no shader feature announces it.</summary>
     internal const int AoSlot = 6, MapSlots = TextureSlots.MapCount;
-    /// <summary>#275: the <c>.mtr</c> line the AO map is declared on -- the first extender-owned slot
+    /// <summary>The <c>.mtr</c> line the AO map is declared on -- the first extender-owned slot
     /// (<see cref="MaterialExtraSlots.First"/>). A stock client parses and drops it.</summary>
     internal const int AoTexture = MaterialExtraSlots.First;
-    /// <summary>#146: the AO slot's MASK bit -- 1 &lt;&lt; 7, deliberately NOT <c>1 &lt;&lt; AoSlot</c>. Every
-    /// other slot's bit is its index, but bit 6 was <see cref="EnvSlot"/> before this ticket and the lit
-    /// stage is content-overridable: a hak shipped against an older build still reads 64 as "env-mapped".
-    /// Taking 64 for AO would make that stale copy render every env material shiny-and-unreflective with
-    /// nothing in the log. The bit is free, the drift is not.</summary>
+    /// <summary>The AO slot's MASK bit -- 1 &lt;&lt; 7, deliberately NOT <c>1 &lt;&lt; AoSlot</c>. Every other
+    /// slot's bit is its index, but bit 6 is <see cref="EnvSlot"/>'s and the lit stage is content-overridable:
+    /// a hak shipped against an older build still reads 64 as "env-mapped", so taking 64 for AO would render
+    /// every env material shiny-and-unreflective with nothing in the log.</summary>
     internal const int AoBit = 1 << 7;
     /// <summary>The record takes no shadow (<c>CX_SLOT_NOSHADOW</c>): an untextured blended sheet such as a door's
     /// <c>sam</c> transition sheen. Binds nothing.</summary>
@@ -158,18 +100,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// the local cube array, and <see cref="EnvProbe.ProbeUnit"/> sits above all of them -- SelfCheck holds
     /// that ordering, because a samplerCube sharing a unit with a sampler2D kills every lit draw in silence.</summary>
     internal const uint PbrUnit0 = TextureSlots.MapBase;
-    /// <summary>#121: the env-map bit of the same mask (<c>Material::HasEnvMap</c>, mat+0x40). One past the
-    /// bindable texture slots, and unlike them it binds nothing -- it only tells the fragment stage that this
-    /// is legacy "shiny" content whose diffuse alpha is a reflectivity mask.</summary>
-    /// <summary>...and FROZEN at 64: shipped <c>cx_ownlit_fs.shd</c> overrides carry a copy of it, so this
-    /// value is content, not an implementation detail. A new slot takes the next free bit (see
-    /// <see cref="AoBit"/>), never this one.</summary>
+    /// <summary>The env-map bit of the same mask (<c>Material::HasEnvMap</c>, mat+0x40). One past the bindable
+    /// texture slots, and unlike them it binds nothing -- it only tells the fragment stage that this is legacy
+    /// "shiny" content whose diffuse alpha is a reflectivity mask. FROZEN at 64: shipped
+    /// <c>cx_ownlit_fs.shd</c> overrides carry a copy, so a new slot takes the next free bit, never this one.</summary>
     internal const int EnvSlot = 64;
-    /// <summary>The SCENE's environment map (Ghidra <c>RenderFlat</c> @0x450eb0: a part with no env map of
-    /// its own gets <c>currentscene+0x1e8</c> bound to the env sampler -- but ONLY if that field is set).
-    /// Most areas leave it null, and that is why vanilla cobblestone does not reflect the sky: nothing is
-    /// bound, so the ambient-specular sample reads nothing. It is the switch, not the texture -- what gets
-    /// sampled here is the probe.</summary>
     internal const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
     /// <summary>The GL blend factors <see cref="Issue.BlendGl"/> maps the Aurora ones onto.</summary>
     internal const uint GlZero = 0, GlOne = 1, GlSrcColor = 0x0300, GlSrcAlpha = 0x0302,   // not-an-offset: GL blend-factor enums
@@ -178,8 +113,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <c>GLRender::ConnectShaderData</c>: one glBindAttribLocation table before every link -- 0 vPos,
     /// 1 vTcIn, 2 vColor, 7 vNormal). They say which engine VAO slot holds each stream.</summary>
     internal const uint EngPos = 0, EngUv = 1, EngNormal = 7;
-    /// <summary>#137: and OUR locations for the same two streams, which the skinned vertex stages declare.
-    /// Same numbers as the engine's by choice, not by necessity -- the Alloy VAO binds them itself.</summary>
+    /// <summary>And OUR locations for the same two streams, which the skinned vertex stages declare. Same
+    /// numbers as the engine's by choice, not by necessity -- the Alloy VAO binds them itself.</summary>
     internal const uint LocBoneIdx = 8, LocBoneW = 9;
     /// <summary>Our own program's attribute locations. VAOs are ours, so the engine's locations only tell us
     /// which buffer/offset holds each stream -- we re-bind them wherever the program wants them.</summary>
@@ -195,10 +130,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// each is its own pass). An Alloy draw stamps it into AlloyCensus's OwnGen column; the iterator
     /// suppresses a part only when the stamp matches the pass it is walking.</summary>
     internal static int PassGen;
-    /// <summary>#125: did the Alloy world block take THIS pass? The sky reads it for two things -- whether a
-    /// <c>RenderSkyBoxes</c> call is the main world pass (a reflection subframe runs the same routine with a
-    /// mirrored camera, and capturing there would position next frame's dome at the reflection eye) and
-    /// therefore whether its capture window may open at all.</summary>
+    /// <summary>Did the Alloy world block take THIS pass? The sky reads it to tell the main world pass from a
+    /// reflection subframe -- the same <c>RenderSkyBoxes</c> routine under a mirrored camera, where capturing
+    /// would position next frame's dome at the reflection eye -- and so whether its capture window may open.</summary>
     internal static bool DrewThisPass => _drawnPass == PassGen;
 
     private static bool _prepassFeat => Renderer.PrepassFeat.V;
@@ -207,11 +141,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary><c>/alloy depthequal 0</c>: prepassed opaque/cutout batches draw LEQUAL with depth writes, as
     /// before -- the A/B for <see cref="Issue._matchDepth"/>.</summary>
     private static bool _depthEqual => Renderer.DepthEqual.V;
-    /// <summary>The clustered lit program's uniform locations, ONE struct per program: #350 builds the lit
-    /// stage twice -- <see cref="Programs._progLit46"/> from the hosted regions' stubs, which every ordinary lit batch
-    /// draws with, and <see cref="Programs._progLitHost"/> with the content bodies in, bound only for a batch whose
-    /// feature <see cref="ShaderFeatures.Hosted"/> names. The wrap terms (#139) and the rest stay at -1 on a
-    /// content override (#92) that predates them, and simply do not get uploaded.</summary>
+    /// <summary>The lit program's uniform locations, ONE struct per program: the lit stage is built twice --
+    /// <see cref="Programs._progLit46"/> from the hosted regions' stubs, which every ordinary lit batch draws
+    /// with, and <see cref="Programs._progLitHost"/> with the content bodies in, bound only for a batch whose
+    /// feature <see cref="ShaderFeatures.Hosted"/> names. A content override leaves newer terms at -1.</summary>
     internal struct LitLoc
     {
         public int Oit, OitDim, OitGob, LightRecOn;
@@ -231,64 +164,45 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (a puddle 0.12; wet ground's 0.35 is not) and takes the source's shadow whatever the cube cap says; a rougher
     /// lobe keeps the lightmap's, which only the pages have exact. Faded in from half of it (CxGlossW).</summary>
     internal const float GlossyRough = 0.25f;
-    /// <summary>#120: THIS pass's eye, from the inverse of the view matrix the pass is drawing with. Never
+    /// <summary>THIS pass's eye, from the inverse of the view matrix the pass is drawing with. Never
     /// <c>FrameInputs.CameraPos</c> -- that belongs to whichever pass set a view last -- and taken per pass
-    /// rather than from the scene latch so a reflection subframe reflects from its own camera.</summary>
+    /// rather than from the scene latch, so a reflection subframe reflects from its own camera.</summary>
     private static Vector3 _eyePos;
-    /// <summary>#127: this pass's camera, for anything drawing inside the colour bracket with its own
-    /// program. Latched by <see cref="DrawOwned"/> from the inverted view matrix -- never
-    /// <c>CurrentCamera</c>, which at present time is the UI frame's camera.</summary>
+    /// <summary>This pass's camera, for anything drawing inside the colour bracket with its own program.
+    /// Latched by <see cref="DrawOwned"/> from the inverted view matrix -- never <c>CurrentCamera</c>, which
+    /// at present time is the UI frame's camera.</summary>
     internal static Vector3 EyePos => _eyePos;
 
-    /// <summary>#127: the PC's world position, straight off the engine's own
-    /// <c>m_shaderExposedRuntimeData</c> -- the same value its shaders read as <c>playerPosition</c>. Zero
-    /// before the struct resolves, which for the grass displacement window just means it stays at the
-    /// origin until it does.</summary>
+    /// <summary>The PC's world position, straight off the engine's own <c>m_shaderExposedRuntimeData</c> --
+    /// the same value its shaders read as <c>playerPosition</c>. Zero before the struct resolves, which for
+    /// the grass displacement window just means it stays at the origin until it does.</summary>
     internal static Vector3 PlayerPos => _runtime == null ? default : Rt.PlayerPos;
-    /// <summary>#352: the module calendar the runtime block carries, what the shaders read as <c>moduleHour</c>
-    /// and friends. Zero before the struct resolves.</summary>
+    /// <summary>The module calendar the runtime block carries, what the shaders read as <c>moduleHour</c> and
+    /// friends. Zero before the struct resolves.</summary>
     internal static int ModuleHour => _runtime == null ? 0 : Rt.ModuleHour;
     internal static int ModuleDay => _runtime == null ? 0 : Rt.ModuleDay;
     internal static int ModuleMonth => _runtime == null ? 0 : Rt.ModuleMonth;
     internal static float ModuleTimeIntoTransition => _runtime == null ? 0f : Rt.ModuleTimeIntoTransition;
-    /// <summary>#352: the presented-frame counter, what a hosted content chain gets as <c>sceneCurrentFrame</c>.</summary>
+    /// <summary>The presented-frame counter, what a hosted content chain gets as <c>sceneCurrentFrame</c>.</summary>
     internal static int FrameSeq => _frameSeq;
-    /// <summary><c>/alloy viz N</c>. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
-    /// of guessing from the composite; 5 is the local-cube term alone; 4 is the coverage map -- Alloy draws
-    /// paint flat (cyan lit / magenta fullbright) and everything still textured is geometry the engine's own
-    /// GL 3.3 walk drew, which no other signal makes visible. Each mode is documented where it branches, in
-    /// <see cref="OwnedLitFsMain"/>. 7 is the shading normal, which is the only thing that separates a
-    /// low-poly TERMINATOR (a wrap dial fixes it) from a discontinuous MESH normal (nothing in the BRDF
-    /// can). 8 is #146's occlusion factor -- the AO map times the height term -- which is white everywhere
-    /// until some material in sight declares one.
-    /// <para>#129 adds the water composite's own terms, which live in <see cref="FrameSnapshot"/>'s stage rather
-    /// than the lit one and only paint where Alloy water draws: 9 what is seen THROUGH the surface, 10 the
-    /// reflection, 11 fresnel as grey, 12 the framebuffer copy's colour exactly as sampled, 13 the copy's
-    /// linearised depth, 14 the screen UV those two sample at, 15 the depth copy's raw texel. 12 and 13 say
-    /// whether the one copy is landing; 14 and 15 say which half is at fault when they read flat; 16 and 17 are
-    /// the Beer-Lambert clarity and the thickness behind it, which is where a landed copy still produces a
-    /// flat surface.</para></summary>
-    /// <summary>Highest mode <see cref="_lightViz"/> accepts. Raise it when a stage adds one, or the new
-    /// mode is silently discarded at the parse -- which is not a hypothetical: #339 added four water views
-    /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
-    /// four screenshots of the old one, and the conclusions drawn from them were void.
-    /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
+    /// <summary>Highest mode <c>/alloy viz N</c> accepts; each mode is documented where it branches, in
+    /// <see cref="OwnedLitFsMain"/> and the water stage. Raise it when a stage adds one, or the new mode is
+    /// silently clamped at the parse and the screenshot is of the old view.
+    /// <see cref="FrameSnapshot.SelfCheck"/> asserts the water stage's highest view against this.</summary>
     internal const int LightVizMax = 51;   // 51 = the hot-light path per fragment (red tested, green ray hit); 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42/45/46 = SSR trust, the reflection, the probe behind it and the mirrored draw (CX-51); 43/44 = the #674 lightmap term and its texel grid; 47..50 = CX-117's PLT forensics
     internal static int _lightViz => Renderer.Viz.V;
-    /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
-    /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
-    /// frame looks WRONG on purpose (the diffuse's red channel is not an occlusion map); what it proves is
-    /// that a material which does declare one will be sampled. No shipped content uses texture11 yet, so
-    /// without this there is nothing to point the feature at.</summary>
+    /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the
+    /// bit, so the whole AO path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content.
+    /// The frame looks WRONG on purpose (a diffuse's red channel is not an occlusion map); what it proves is
+    /// that a material which does declare one will be sampled.</summary>
     private static bool _aoTest => Renderer.AoTest.V;
-    /// <summary>#121: this draw is going into the <see cref="EnvProbe"/> cube, not onto the screen. The lit
-    /// and water stages read it, so a capture never samples the probe -- which is currently an attachment of
-    /// the framebuffer being drawn into. Since #132 it says nothing about COLOUR SPACE any more: the screen
-    /// target is linear too, so the capture and the frame want the same values and the fullbright stage
-    /// stopped needing the flag at all.</summary>
+    /// <summary>This draw is going into the <see cref="EnvProbe"/> cube, not onto the screen. The lit and
+    /// water stages read it, so a capture never samples the probe -- which is an attachment of the framebuffer
+    /// being drawn into. It says nothing about COLOUR SPACE: the screen target is linear too, so the capture
+    /// and the frame want the same values.</summary>
     internal static bool _capturing;
-    /// <summary>CX-51: the capture in progress is the mirrored draw of the planar reflection, not the probe: creatures
-    /// stay in and every program writes its alpha (see <see cref="PlanarPass"/>).</summary>
+    /// <summary>The capture in progress is the mirrored draw of the planar reflection, not the probe:
+    /// creatures stay in and every program writes its alpha (see <see cref="PlanarPass"/>).</summary>
     internal static bool _planar;
     /// <summary>The planar mirror's world z while <see cref="_planar"/> is set: its draw drops what lies under it.</summary>
     internal static float _mirrorZ;
@@ -296,15 +210,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>GL_BLEND as the pass last set it, so <see cref="Issue.IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
     internal static bool _blendOn;
-    /// <summary>Does the area declare an environment map at all? Read off the enrolled Scene each pass. When
-    /// it is null the engine binds NOTHING for a plain part, so ambient specular is a term vanilla does not
-    /// have there and only genuinely env-mapped materials get the probe.</summary>
+    /// <summary>Does the area declare an environment map at all? Read off the enrolled Scene each pass.
+    /// <c>RenderFlat</c> @0x450eb0 binds <c>currentscene+0x1e8</c> to the env sampler only where that field is
+    /// set, and most areas leave it null -- so where it is, ambient specular is a term vanilla does not have
+    /// and only genuinely env-mapped materials get the probe.</summary>
     private static bool _sceneEnv;
-    /// <summary>#84: the driver has no glMultiDrawElementsBaseVertex or no glBindBufferBase, so batched
-    /// submission cannot run at all. Latched, and EndFrame disarms on it by name rather than drawing nothing
-    /// forever while the iterator keeps suppressing parts.</summary>
+    /// <summary>The driver has no glMultiDrawElementsBaseVertex or no glBindBufferBase, so batched submission
+    /// cannot run at all. Latched, and EndFrame disarms on it by name rather than drawing nothing forever
+    /// while the iterator keeps suppressing parts.</summary>
     private static bool _batchUnavailable;
-    /// <summary><c>/alloy light 0</c> forces every Alloy part back to the #82 fullbright variant (the lighting A/B).</summary>
+    /// <summary><c>/alloy light 0</c> forces every Alloy part back to the fullbright variant (the lighting A/B).</summary>
     internal static bool _lighting => Renderer.Light.V;
     /// <summary>RenderInterface::IsEnabled -- queried for cap 5 (LIGHTING) once per Alloy pass.</summary>
     private static RiIsEnabledFn _isEnabled;
@@ -347,410 +262,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static int _frameSeq;
 
     private static bool _takeOverflow;
-    /// <summary>#119 measurement: prepass GPU time, and the fragments the COLOUR pass actually shaded.
-    /// samples/screen-pixel is the overdraw figure, and its move with <c>/alloy prepass</c> is what the prepass
-    /// is worth -- both are period averages on the [alloy] line.</summary>
-    /// <summary>...and the shading pass's own GPU time. Frame time cannot answer "is the prepass worth it"
-    /// on a vsync-capped display -- both modes sit on the cap and the saving becomes headroom -- so the A/B
-    /// reads the work itself. Independent of SAMPLES_PASSED: different query target, both may be active.</summary>
-    private static GpuQuery _qSamples;
-    /// <summary>#336: SAMPLES_PASSED over the particle pass alone -- its overdraw against the viewport.</summary>
-    private static GpuQuery _qPartSamples;
-    /// <summary>CX-188: samples the blended class's OIT accumulation wrote -- its overdraw, beside its GPU term.</summary>
-    private static GpuQuery _qBlendSamples;
-    /// <summary>The blended accumulation's triangles (PRIMITIVES_GENERATED) and its draw groups, per frame, for the period line.</summary>
-    private static GpuQuery _qBlendPrims;
-    /// <summary>The accumulation's fragment-shader invocations: oit 2 tests depth in the shader, so SAMPLES_PASSED
-    /// counts only the survivors and this is what the pass actually shades.</summary>
-    private static GpuQuery _qBlendFrags;
-    private static long _blendGroups;
-    private static int _blendFrames;
-    /// <summary>#325: the timed GPU terms of the colour bracket, in pass order. Beams and the probe capture
-    /// are untimed; the shadow bracket (<c>CasterPass</c>) and the cluster build (<c>AlloyLights</c>) run
-    /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
-    /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
-    /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para>
-    /// <para>CX-188: the deferred pass is three dispatches, timed apart -- <c>DeferredShadow</c> is the
-    /// per-pixel visibility record (<see cref="DeferredShadows"/>), <c>Deferred</c> the light walk that reads
-    /// it, <c>PairDebt</c> the hot-light debt the walk's CX_NO_HOT no longer takes -- so
-    /// <c>shadow.deferredres</c> and <c>lightmap.moverlights</c> each have a number of their own rather than
-    /// one summed with the walk's.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, BlendedComposite, BlendedHosted, BlendedDepth, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Weather, Ssr, Deferred, DeferredShadow, PairDebt, Coverage, Count }
-    /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
-    /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
-    private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
-    /// <summary>The term whose query is open, -1 for none. Closed at frame start if a pass left it open.</summary>
-    private static int _qOpen = -1;
-    /// <summary>#287's pixels-per-world-radius-at-unit-depth for THIS pass (0 without perspective), kept for
-    /// the cube receiver's disc gate (#326).</summary>
-    private static float _lodScale;
-
-    /// <summary>Open a term's elapsed query unless another is already open -- the guard that keeps the
-    /// brackets serial. A term whose query declined the frame (result not ready) is simply not measured.</summary>
-    /// <summary>Every term's period average summed, shadows excluded (the bake has its own query).</summary>
-    private static double GpuTermsTotal()
-    { double s = 0; for (int t = 0; t < (int)GpuTerm.Count; t++) s += GpuMs((GpuTerm)t); return s; }
-
-    internal static void GpuBegin(GpuTerm t)
-    { if (_qOpen < 0 && _qTerm[(int)t].Begin(Gl.TIME_ELAPSED)) _qOpen = (int)t; }
-
-    /// <summary>Frame start: a term still open from the last frame (an early return between its Begin and
-    /// End) is closed here, or every later Begin is refused and the line reads zero for the session.</summary>
-    private static void GpuFrameStart()
-    {
-        if (_qOpen >= 0) GpuEnd((GpuTerm)_qOpen);
-        GpuSpanStamp(0);
-    }
-
-    /// <summary>Whole-bracket GPU span: TIMESTAMP at frame start and after the pass loop, two frames in flight.
-    /// The terms are serial elapsed queries and only cover what is bracketed; this is the number they are
-    /// measured against, so the unmeasured remainder has a size.</summary>
-    private static readonly uint[] _qSpan = new uint[4];
-    private static readonly bool[] _qSpanPending = new bool[2];
-    private static int _qSpanAt;
-    private static double _spanSum; private static int _spanN;
-    internal static double GpuSpanMs => _spanN == 0 ? 0.0 : _spanSum / _spanN / 1e6;
-
-    private static void GpuSpanStamp(int which)
-    {
-        if (!GpuQuery.Enabled || Gl.QueryCounter == null || Gl.GenQueries == null || Gl.GetQueryObjectui64v == null) return;
-        if (_qSpan[0] == 0) fixed (uint* q = _qSpan) Gl.GenQueries(4, q);
-        if (which == 0)
-        {
-            // Both slots, not just the one closed last: with the GPU two frames behind, both are pending, and
-            // harvesting only the newer one wedged the meter at 0 for the session.
-            for (int s = 0; s < 2; s++)
-            {
-                if (!_qSpanPending[s]) continue;
-                int ready; Gl.GetQueryObjectiv(_qSpan[s * 2 + 1], Gl.QUERY_RESULT_AVAILABLE, &ready);
-                if (ready == 0) continue;
-                ulong t0, t1;
-                Gl.GetQueryObjectui64v(_qSpan[s * 2], Gl.QUERY_RESULT, &t0);
-                Gl.GetQueryObjectui64v(_qSpan[s * 2 + 1], Gl.QUERY_RESULT, &t1);
-                _qSpanPending[s] = false;
-                if (t1 > t0 && t1 - t0 < 10_000_000_000UL) { _spanSum += t1 - t0; _spanN++; }
-            }
-            if (_qSpanPending[_qSpanAt]) return;
-            Gl.QueryCounter(_qSpan[_qSpanAt * 2], Gl.TIMESTAMP);
-        }
-        else if (!_qSpanPending[_qSpanAt])
-        {
-            Gl.QueryCounter(_qSpan[_qSpanAt * 2 + 1], Gl.TIMESTAMP);
-            _qSpanPending[_qSpanAt] = true;
-            _qSpanAt = 1 - _qSpanAt;
-        }
-    }
-    internal static void GpuSpanEnd() => GpuSpanStamp(1);
-
-    /// <summary>Close the term if it is the open one; a no-op for a term that never opened.</summary>
-    internal static void GpuEnd(GpuTerm t)
-    { if (_qOpen == (int)t) { _qTerm[(int)t].End(Gl.TIME_ELAPSED); _qOpen = -1; } }
-
-    private static double GpuMs(GpuTerm t) => _qTerm[(int)t].Avg / 1e6;
-
-    /// <summary>The colour-bracket loop's SELF CPU ticks per <see cref="PassId"/> this period -- the five child
-    /// zones <see cref="FrameZones.Zone.Passes"/> subtracts are subtracted from each row too, so the rows
-    /// partition that zone rather than double-counting Issue, Cull, Post, Probe and Lightmap inside it.
-    /// <para>The rows plus <see cref="_passTail"/> account for the zone bar the <c>foreach</c>'s own advance
-    /// over the passes it skips, which is not bracketed.</para></summary>
-    private static readonly long[] _passCpu = new long[(int)PassId.PostStack + 1];
-    /// <summary>The colour loop's tail (<c>PaintStreamFailures</c> + the GPU span close): inside the Passes
-    /// bracket and inside no pass, so it is reported rather than left as an unexplained remainder.</summary>
-    private static long _passTail;
-    /// <summary>Rows that measured NEGATIVE self time, which can only mean a child zone was credited to a pass
-    /// it did not run inside. Must read 0.</summary>
-    private static int _passSelfNeg;
-
-    /// <summary>The five passes with the most SELF CPU per frame this period, clearing the tally. These five
-    /// are a partition of <see cref="FrameZones.Zone.Passes"/>, not a parent-and-child mix. Cold (period
-    /// line).</summary>
-    private static string PassCpuNote(int frames)
-    {
-        var sb = new System.Text.StringBuilder(", pass cpu self ms/frame:");
-        double k = 1000.0 / System.Diagnostics.Stopwatch.Frequency / Math.Max(1, frames);
-        for (int n = 0; n < 5; n++)
-        {
-            int best = -1;
-            for (int i = 0; i < _passCpu.Length; i++) if (_passCpu[i] > 0 && (best < 0 || _passCpu[i] > _passCpu[best])) best = i;
-            if (best < 0) break;
-            sb.Append(' ').Append((PassId)best).Append(' ').Append((_passCpu[best] * k).ToString("F2"));
-            _passCpu[best] = 0;
-        }
-        Array.Clear(_passCpu);
-        if (_passTail > 0) sb.Append(" tail ").Append((_passTail * k).ToString("F2"));
-        if (_passSelfNeg > 0) sb.Append(" (").Append(_passSelfNeg).Append(" NEGATIVE SELF ROWS -- the partition is broken)");
-        _passTail = 0; _passSelfNeg = 0;
-        return sb.ToString();
-    }
-
-    /// <summary>The read-only half of <see cref="HandleFor"/>: the handle if one was minted, 0 otherwise. Safe
-    /// off the main thread as long as nothing mints during the stage, which nothing does.</summary>
-    private static ulong HandleLookup(int tid)
-        => tid != 0 && Probe(tid, out int hit, out _) ? _hVal[hit] : 0;
-    /// <summary>#153: resident bindless handle for a texture name. 0 in, 0 out. Called only inside the 4.6
-    /// bracket (handles belong to the share group), and -- while ownedtex is armed -- only ever for an
-    /// Alloy-OWNED name; see <see cref="_hTid"/> for why that is the whole of #220's fix.
-    /// <para>A handled texture is IMMUTABLE from this moment: a change means a new name
-    /// (<c>OwnedTextures.Replace</c>), never an in-place <c>TexSubImage</c> from the engine context. A handle
-    /// is not a binding point, so GL 4.6 5.3.3 Rule 4 gives this context no re-attach event through which
-    /// another context's update is guaranteed visible -- residency is per context and nothing propagates.
-    /// See CX-157, C4.</para></summary>
-    private static ulong HandleFor(int tid)
-    {
-        if (tid == 0) return 0;
-        // a name that is not ours may already be dead or RECYCLED (Mesa hands the lowest free name straight
-        // back): minting on it is a fault on zink and another texture's handle on radeonsi
-        if (OwnedTextures.Armed && !OwnedTextures.IsOwned(tid)) return 0;
-        if (Probe(tid, out int hit, out int free)) return _hVal[hit];
-        if (free < 0) return 0;                        // table full: no handle, caller falls back
-        ulong v = Gl.GetTextureHandleARB((uint)tid);
-        if (Diag._handleDiagLeft > 0) HandleDiag(tid, v);
-        // A failed mint is NOT cached. It used to be, and the enrollment wipe retried it within a second;
-        // with that wipe gone (#220) a cached zero would be a permanently black texture.
-        if (v == 0) return 0;
-        Gl.MakeTextureHandleResidentARB(v);
-        FrameZones.Count(FrameZones.Ev.Mint);
-        _hTid[free] = tid; _hVal[free] = v; _hRes[free] = true;
-        return v;
-    }
-
-    /// <summary>Walk the open-addressed chain for <paramref name="tid"/>. True with <paramref name="hit"/>
-    /// set when the name is cached; false with <paramref name="free"/> set to the slot an insert should take
-    /// (-1 only if the table is full). Split out of <see cref="HandleFor"/> with no GL in it so
-    /// <see cref="SelfCheckHandles"/> can exercise the part that has now been wrong twice.
-    /// <para>The rule the tombstone exists for: a tombstoned slot must NOT answer for its name -- GL recycles
-    /// a deleted name immediately -- but must still be reusable, and must not end the chain.</para></summary>
-    private static bool Probe(int tid, out int hit, out int free)
-    {
-        int mask = (1 << HandleHashBits) - 1;
-        int h = Slot(tid);
-        hit = -1; free = -1;
-        for (int probes = 0; probes <= mask; probes++, h = (h + 1) & mask)
-        {
-            int k = _hTid[h];
-            if (k == HandleTombstone) { if (free < 0) free = h; continue; }
-            if (k == tid) { hit = h; return true; }
-            if (k == 0) { if (free < 0) free = h; return false; }
-        }
-        return false;
-    }
-
-    /// <summary>Off-device: the handle cache's slot discipline, with no GL. #220 shipped a
-    /// <see cref="DropHandle"/> that left the slot keyed on the DELETED name with a zero handle -- so the
-    /// next copy, which GL had handed that very name to, matched the dead entry and drew black. That is the
-    /// same shape as #221's dead-entry bug, and it is what this asserts can no longer happen.</summary>
-    internal static bool SelfCheckHandles(ExtenderLog log)
-    {
-        int mask = (1 << HandleHashBits) - 1;
-        const int A = 4242;
-        int home = Slot(A);
-        int s0 = _hTid[home], s1 = _hTid[(home + 1) & mask], s2 = _hTid[(home + 2) & mask];
-        ulong v0 = _hVal[home];
-        _hTid[home] = 0; _hTid[(home + 1) & mask] = 0; _hTid[(home + 2) & mask] = 0;
-
-        bool ok = !Probe(A, out _, out int free) && free == home;      // empty: insert at home
-        _hTid[home] = A; _hVal[home] = 7;
-        ok &= Probe(A, out int hit, out _) && hit == home && _hVal[hit] == 7;   // cached: found
-
-        // ...the texture dies. DropHandle's slot state, asserted directly rather than through GL.
-        _hTid[home] = HandleTombstone; _hVal[home] = 0;
-        ok &= !Probe(A, out _, out free);            // the dead entry must NOT answer for its own name...
-        ok &= free == home;                          // ...and its slot is the one an insert reuses
-        // A tombstone must not END the chain: A itself, displaced to the next slot by an old collision,
-        // has to stay reachable through the tombstone rather than reading as absent.
-        _hTid[(home + 1) & mask] = A; _hVal[(home + 1) & mask] = 9;
-        ok &= Probe(A, out hit, out _) && hit == ((home + 1) & mask) && _hVal[hit] == 9;
-
-        _hTid[home] = s0; _hVal[home] = v0;
-        _hTid[(home + 1) & mask] = s1; _hTid[(home + 2) & mask] = s2;
-        log.Info(ok ? "AlloyRenderer.SelfCheckHandles: passed" : "AlloyRenderer.SelfCheckHandles: FAILED");
-        return ok;
-    }
-
-    /// <summary>#220: a slot whose texture has been deleted. Not 0 -- that would end the open-addressed probe
-    /// chain and hide every entry behind it -- and not the name either, which is the bug this replaces: GL
-    /// recycles a deleted name immediately, so a slot still keyed on it answered the NEXT copy with the dead
-    /// entry's zero handle, and the part drew black. No GL texture is ever named -1.</summary>
-    private const int HandleTombstone = -1;
-
-    private static int Slot(int tid) =>
-        (int)((uint)tid * 0x9E3779B9u >> (32 - HandleHashBits)) & ((1 << HandleHashBits) - 1);
-
-    /// <summary>#220: this name's texture is about to be deleted, so its handle must stop being resident
-    /// first -- a resident handle outlives the object it names, and sampling one after the delete is the
-    /// corruption this ticket is about. Called by <c>OwnedTextures.Drain</c>, inside the 4.6 bracket, and
-    /// only for a name that entry actually owns. A no-op for a name that never got a handle, which is the
-    /// common case (grass, sky and caster copies never take the lit bindless path).
-    /// <para>The slot becomes a <see cref="HandleTombstone"/>: not 0, which would cut the probe chain, and
-    /// not the name, which would answer for the next copy GL hands that recycled name to.</para></summary>
-    internal static void DropHandle(uint name) => DropHandle(name, gl: true);
-
-    /// <summary>The texture died in the ENGINE's context before this bracket could run: the handle is gone
-    /// with it, and asking the driver to make it non-resident is INVALID_OPERATION (Mesa) or worse. Tombstone only.</summary>
-    internal static void ForgetHandle(uint name) => DropHandle(name, gl: false);
-
-    internal static void DropHandle(uint name, bool gl)
-    {
-        if (name == 0) return;
-        // #242: a persistent record carries its handles (and, bindless off, its cached tid) across frames, so a
-        // dying name must reach the records that hold it. That used to be an epoch bump here; under the texture
-        // cache names die every second or two, so it is now the per-slot mark NoteOwnedNamesRetired makes in
-        // Drain before this runs.
-        if (!_bindless) return;
-        int tid = (int)name, h = Slot(tid);
-        for (int probes = 0; probes < (1 << HandleHashBits); probes++)
-        {
-            int k = _hTid[h];
-            if (k == 0) return;                       // never cached: nothing to drop
-            if (k == tid)
-            {
-                if (gl && _hRes[h] && _hVal[h] != 0 && Gl.MakeTextureHandleNonResidentARB != null)
-                    Gl.MakeTextureHandleNonResidentARB(_hVal[h]);
-                ZeroHandle(_hVal[h]);
-                _hTid[h] = HandleTombstone; _hVal[h] = 0; _hRes[h] = false;
-                return;
-            }
-            h = (h + 1) & ((1 << HandleHashBits) - 1);
-        }
-    }
-
-    private const int HandleDiagBudget = 24;
-    /// <summary>#153 follow-up: which GL call is failing on the handle path, and with what. The 4.6 bracket
-    /// drains <c>glGetError</c> anonymously, so a session reporting "errors 4.6=450" says a fault exists and
-    /// nothing about where -- and the two candidate faults are told apart by the CODE.
-    /// <c>INVALID_OPERATION</c> after a non-zero handle is a re-resident of an already-resident handle (the
-    /// enrollment wipe forgetting residency it never gave up); <c>INVALID_VALUE</c>, or a zero handle from a
-    /// tid the material just resolved, is a dead or recycled texture name.
-    /// <para>Deliberately drains here rather than in the bracket: a code without its call site is the same
-    /// non-answer the bracket already gives.</para></summary>
-    private static void HandleDiag(int tid, ulong v)
-    {
-        uint err = 0, e;
-        int guard = 0;
-        while ((e = Gl.GetError()) != 0 && ++guard < 8) err = e;
-        if (err == 0 && v != 0) return;   // the normal case; this path allocates nothing, so it stays silent
-        Diag._handleDiagLeft--;
-        _log?.Info($"AlloyRenderer: [handle] tid={tid} handle=0x{v:x} err=0x{err:x} " +
-                   (v == 0 ? "-- glGetTextureHandleARB returned NO handle for a tid the material resolved this frame"
-                           : "-- the handle came back but the call errored") +
-                   $" ({Diag._handleDiagLeft} reports left)");
-    }
-
-    /// <summary>#153: does this context expose ARB_bindless_texture? By STRING -- GLX returns non-null
-    /// function pointers for unsupported extensions, so the pointers alone prove nothing.</summary>
-    internal static bool HasBindless()
-        => Gl.GetTextureHandleARB != null && Gl.MakeTextureHandleResidentARB != null
-           && HasExt("GL_ARB_bindless_texture"u8);
-
-    /// <summary>Is this extension string in the 4.6 CORE context's list? By enumeration, allocation-free.
-    /// Must be called inside the bracket -- it is asking the context Alloy draws in, which is not the
-    /// engine's 3.3 one and does not necessarily advertise the same set.</summary>
-    internal static bool HasExt(ReadOnlySpan<byte> want) => Gl.HasExt(want);
-
-    /// <summary>#259: what the driver will say about VRAM, probed once inside the bracket. There is no VRAM
-    /// query in the client at all (<c>GLRender::GetDeviceInfo_i</c> @0x4d1d10 answers
-    /// <c>UNIFORM_BUFFER_OFFSET_ALIGNMENT</c> for query 0 and <c>0xFFFFFFFF</c> for everything else), so the
-    /// two vendor extensions are the only route and neither is guaranteed in a 4.6 core context -- which is
-    /// why the answer is measured and printed rather than assumed. Both report KiB.</summary>
-    private static void ProbeVram()
-    {
-        _vramProbed = true;
-        // The DISCRIMINANT is which extension answered, never the total -- an NVX driver that reports 0 for
-        // its dedicated pool would otherwise be queried with the ATI enum.
-        _vramNvx = HasExt("GL_NVX_gpu_memory_info"u8);
-        if (_vramNvx) { _vramExt = "NVX_gpu_memory_info"; _vramTotalKib = GetInt(GpuMemTotalNvx); }
-        else if (HasExt("GL_ATI_meminfo"u8)) _vramExt = "ATI_meminfo";
-        _log?.Info(_vramExt == null
-            ? "AlloyRenderer: [vram] no GPU memory query in this context (NVX_gpu_memory_info / ATI_meminfo absent) -- residency is reported as Alloy's own bytes only"
-            : $"AlloyRenderer: [vram] {_vramExt} present" + (_vramTotalKib > 0 ? $", {_vramTotalKib / 1024}MiB total" : ""));
-        if (_vramExt != null) SampleVram();   // the texture-cache budget reads the free pool at the probe, not a frame later
-        // #267's open question, answered from the context that would use them rather than from glxinfo.
-        _log?.Info("AlloyRenderer: [vram] arena-relevant extensions in this context: "
-            + $"ARB_sparse_texture={(HasExt("GL_ARB_sparse_texture"u8) ? "yes" : "no")}, "
-            + $"ARB_sparse_texture2={(HasExt("GL_ARB_sparse_texture2"u8) ? "yes" : "no")}, "
-            + $"EXT_memory_object={(HasExt("GL_EXT_memory_object"u8) ? "yes" : "no")}");
-    }
-
-    /// <summary>Probe once, then keep the free-VRAM figure fresh. Called from the bracket -- the only place
-    /// a GL query may be issued at all -- so <c>/knobs</c> can read a number rather than call into the wrong
-    /// context from the chat thread. One <c>glGetIntegerv</c> a frame against a frame's worth of GL traffic.
-    /// <c>GL_ATI_meminfo</c>'s query is an array whose FIRST element is the free pool.</summary>
-    internal static void SampleVram()
-    {
-        if (!_vramProbed) ProbeVram();
-        if (_vramExt == null) return;
-        int* v = stackalloc int[4] { 0, 0, 0, 0 };
-        Gl.GetIntegerv(_vramNvx ? GpuMemCurrentNvx : TexFreeMemoryAti, v);
-        _vramFreeKib = v[0];
-    }
-    private static int _vramFreeKib;
-    /// <summary>CX-52 step 4: the free pool read now, from whichever context is current (the query is per device);
-    /// -1 before the probe or without a memory query.</summary>
-    internal static long VramFreeKibNow()
-    {
-        if (!_vramProbed || _vramExt == null) return -1;
-        int* v = stackalloc int[4] { 0, 0, 0, 0 };
-        Gl.GetIntegerv(_vramNvx ? GpuMemCurrentNvx : TexFreeMemoryAti, v);
-        return v[0];
-    }
-
-    /// <summary>GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX / _CURRENT_AVAILABLE_VIDMEM_NVX /
-    /// GL_TEXTURE_FREE_MEMORY_ATI.</summary>
-    private const uint GpuMemTotalNvx = 0x9047, GpuMemCurrentNvx = 0x9049, TexFreeMemoryAti = 0x87FC;   // not-an-offset: GL vendor-extension query enums
-
-    private static bool _vramProbed, _vramNvx;
-    private static string? _vramExt;
-    private static int _vramTotalKib;
-    /// <summary>The probe's total, MiB; 0 before the probe or when the device answers nothing.</summary>
-    internal static long VramTotalMib => _vramTotalKib / 1024;
-    /// <summary>Is the bindless path armed this session (probed at the first lit program build)?</summary>
-    internal static bool Bindless => _bindless;
-    /// <summary>ATI_meminfo (Mesa) answers FREE, never total; at probe time that is most of the card.</summary>
-    internal static long VramFreeMib => _vramFreeKib / 1024;
-    internal static bool VramProbed => _vramProbed;
-
-    /// <summary>One <c>glGetIntegerv</c>, for a query that answers a single value.</summary>
-    private static int GetInt(uint pname) { int v = 0; Gl.GetIntegerv(pname, &v); return v; }
-
-    /// <summary>#259's <c>/knobs</c> line: what Alloy is holding, and what the device will say about the
-    /// pool it is holding it in. Null until the bracket has probed, which is the honest answer before a
-    /// frame has run.</summary>
-    internal static string? VramNote()
-    {
-        if (!_vramProbed) return null;
-        string device = _vramExt == null
-            ? "the device answers no memory query in this context (NVX_gpu_memory_info / ATI_meminfo absent)"
-            : $"{_vramExt}: " + (_vramTotalKib > 0 ? $"{_vramTotalKib / 1024}MiB total, " : "")
-              + $"{_vramFreeKib / 1024}MiB free";
-        return $"[vram] Alloy holds {OwnedTextures.PeakMib}MiB of textures and {OwnedBuffers.PeakMib}MiB of "
-             + $"geometry at high water; {device}";
-    }
-
-    /// <summary>#153: rewrite a fragment stage's bound samplers into per-draw bindless handles. The stage
-    /// already receives <c>vDraw</c> (the record index) for its material colours; the same index now selects
-    /// its textures, which is what lets one multidraw span every texture in a class. Pure text -> pinned by
-    /// SelfCheck; if the declarations are not found (a content override with its own text) the output lacks
-    /// the handle block and the caller stands the bindless path down rather than shipping a half-rewrite.</summary>
-    internal static string BindlessFs(string fs)
-    {
-        string[] names = { "uTex", "uFlowTex", "uNrmTex", "uSpecTex", "uRoughTex", "uHeightTex", "uIllumTex", "uAoTex" };
-        int[] slot = { 0, 6, 1, 2, 3, 4, 5, 7 };
-        var sb = new System.Text.StringBuilder(
-            "#define CX_BINDLESS 1\n#extension GL_ARB_bindless_texture : require\n" +
-            $"layout(std430, binding = {BindTexH}) readonly buffer CxTexH {{ uvec2 uTexH[]; }};\n");
-        for (int i = 0; i < names.Length; i++)
-            sb.Append($"#define {names[i]} sampler2D(uTexH[(vDraw << 3) + {slot[i]}])\n");
-        string outFs = fs;
-        foreach (string nm in names)
-            outFs = System.Text.RegularExpressions.Regex.Replace(outFs, $@"uniform sampler2D {nm};[^\n]*\n", "");
-        if (outFs == fs) return fs;   // nothing replaced -- foreign text, leave it alone
-        if (!outFs.Contains("flat in int vDraw;")) return fs;   // no record index to sample by
-        // GLSL: #extension must precede every non-preprocessor token, so the whole block goes immediately
-        // after #version. The #defines are preprocessor (position-free) and only reference vDraw at their
-        // EXPANSION sites, which sit far below its declaration; the SSBO decl merely has to precede use.
-        int at = outFs.IndexOf('\n', outFs.IndexOf("#version", StringComparison.Ordinal)) + 1;
-        return outFs.Insert(at, sb.ToString());
-    }
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -845,7 +356,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #571: the stock-settings reader forges a std::string for the engine; a header packed wrong is a
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
-        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !CasterBoundSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
+        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !CasterBoundSelfCheck(log) || !MtrParams.SelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
             || !AreaGrid.SelfCheck(log)
             || !DbSelfChecks(log)
             || !Issue.RunsSelfCheck(log) || !StreamRing.SelfCheck(log)
@@ -932,12 +443,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// 0/0/0/0/0, Build 2,6 -> 1,9ms. A woken worker spins up to 4ms, so on a machine with fewer than eight cores
     /// this oversubscribes; <c>/alloy threads N</c> is the dial.</summary>
     internal const int DefThreads = 6;
-    /// <summary>#336: does the prepass run its keyhole sweep? See <c>/alloy prepasskey</c>.</summary>
+    /// <summary>Does the prepass run its keyhole sweep? See <c>/alloy prepasskey</c>.</summary>
     private static bool _prepassKey => Renderer.PrepassKey.V;
 
-    /// <summary>#350: <c>scriptableInt1..16</c> and <c>scriptableFloat1..16</c> out of the engine's own
-    /// constant tables, exactly what <c>UploadVanillaEnv</c> writes. Cold; the input thread reading ints the
-    /// render thread also only reads.</summary>
+    /// <summary><c>scriptableInt1..16</c> and <c>scriptableFloat1..16</c> out of the engine's own constant
+    /// tables, exactly what <c>UploadVanillaEnv</c> writes. Cold; the input thread reading ints the render
+    /// thread also only reads.</summary>
     internal static unsafe string DescribeScriptables()
     {
         if (_shaderConstI == null || _shaderConstF == null) return "scriptables: no table";
@@ -952,14 +463,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// numbers a hosted content stage gates on (snow, wet, rain).</summary>
     internal static void LogScriptables() => _log?.Info("AlloyRenderer: " + DescribeScriptables());
 
-    /// <summary>#216: the terms <see cref="AlloyGate"/> reads out of this class. <c>_armed</c> is "the hooks
+    /// <summary>The terms <see cref="AlloyGate"/> reads out of this class. <c>_armed</c> is "the hooks
     /// installed"; the capability pair is "a program built and the multidraw entry points exist", both of
     /// which latch and are deliberately never cleared by a context loss (see <see cref="ContextLost"/>).</summary>
     internal static bool ArmedForFrame => _armed;
     internal static bool DrawCapable => !Programs._progFailed && !_batchUnavailable;
 
-    /// <summary>Inside <see cref="RspShim.Run"/>, i.e. a world colour pass that is Alloy's. The anchor draws
-    /// only then: since #458 there is no Alloy drawing inside the engine's own RenderSinglePass.</summary>
+    /// <summary>Inside the world view's colour pass (<see cref="DbWorldPass"/>), which is the only place
+    /// Alloy draws: nothing of Alloy's runs inside the engine's own RenderSinglePass.</summary>
     private static bool _inColourPass;
     /// <summary>Scene the ownership table was enrolled from. The Alloy block draws only into a bucket walk of
     /// THIS Scene, which is what makes one-owner true by construction rather than by the colour-pass gate
@@ -969,11 +480,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static int _drawnPass = -1;   // pass whose Alloy block already ran (once per pass)
 
     /// <summary>Ownable parts the last enrollment turned away for want of a slot. Non-zero means the area is
-    /// past <see cref="MaxOwned"/>.
-    /// <para>#264 changed what that costs. It used to mean "these tiles stay vanilla", re-picked every
-    /// enrollment by hash-table walk order, so the world looked spotty and shifted under a static camera.
-    /// With the engine walk deleted there is no vanilla to spill to: a spilled part is INVISIBLE. This is the
-    /// first number to read when geometry is missing.</para></summary>
+    /// past <see cref="MaxOwned"/>, and there is no vanilla walk to spill to: a spilled part is INVISIBLE.
+    /// The first number to read when geometry is missing.</summary>
     private static int _capacitySpill;
 
     /// <summary>The capacity clause of the [alloy] line -- silent when there is room, loud when there is not,
@@ -984,135 +492,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
          + "else draws the world, so those parts are NOT RENDERED AT ALL, and the spill set re-picks itself "
          + "every enrollment, so which geometry is missing changes as you watch)";
 
-    /// <summary>Publish every skinmesh's pose for THIS frame, once, at the shadow bracket (CPU half here, upload
-    /// half in <see cref="ShadowPoseUpload"/>), and the colour preamble reuses it: a bake sampling the bone block
-    /// the LAST colour build uploaded -- pose N-1 under a colour pass drawing pose N -- flips the self-shadow
-    /// compare's sign every frame on a cloak lit by its own carried torch, which is the flicker (#308).</summary>
-    internal static bool PosedByShadow;
-
-    internal static void ShadowPose()
-    {
-        if (!AlloyGate.Alloy) return;
-        long tPose = FrameZones.Now;
-        PoseSkinned();
-        FrameZones.Add(FrameZones.Zone.Pose, tPose);
-        PosedByShadow = true;
-    }
-
-    /// <summary>The GL half of <see cref="ShadowPose"/>: push the solved block. Must run inside the 4.6
-    /// bracket.</summary>
-    internal static void ShadowPoseUpload()
-    {
-        if (PosedByShadow) Issue.UploadBones();
-    }
-
-    /// <summary>Bone slots are STICKY -- a part keeps its slot in the bone block across frames, mirroring the
-    /// ownership table's stable-slot scheme. Load-bearing for the shadow-bracket pose: the bake pairs the LAST
-    /// colour build's records (whose feat.y bone bases name last frame's layout) with THIS frame's block, so a
-    /// slot that shifted under a survivor would bake it with another creature's bones (#308).</summary>
-    private static readonly int[] _boneFree = new int[MaxBoneSlots];
-    private static int _boneFreeN, _boneTop;
-    private static int[] _boneOwner = new int[MaxBoneSlots];   // ownership slot holding each bone slot, -1 free
-
-    private static int AllocBoneSlot(int owner)
-    {
-        int s;
-        if (_boneFreeN > 0) s = _boneFree[--_boneFreeN];
-        else
-        {
-            if (!EnsureBoneSlots(_boneTop + 1)) return -1;
-            s = _boneTop++;
-            if (s >= _boneOwner.Length) Array.Resize(ref _boneOwner, _boneCap);
-        }
-        _boneOwner[s] = owner;
-        return s;
-    }
-
-    private static void FreeBoneSlot(int s)
-    {
-        if (s < 0 || s >= _boneTop || _boneOwner[s] < 0) return;
-        _boneOwner[s] = -1;
-        if (_boneFreeN < _boneFree.Length) _boneFree[_boneFreeN++] = s;
-    }
-
-    private static void PoseSkinned()
-    {
-        // Nothing to pose for if the pass cannot draw: DrawOwned bails on these two without stamping a
-        // single part, so the engine walks every one of them itself -- and would then solve each pose a
-        // second time.
-        if (!_skinning || Programs._progFailed || _batchUnavailable) { _boneSlots = 0; return; }
-        // CX-26: once a FRAME -- a second pose in the same frame (a reflection subframe) re-solves the same
-        // animation state and must not make it its own history.
-        bool roll = _poseRollSeq != _frameSeq;
-        if (roll) { _poseRollSeq = _frameSeq; float* t = _boneStage; _boneStage = _bonePrevStage; _bonePrevStage = t; }
-        // CX-120 seam-anim: a DB palette is solved on the game thread, before this swap, so it lives in the
-        // DB stage and is copied into whichever buffer THIS frame uploads -- here, the one moment both
-        // buffers mean what their names say (Scene/AlloyRenderer.DbBones.cs).
-        DbBonePublish();
-        for (int k = 0; k < _skinCount; k++)
-        {
-            int i = _skinOrder[k];
-            int prev = _oBone[i];
-            _oBone[i] = -1;
-            // A slot's palette is a column seam-anim's pose step wrote on the game thread, so there is no part
-            // chain to chase -- the slot carries the bone base it was given. A part whose pose step has not run
-            // yet draws rigid, which is its rest pose, and `skin-nopose` on the period line says how often.
-            int given = SceneDb.PartBoneBase[_oDbPart[i]];
-            if (given < 0) { Counters._skinNoPose++; FreeBoneSlot(prev); continue; }
-            if (prev >= 0 && prev != given) FreeBoneSlot(prev);
-            _oBone[i] = given;
-            Counters._skinDrawn++;
-        }
-        // Reclaim orphans: a table wipe can re-tenant an ownership slot without a FreeSlot
-        // (a fresh tenant starts at _oBone -1), leaving a bone slot whose owner no longer
-        // points back. _boneTop is the peak skinned population -- tiny -- so the sweep is a few compares.
-        for (int s = 0; s < _boneTop; s++)
-            if (_boneOwner[s] >= 0 && _oBone[_boneOwner[s]] != s) FreeBoneSlot(s);
-        // The block uploads the whole (holey) high water: stale floats in freed slots are never indexed,
-        // and a contiguous re-pack is exactly the layout shift stickiness exists to prevent.
-        _boneSlots = _boneTop;
-        if (_boneTop > Counters._boneHigh) Counters._boneHigh = _boneTop;
-    }
-
-    /// <summary>#262: room for <paramref name="want"/> bone slots, doubling the stage rather than dropping a
-    /// creature past a fixed budget. Native memory on purpose -- the growth is rare but it happens on the
-    /// render thread, and a managed array of this size would hand the collector a gen-2 allocation there.
-    /// False = the allocator refused; the caller hands the part back like any other unsolved pose.
-    /// <para>The catch is the whole point of the return value. <c>NativeMemory.Realloc</c> does not return
-    /// null on failure -- it THROWS -- and this runs inside the present hook, so an escaping exception
-    /// crosses an <c>[UnmanagedCallersOnly]</c> boundary and takes the client down instead of costing one
-    /// creature a frame of vanilla shading.</para></summary>
-    private static bool EnsureBoneSlots(int want)
-    {
-        if (want <= _boneCap) return true;
-        int cap = _boneCap == 0 ? MaxBoneSlots : _boneCap;
-        while (cap < want) cap *= 2;
-        float* next, prev;
-        nuint bytes = (nuint)cap * BoneFloats * sizeof(float);
-        try { next = (float*)NativeMemory.Realloc(_boneStage, bytes); }
-        catch (OutOfMemoryException) { return false; }
-        if (next == null) return false;
-        _boneStage = next;
-        try { prev = (float*)NativeMemory.Realloc(_bonePrevStage, bytes); }
-        catch (OutOfMemoryException) { return false; }
-        if (prev == null) return false;
-        _bonePrevStage = prev; _boneCap = cap;
-        return true;
-    }
-
-    /// <summary>#209: this pass's own context-loss slot, which it drove inline (and incompletely) before the
-    /// lifetime audit. Every GL NAME here belongs to the 4.6 context, so nothing is deleted -- the objects
-    /// went with it -- the names are dropped so each Ensure rebuilds instead of short-circuiting on a
-    /// non-zero handle and drawing through a dead one. That is #175's bug, in the one pass that still had it.
-    /// <para>Uniform locations are not listed: every one of them is re-fetched by the Ensure that rebuilds
-    /// its program. <c>Programs._progFailed</c>/<c>Programs._litFailed</c> are deliberately NOT cleared -- a stage that could
-    /// not build is a fact about the source, not about the context, and clearing them would re-arm a pass
-    /// EndFrame already disarmed. <c>Programs._waterFailed</c> is cleared because it also latches a knob state
-    /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
+    /// <summary>This pass's context-loss slot. Every GL NAME here belongs to the 4.6 context, so nothing is
+    /// deleted -- the objects went with it -- and the names are dropped so each Ensure rebuilds rather than
+    /// short-circuiting on a handle and drawing through a dead one. <c>Programs._progFailed</c> and
+    /// <c>_litFailed</c> are NOT cleared: a stage that could not build is a fact about the source.</summary>
     internal static void ContextLost()
     {
         Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; Programs._progLitDef = 0; Programs._progLitMask = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
-        Programs.ForgetBlendAblate();
+        Ablation.Forget(delete: false);
         Highlight.HighlightContextLost();
         TriggerHighlight.ContextLost();
         HighlightGlow.ContextLost();
@@ -1220,389 +607,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
            & DbLights.SelfCheck(log) & DbSky.SelfCheck(log) & DbEmitterChannels.SelfCheck(log)
            & DbKeyhole.SelfCheck(log) & Db.FrameHoist.SelfCheck(log);
 
-    /// <summary>The [alloy] period line: every number the period tallied, in one statement. Its own
-    /// method so <see cref="EndFrame"/> reads as the gate, the census and the reset it is (CX-708).
-    /// The interpolation is the <see cref="ExtenderLog.Line"/> handler's -- with logging off no hole is
-    /// ever formatted, so the shape of this expression is load-bearing; move it, do not restructure it.</summary>
-    private static void PeriodReport()
-    {
-        // distinct textures is the BATCH FLOOR: one program + one VDO cannot batch below one call per texture,
-        // so batches/frame ~= textures tells you the grouping is optimal and the ratio is scene-bound, while
-        // batches >> textures says the sort is failing. Without it the ratio alone cannot distinguish the two.
-        // #120 made the floor a SOFT one: slots 1..5 joined the batch key but not the radix digit (which still
-        // sorts on the diffuse alone), so two materials sharing a diffuse and differing in their normal map
-        // now cut a batch the count does not predict. A small excess over the floor is that, not a regression.
-        // #264: the gap between these two is a HOLE now, not a ratio. Every candidate the enrollment turned
-        // away used to fall through to the engine's walk and draw vanilla; there is no walk, so it is simply
-        // not drawn. Named in the line rather than left to subtraction -- "6944/7144" reads as coverage, and
-        // "200 NOT DRAWN" reads as the missing geometry it actually is. The reject breakdown at the end of
-        // this line is what it decomposes into.
-        int holes = Counters._lastCandidates - Counters._lastEnrolled;
-        // #325: the old single colour timer's span, opaque through additive (water = copy + draw).
-        double colourMs = 0; for (int t = (int)GpuTerm.Opaque; t <= (int)GpuTerm.Additive; t++) colourMs += GpuMs((GpuTerm)t);
-        _log?.Info($"AlloyRenderer: [alloy] {DbFeed.Stats()} | {DbTableNote()} | {DbPassNote()} "
-                     + $"| {DbInputs.Stats()} | {DbGui.Stats()}");
-        _log?.Info($"AlloyRenderer: [alloy] {Counters._lastEnrolled}/{Counters._lastCandidates} parts owned{CapacityNote()}" +
-                   (holes <= 0 ? "" : $" ({holes} NOT DRAWN)") + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + TexStream.Note() + TexLoad.Note() + ModelLoad.Note() + MdlCache.Note() + "; " + DdsReader.Note() + "; " + RasterReader.Note() + "]" +
-                   $" drawn by {OwnedClasses()} " +
-                   $"/ {Counters._lastTextures} textures " +
-                   $"({_litCount} lit, {Counters._litUnownable} lit left to the engine" +
-                   // #128: what the creature class costs, split. "Creatures are still vanilla" has three
-                   // different fixes behind it -- a skinning stage, an instance-state term, or nothing at all
-                   // if the sweep is simply doing its job -- and only the split says which.
-                   // #137: and what the skinmesh class itself did. A zero everywhere with the class armed
-                   // means no cloak was on screen, which is a different statement from "the pose failed" --
-                   // so the failures are named, not merely absent.
-                   (!_skinning ? ", skinmeshes not owned"
-                      : Counters._skinDrawn == 0 && Counters._skinNoPose == 0 ? ""
-                      : $", {(float)Counters._skinDrawn / Counters._frames:F1} skinmeshes posed/frame" +
-                        (Counters._skinNoPose == 0 ? "" : $", {Counters._skinNoPose} drawn rigid (no pose yet)") +
-                        $", {Counters._boneHigh} bone slots peak of {_boneCap}") +
-                   // #284: session totals, so a creature that is STILL a hole three periods later is
-                   // visible as one rather than being reset out of the line every period.
-                   "), " +
-                   $"Alloy draws {(float)Counters._draws / Counters._frames:F0}/frame in {(float)Counters._batches / Counters._frames:F0} batches " +
-                   // #126: the transparency model, as numbers. Cutout should dwarf blended on NWN content;
-                   // a blended count that reads 0 while the scene plainly has transparents means the class
-                   // was dropped whole rather than never classified -- which the next term names.
-                   $"({(float)Counters._drawsByClass[1] / Counters._frames:F0} cutout, {(float)Counters._drawsByClass[2] / Counters._frames:F0} blended, " +
-                   // #129: indexed off the enum, not off literals -- inserting Water at 3 renumbered
-                   // Additive, and the line went on labelling water draws "additive" while additive itself
-                   // stopped being printed at all. This line is the acceptance instrument; it must not lie.
-                   $"{(float)Counters._drawsByClass[(int)AlloyClass.Water] / Counters._frames:F0} water, " +
-                   $"{(float)Counters._drawsByClass[(int)AlloyClass.Additive] / Counters._frames:F0} additive" +
-                   (Counters._blendedDropped == 0 ? "" : $"; {Counters._blendedDropped} BLENDED PARTS HANDED BACK -- the class " +
-                    "could not be Alloy whole, so none of it is") + ") " +
-                   $"({(Counters._batches == 0 ? 0f : (float)Counters._draws / Counters._batches):F1} draws/batch), " +
-                   // #292: the face-culling term's own cost. A two-sided count of 0 with a live scene means
-                   // no shipped material here says `twosided`, which is a finding about the content, not a
-                   // broken read; cuts above zero is what the term actually charged in batches.
-                   $"({(float)Counters._twoSidedDraws / Counters._frames:F0} two-sided draws/frame, " +
-                   $"{(float)Counters._cullCuts / Counters._frames:F1} batch cuts/frame on culling; " +
-                   // #327: the opaque cut census by term. A term that dominates here is the next sort digit.
-                   $"opaque cuts/frame by term: {CutCensus()}), " +
-                   // #243 (AC5): what the GPU cull kept, and what it dropped. Taken off the count buffer
-                   // three frames behind the dispatch, so nothing on the submission path waits for it. The
-                   // "not running" reading is deliberately distinct from a cull that kept everything: one is
-                   // "this instrument has nothing to say", the other is a finding about the area.
-                   (CullPass.Mode <= CullPass.ModeOff ? "cull OFF (/alloy cull 2 arms it), "
-                      : !CullPass.Ready ? "cull unavailable -- no compute or no indirect-count, "
-                      : CullPass.CullFrames == 0 ? "cull armed, no counts read back yet, "
-                      : $"cull keeps {(float)CullPass.KeptDraws / CullPass.CullFrames:F0}/frame and drops " +
-                        $"{(float)CullPass.CulledDraws / CullPass.CullFrames:F0} " +
-                        $"({(CullPass.KeptDraws + CullPass.CulledDraws == 0 ? 0f : 100f * CullPass.CulledDraws / (CullPass.KeptDraws + CullPass.CulledDraws)):F0}% of the colour range, " +
-                        $"{(CullPass.Mode >= CullPass.ModeHiZ ? "frustum+hi-Z" : "frustum only")}; bounds span " +
-                        $"{CullPass.SpreadX:F0}x{CullPass.SpreadY:F0}x{CullPass.SpreadZ:F0}u, largest radius " +
-                        $"{CullPass.SpreadMaxR:F0}u), ") +
-                   (Renderer.CullWatch.V ? $"cullwatch {CullPass.WatchCollapses} collapse(s) over {CullPass.WatchReads} reads ({CullPass.WatchLate} late), " : "") +
-                   // #285: every reason on this list is a HOLE -- geometry that nothing renders this frame.
-                   $"NOT DRAWN this frame: unlit-pass {(float)Counters._skipNoLight / Counters._frames:F0} identity {(float)Counters._skipIdentity / Counters._frames:F0} " +
-                   $"inactive-LOD {(float)Counters._skipLod / Counters._frames:F0} " +
-                   (Counters._skipForeignScene > 0
-                       ? $"other-scene {(float)Counters._skipForeignScene / Counters._frames:F0} (routine: one draw order, many scenes) "
-                       : "") +
-                   $"dissolve {(float)Counters._ownDissolve / Counters._frames:F0} owned, fade {(float)Counters._ownFade / Counters._frames:F0} owned " +
-                   $"fog-out {(float)Counters._skipFogTile / Counters._frames:F0} tile + {(float)Counters._skipFogGob / Counters._frames:F0} gob " +
-                   $"no-mdl {(float)Counters._skipNoMdl / Counters._frames:F0} tex {(float)Counters._skipTex / Counters._frames:F0}" +
-                   (Counters._skipTex == 0 ? " " : $" (no-gl-id {(float)Counters._skipTexNoId / Counters._frames:F0}" +
-                       $" not-owned {(float)Counters._skipTexNotOwned / Counters._frames:F0}" +
-                       $" no-handle {(float)Counters._skipTexNoHandle / Counters._frames:F0}) ") +
-                   $"range {(float)Counters._skipRange / Counters._frames:F0} vao {(float)Counters._skipVao / Counters._frames:F0}), " +
-                   // Drawn, not dropped: the divergence-A population. It sits outside the NOT DRAWN list on
-                   // purpose -- a part on the white stand-in is on screen exactly as vanilla puts it there.
-                   (Counters._nullTexDraws == 0 ? ""
-                      : $"null-tex {(float)Counters._nullTexDraws / Counters._frames:F0} drawn white/frame, ") +
-                   (Counters._noDiffuseDraws == 0 ? ""
-                      : $"no-diffuse {(float)Counters._noDiffuseDraws / Counters._frames:F0} drawn untextured/frame, ") +
-                   // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
-                   // owned nonzero means every creature and placeable in view is a HOLE (#285): since #264
-                   // there is no engine walk behind the skip, so nothing renders them at all.
-                   $"instanced {(float)Counters._drawsGob / Counters._frames:F0} drawn/frame, " +
-                   // #244 (AC1): the mesh-sharing census. "1,00x" says every owned part has its own item
-                   // range and there is nothing for instancing to collapse; the object-space figure is the
-                   // only part of the shared count that could become instances, for the reason MeshCensus
-                   // states. Reported from the live area rather than assumed from the VDO count.
-                   $"mesh sharing {(Counters._msMeshes == 0 ? 0f : (float)Counters._msParts / Counters._msMeshes):F2}x " +
-                   $"({Counters._msMeshes} meshes, max {Counters._msMaxInstances} instances, {Counters._msShared} parts share a mesh " +
-                   $"of which {Counters._msSharedMx} object-space" +
-                   (Counters._msUnread == 0 ? "" : $"; {Counters._msUnread} PARTS UNREAD -- their index range did not resolve, " +
-                    "so they are outside this count") + "), " +
-                   // #244: the SHAPE tier, which is the one that matters on placeable-heavy content -- fifty
-                   // identical barrels are fifty placements of one model, and if the engine copies its
-                   // vertices per placement then every RANGE is distinct while the geometry repeats fifty
-                   // times. A signature, not a proof (same texture + same index count collides), so 1,00x is
-                   // the conclusive reading and anything above it is a population to confirm, not design on.
-                   $"shape repeats {(Counters._msShapes == 0 ? 0f : (float)Counters._msParts / Counters._msShapes):F2}x " +
-                   $"({Counters._msShapes} shapes, max {Counters._msShapeMax}, {Counters._msShapeRepeat} parts on a repeated shape " +
-                   $"of which {Counters._msShapeRepeatGob} placeable/creature and {Counters._msShapeRepeatMx} object-space; " +
-                   $"{Counters._msGobParts} gobs and {Counters._msMxParts} object-space of {Counters._msParts} censused parts" +
-                   // #244: a SIGNATURE, never a proof -- same texture + same index count collides. ADR 0017
-                   // settled the reading (1,00x at record identity, 2,5x at content level); #258 deleted the
-                   // content pass that measured the second, because it could only reach the bytes by mapping
-                   // a buffer back. Sharing is residency's question now (#254), keyed on content at load.
-                   "), " +
-                   $"normal maps {(float)Counters._nrmBound / Counters._frames:F0} bound of " +
-                   $"{(float)Counters._nrmDeclared / Counters._frames:F0} declared/frame, " +
-                   // #242 (AC3): the whole point of the persistent records, as one number. "written" should
-                   // be the MOVER count -- creatures, doors, animated textures, fading tiles -- and not the
-                   // owned count. If the two are the same the split has a permanent mover in it and step 2
-                   // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
-                   $"records {(float)Counters._recWritten / Counters._frames:F0}/frame written, " +
-                   $"{(float)Counters._recStable / Counters._frames:F0} stable ({_recOwnCap} slots), " +
-                   // CX-43: program switches that took the pass terms, and how many of them had to send the block
-                   $"pass block {(float)PassBinds / Counters._frames:F1} binds/frame ({(float)PassBindsBorrowed / Counters._frames:F1} through another view's cluster table), {(float)PassUploads / Counters._frames:F1} sends/frame, " +
-                   $"record table {Issue.WholeUploads} whole upload(s) ({Issue.WholeBytes >> 20} MiB) over {Counters._frames} frames, " +
-                   // #330: how much of the engine chase the view bounded away, and the poll audit.
-                   ChaseNote() + ", " +
-                   (Counters._watchEnrolled == 0 ? "" :
-                       $"dumptex {Counters._watchEnrolled} enrolled, {(float)Counters._watchSubmitted / Counters._frames:F1} submitted/frame, " +
-                       "") +
-                   // #125: "masked" is the criterion, not "captured" -- it counts the frames the engine's own
-                   // sky wrote nothing because the Alloy one had already drawn. Captured but never masked
-                   // means the pass is staging nothing, which is a different bug from never seeing the sky.
-                   // #175: every registered pass's clause, in declaration order. #139's "post 0 resolves"
-                   // while the world renders is the whole reason this is a roll-call and not a fixed list --
-                   // the frame looks fine, just 8-bit and un-bloomed, and only the clause says so.
-                   PassRegistry.Global.Stats(Counters._frames) + ", " +
-                   $"enrolls={Counters._enrolls} revokes={Counters._revokes}; cycle={CycleTextures.Count} steps={CycleTextures.Steps}" + (CycleTextures.Overflow == 0 ? "" : $" overflow={CycleTextures.Overflow}") + (CycleTextures.OtherClass == 0 ? "" : $" otherctl={CycleTextures.OtherClass}") + "; " +
-                   // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
-                   // run the same scene with /alloy prepass 0 and the difference IS the pass's worth.
-                   (!_depthPrepass ? "prepass OFF (/alloy prepass 1 restores it)"
-                    : Programs._progDepth == 0 ? "prepass unavailable"
-                    : $"prepass {(float)Counters._prepassDraws / Counters._frames:F0} draws/frame" +
-                      (Counters._prepassKeyed == 0 ? "" : $" ({(float)Counters._prepassKeyed / Counters._frames:F0} of them dissolving, keyhole stage)") +
-                      (Counters._prepassSkipped == 0 ? "" : $" (+{(float)Counters._prepassSkipped / Counters._frames:F0} excluded, displacing/skinned or cutout)") +
-                      // #489 (AC2): the GPU's kept figures under the staged ceiling -- phase one plus phase
-                      // two, and phase two's own share -- with phase two's submission as its own term.
-                      (CullPass.CullFrames == 0 ? "" : $" (cull kept {(float)CullPass.PrepassKept / CullPass.CullFrames:F0}, of which retest {(float)CullPass.RetestKept / CullPass.CullFrames:F0})") +
-                      (_qTerm[(int)GpuTerm.Prepass].Measured ? $" in {GpuMs(GpuTerm.Prepass):F3}ms" : "") +
-                      (_qTerm[(int)GpuTerm.PrepassRetest].Measured ? $" + retest {GpuMs(GpuTerm.PrepassRetest):F3}ms" : "") +
-                      (_qTerm[(int)GpuTerm.PrepassKey].Measured ? $" + keyhole sweep {GpuMs(GpuTerm.PrepassKey):F3}ms" : "") +
-                      (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)Counters._prepassFeatDraws / Counters._frames:F0} draws)" : "") +
-                      (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +
-                      (!_prepassKey ? " (keyhole sweep OFF -- /alloy prepasskey 1)" : "")) +
-                   // CX-120: the sample query reads 0 on the DB path while the frame visibly shades, so the
-                   // counter is not measuring this path's draws. A measured-looking zero is worse than
-                   // silence -- it reads as "nothing rasterised", which is exactly the fault we spent a day
-                   // chasing -- so the clause says it is unmeasured rather than reporting a number it has
-                   // not got. ponytail: the query bracket needs a DB-mode home; it is a diagnostic, not a
-                   // pass, so it waits behind the consumers.
-                   ", shaded (not measured)" +
-                   (_qTerm[(int)GpuTerm.Opaque].Measured
-                       ? $", gpu ms: opaque {GpuMs(GpuTerm.Opaque):F2}" +
-                         (_qTerm[(int)GpuTerm.OpaqueKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.OpaqueKey):F2})" : "") +
-                         $" / cutout {GpuMs(GpuTerm.Cutout):F2}" +
-                         (_qTerm[(int)GpuTerm.CutoutKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.CutoutKey):F2})" : "") + " / " +
-                         $"grass {GpuMs(GpuTerm.Grass):F2} (+ depth {GpuMs(GpuTerm.GrassDepth):F2}) / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2}" +
-                         (_qTerm[(int)GpuTerm.BlendedComposite].Measured
-                             ? $" (accumulate" + (_qBlendSamples.Measured && Counters._lastPixels > 0 ? $", overdraw x{_qBlendSamples.Avg / Counters._lastPixels:F2}" : "")
-                               + (_blendFrames > 0 ? $", {_blendGroups / _blendFrames} groups" : "")
-                               + (_qBlendPrims.Measured ? $", {_qBlendPrims.Avg / 1000.0:F0}k tris" : "")
-                               + (_qBlendFrags.Measured && Counters._lastPixels > 0 ? $", shaded x{_qBlendFrags.Avg / Counters._lastPixels:F2}" : "")
-                               + $"; + composite {GpuMs(GpuTerm.BlendedComposite):F2}, hosted {GpuMs(GpuTerm.BlendedHosted):F2}, depth sweep {GpuMs(GpuTerm.BlendedDepth):F2})"
-                             : "") + " / " +
-                         $"water {GpuMs(GpuTerm.Water):F2} / additive {GpuMs(GpuTerm.Additive):F2} (colour {colourMs:F2}) " +
-                         $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
-                         (_qPartSamples.Measured && Counters._lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / Counters._lastPixels:F2})" : "") +
-                         (_qTerm[(int)GpuTerm.Motion].Measured ? $" / motion {GpuMs(GpuTerm.Motion):F2}" : "") +
-                         $" / post {GpuMs(GpuTerm.Post):F2}" +
-                         // The terms no pass owned: the cull dispatches, the hi-Z build, beams, the water
-                         // copy -- and the total, to read against the [gl46] gpu-span. Span minus total is
-                         // idle-or-unbracketed; it is idle if it shrinks when the frame goes GPU-bound.
-                         $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
-                         $" / water copy {GpuMs(GpuTerm.WaterCopy):F2}" +
-                         // CX-51: the history copy alone; the march itself is inside opaque (A/B with /light ssr 0)
-                         (_qTerm[(int)GpuTerm.Ssr].Measured ? $" / ssr {GpuMs(GpuTerm.Ssr):F2}" : "") +
-                         // CX-188: the deferred point-light dispatch. Read it against the lit colour terms
-                         // above: this is what light.deferred moved OUT of them (A/B with /light deferred 0).
-                         (_qTerm[(int)GpuTerm.Deferred].Measured ? $" / deferred {GpuMs(GpuTerm.Deferred):F2}" : "") +
-                         // CX-189: the coverage layer -- seed, the forward-lit A2C draws and the resolve, together
-                         (_qTerm[(int)GpuTerm.Coverage].Measured ? $" / a2c {GpuMs(GpuTerm.Coverage):F2}" : "") +
-                         // CX-188 step 3: the per-pixel shadow record the walk above reads, apart from it
-                         // (A/B with /shadow deferredres and /shadow cap 0).
-                         (_qTerm[(int)GpuTerm.DeferredShadow].Measured
-                             ? $" / deferred shadows {GpuMs(GpuTerm.DeferredShadow):F2}" : "") +
-                         // CX-188 step 4: the hot-light debt -- what the deferred stage's CX_NO_HOT gave up
-                         // on the baked receivers, taken back once per pixel (A/B with /lightmap moverlights 0).
-                         (_qTerm[(int)GpuTerm.PairDebt].Measured ? $" / pair debt {GpuMs(GpuTerm.PairDebt):F3}" : "") +
-                         (_qTerm[(int)GpuTerm.Weather].Measured ? $" / weather {GpuMs(GpuTerm.Weather):F3}" : "") +
-                         $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
-                   // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
-                   // count is the acceptance criterion ("probe capture does not run per frame") failing.
-                   PassCpuNote(Counters._frames) +
-                   $", {StreamRing.Diag()}" +
-                   $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +
-                   "; " +
-                   AlloyLights.Diag(Counters._clusterOverflow) +
-                   // The coverage question -- "what is the engine still drawing, and why?" -- was only
-                   // answerable from the one-shot enroll diag, which a healthy session prints once at startup
-                   // and never again. It belongs where the numbers it explains are.
-                   // Nothing lit means nothing samples the shadow maps -- the whole Alloy lit stage, cascades
-                   // and cubes included, is dead code for the session. Loud, because it looks like working
-                   // output: parts are owned, cubes render, and the frame is merely fullbright.
-                   (_litCount == 0 && Counters._lastEnrolled > 0
-                       ? "; NOTHING LIT -- no Alloy draw samples the shadow maps"
-                       : "") +
-                   // Dangling texture pointers AurTex refused. A handful around an area transition is the
-                   // engine freeing textures a material still names; a number that climbs every period means
-                   // something upstream is holding a dead MATERIAL, which is a lifetime bug rather than a
-                   // texture one -- and this line is the only place it would ever be visible.
-                   (Framework.AurTex.Refused == 0 ? ""
-                       : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
-    }
-
-    /// <summary>The period tallies: every count the [alloy] line prints and its reset zeros, wherever it is
-    /// bumped. Plain static loads, same as before -- grouped so a partial's reader can tell a tally from
-    /// state without knowing all 400 names (CX-699). Constant initialisers only: a runtime cctor would put an
-    /// init check on every hot-path bump.</summary>
-    internal static class Counters
-    {
-        internal static int _frames, _revokes, _enrolls, _lastEnrolled, _lastCandidates;
-        /// <summary>Distinct diffuse textures interned at the last enrollment -- the batch floor (see EndFrame).</summary>
-        internal static int _lastTextures;
-        internal static int _lastPixels;
-        /// <summary>The Alloy draw log counter, counterpart to M0's Alloy cast.</summary>
-        internal static long _draws;
-        /// <summary>#84's measurable form of "draw count decoupled from part count": submitted multidraw batches.
-        /// draws/batches IS the batching ratio the acceptance criterion asks for, straight out of the log.</summary>
-        internal static long _batches;
-        /// <summary>#126: Alloy draws per class this pass, and the batches each class's pass submitted. The
-        /// cutout/blended split is the whole model, so it is reported rather than inferred.</summary>
-        internal static readonly long[] _drawsByClass = new long[AlloyClasses.Count];
-        /// <summary>The INSTANCED half of the draw accounting: gob parts Alloy staged this pass. Every other
-        /// number on the [alloy] line mixes tiles, placeables and creatures into one total, so "are characters
-        /// Alloy's" could only be inferred from the capture-bucket split, which is a CLASSIFICATION and not a
-        /// per-frame fact. This is the fact. #285: read it against <c>{_gobOwned} owned</c> -- a gap between them
-        /// is instanced geometry NOT DRAWN, since #264 left nothing behind an unstaged part.</summary>
-        internal static long _drawsGob;
-        /// <summary>#292 (AC6): staged draws whose material said <c>twosided</c>, and the batches that the
-        /// culling term alone opened. Together they say what reproducing the engine's per-material cull decision
-        /// cost the batch count -- the criterion this ticket asks to be measured, not assumed.</summary>
-        internal static long _twoSidedDraws, _cullCuts;
-        /// <summary>#327: opaque-range batch cuts per cut-key term, in <see cref="CutTerms"/> order. Sized by a
-        /// const, not by the label table: a string array cannot be preinitialised and would give this class a cctor.</summary>
-        internal static readonly long[] _cutBy = new long[CutTermCount];
-        internal const int CutTermCount = 8;
-        /// <summary>Why an Alloy part still did not draw this pass, by term. The single fallback count could not
-        /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
-        /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
-        internal static long _skipLod;
-        /// <summary>CX-120: parts the pass skipped because they belong to ANOTHER SCENE. Its own term, not a
-        /// share of the LOD one: the draw order is a single table over every DB slot, so a world pass routes
-        /// past every GUI panel's controls and the count is large, routine and says nothing is wrong --
-        /// where <see cref="_skipLod"/> is content state and a large one is a question. Conflating them hides
-        /// a real LOD fault inside a number that is big on every healthy frame.</summary>
-        internal static long _skipForeignScene;
-        internal static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
-                             _skipRange, _skipVao;
-        /// <summary>...and the causes behind the <c>tex</c> fallback, which are different bugs wearing one
-        /// number. "No GL id" is the copy path; "no owned handle" is the BINDLESS layer, which #220 already
-        /// caught being wrong once and which a part can fail every frame forever -- a steady count here,
-        /// roughly one creature's worth of parts, is a specific model whose texture Alloy declined to own,
-        /// and that model then renders vanilla for the whole session.</summary>
-        internal static long _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
-        /// <summary>CX-91: draws whose material declares NO diffuse slot. Like <see cref="_nullTexDraws"/>
-        /// these are DRAWN, on the white stand-in, because vanilla draws them with texture stage 0 disabled
-        /// (<c>Material::BindAllStandardTextures</c> @0x4c6e30) -- they were a skip until CX-91.</summary>
-        internal static long _noDiffuseDraws;
-        /// <summary>Draws that took the white null-texture stand-in because the diffuse resolved to GL id 0.
-        /// These are DRAWN, not skipped -- vanilla renders such a part blank white and so does Alloy now -- so
-        /// they are counted apart from the tex fallback rather than inside it. A steady count names content
-        /// whose texture resource is genuinely absent; `no-gl-id` beside it can only be a mint that failed.</summary>
-        internal static long _nullTexDraws;
-        /// <summary>#546's other half: parts whose tile fog ramp (or a gob part's filed tile) read 0, dropped outright at route.
-        /// Split by gob/tile because a creature part here is a HOLE the fog-of-war never explains.</summary>
-        internal static long _skipFogTile, _skipFogGob;
-        /// <summary>#124's coverage number: Alloy parts the camera dissolves this pass. Before the fold these
-        /// were the keyhole SKIP count -- same population, dropped from the frame; now they are drawn by the
-        /// Alloy program with the dissolve folded in, so the before/after the ticket asks for is this one figure
-        /// read off the period line either side of the change.</summary>
-        internal static long _ownDissolve;
-        /// <summary>#126's counterpart to it: Alloy parts the tile fade moves into the blended run this pass.
-        /// Before the fold these were the tilefade SKIP count -- same population, dropped from the frame.</summary>
-        internal static long _ownFade;
-        /// <summary>Parts whose material declared a normal map, and the subset whose map survived the per-slot
-        /// re-fetch into the mask the lit stage samples on.</summary>
-        internal static long _nrmDeclared, _nrmBound;
-        /// <summary>Lit parts refused at enrollment (no normal stream / lit program down) -- they stay vanilla.</summary>
-        internal static int _litUnownable;
-        /// <summary>#128: parts refused for carrying bone streams, and what the per-instance sweep then cost --
-        /// already-accepted parts revoked because a SIBLING of theirs on the same instance was refused. Together
-        /// with <c>AlloyCensus.RefusedGobs</c> on the same line they are the honest answer to "why is that
-        /// creature still vanilla". Counted as PARTS, which is the figure the sweep actually produces: the gob
-        /// count includes instances that had nothing accepted to revoke.</summary>
-        internal static int _skinUnownable, _gobParts;
-        /// <summary>#126: blended parts dropped from this enrollment because the class could not be Alloy whole.
-        /// #285: dropped means NOT DRAWN -- there is no engine walk behind the class since #264.
-        /// Reported: a class that never lands is the one number that separates "no transparent content here"
-        /// from "one part keeps refusing and takes the class down with it".</summary>
-        internal static int _blendedDropped;
-        /// <summary>#242: the audit AC3 asks for -- record writes should scale with the MOVER count. If
-        /// "written" reads as the owned count, the split has a permanent mover in it.</summary>
-        internal static long _recWritten, _recStable;
-        /// <summary>#262: the per-report bone-slot high-water mark that keeps the ceiling counted rather than silent.</summary>
-        internal static int _boneHigh;
-        internal static long _skinDrawn, _skinNoPose;
-        internal static uint _clusterOverflow;
-        internal static long _prepassDraws;
-        /// <summary>#124: prepass draws that went through the keyhole depth stage. The number that says the fix
-        /// is doing its job -- before it, every one of these was in <see cref="_prepassSkipped"/> instead.</summary>
-        internal static long _prepassKeyed;
-        /// <summary>#123: draws the prepass had to leave out because their feature moves vertices, plus (#124)
-        /// the ones that dissolve, which discard. Reported, not
-        /// hidden -- it is the overdraw the prepass no longer removes, and the number that says whether the wind
-        /// content is big enough for a displacing prepass stage to be worth building.</summary>
-        internal static long _prepassSkipped;
-        internal static long _prepassFeatDraws;
-        /// <summary>#134: how much of the <c>dumptex</c> population we enrolled, and how much of it we actually
-        /// submit each frame. The gap between them, and between both and the engine's own draw count, is the
-        /// only honest answer to "is that thing on screen ours".</summary>
-        internal static int _watchEnrolled;
-        internal static long _watchSubmitted;
-        /// <summary>#244: parts the last census actually keyed, and parts it had to leave out because their
-        /// index range would not resolve. The second number is what stops the first being read as the
-        /// population when the dereference went blind.</summary>
-        internal static int _msParts, _msUnread;
-        internal static int _msMeshes, _msMaxInstances, _msShared, _msSharedMx;
-        /// <summary>#244: the shape tier -- distinct meshes by signature, the largest repeat, how many parts sit
-        /// on a repeated shape and how many of those are gob (placeable/creature) parts. This is the tier the
-        /// range key is blind to: repeated geometry the engine copied per placement.</summary>
-        internal static int _msShapes, _msShapeMax, _msShapeRepeat, _msShapeRepeatGob;
-        /// <summary>#244: how many censused parts belong to a gob at all -- the denominator that says whether a
-        /// placeable-heavy area was even in the population.</summary>
-        internal static int _msGobParts;
-        /// <summary>#244: censused parts that are matrix-class, and the repeated ones among them. If the first is
-        /// near zero the area's geometry is world-space and nothing repeated in it is collapsible whatever the
-        /// shape tier says -- which is the reading that decides whether a repeat count means anything.</summary>
-        internal static int _msMxParts, _msShapeRepeatMx;
-    }
-
-    /// <summary>One-shot diagnostic budgets and "said it once" latches. Cold by construction; grouped for the
-    /// same reason as <see cref="Counters"/> (CX-699).</summary>
-    internal static class Diag
-    {
-        /// <summary>A small budget of NAMED failures. The counters say which fault; only the resref says which
-        /// CONTENT, and that is what separates "one model's texture" from "a whole class of them". Budgeted
-        /// rather than rate-limited: the population is what matters and it is small, so a handful of distinct
-        /// names is the whole answer.</summary>
-        internal static int _texSkipDiagLeft = 12;
-        internal static readonly System.Collections.Generic.HashSet<string> _texSkipSeen = new();
-        /// <summary>Diagnostic budget for <see cref="HandleDiag"/>. Cold by construction -- the miss path runs
-        /// about once per distinct texture per enrollment, not per draw -- and it stops speaking after this many
-        /// reports, so it costs one branch on a warm cache.</summary>
-        internal static int _handleDiagLeft = HandleDiagBudget;
-        internal static bool _ambientFallbackLogged, _loggedOnce;
-    }
-
-    /// <summary>A per-bucket counter as "bucket:per-frame", only the buckets that contributed.</summary>
-    internal static string ByBucket(long[] counts)
-    {
-        string s = "";
-        for (int b = 0; b < counts.Length; b++)
-            if (counts[b] != 0) s += $" {b}:{(float)counts[b] / Counters._frames:F0}";
-        return s.Length == 0 ? " none" : s;
-    }
-
     internal static bool _waterArmed;
     /// <summary>The engine's water draw bucket (<c>Scene::RenderSinglePass</c> @0x46e5f0's "Water" scope).
     /// One name, read by the ownable-bucket list and by the suppression that has to agree with it.</summary>
@@ -1610,72 +614,58 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static float* _waterView, _waterProj;
     internal static float _waterNear = 1f, _waterFar = 100f;
 
-    /// <summary>#341 adds the eye and the four fog-target terms: the fog colour is direction-dependent
-    /// now, so every stage that fogs uploads the same five values through <see cref="UploadFog"/>.</summary>
+    /// <summary>Every location the shared feature terms upload to, the eye and the four fog-target terms
+    /// included: the fog colour is direction-dependent, so every stage that fogs uploads the same five values
+    /// through <see cref="UploadFog"/>.</summary>
     internal unsafe struct FeatLoc { internal int Time, Wind, Flags, Cam, CamFocus, Player, Fog, FogColor, KhDia, KhCam,
                                        Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor, FogOrigin, LodBias,
                                        TgtShapeL, TgtSelfL, TgtObjL, TgtSizeXL, TgtSizeYL, TgtRangeL,
                                        TgtColL, TgtWorldL, ProjL, Now;
-        /// <summary>#551: the WHOLE scriptable block, by location. Picking entries one feature at a time
-        /// was a standing bug: a content shader that starts reading a new slot compiles, links, and reads
-        /// zero, which is a feature that silently does nothing under Alloy and works under the engine.
-        /// sow-topdata#551 is exactly that case (Float13, the sky-light veil fade) and it is why this is a
-        /// block. Filled at program build; a slot the stage does not use is -1, which GL ignores.</summary>
+        /// <summary>The WHOLE scriptable block, by location. Picking entries one feature at a time was a
+        /// standing bug: a content shader that starts reading a new slot compiles, links and reads zero --
+        /// a feature that silently does nothing under Alloy and works under the engine. Filled at program
+        /// build; a slot the stage does not use is -1, which GL ignores.</summary>
         internal fixed int SInt[ScriptableSlots];
         internal fixed int SFloat[ScriptableSlots];
         internal fixed int SVec[ScriptableSlots];
-        /// <summary>CX-11: bit i set when slot i of that kind resolved to a live location, so the upload
-        /// walks only what the program declares instead of 48 calls, nearly all of them to -1.</summary>
+        /// <summary>Bit i set when slot i of that kind resolved to a live location, so the upload walks only
+        /// what the program declares instead of 48 calls, nearly all of them to -1.</summary>
         internal int SIntLive, SFloatLive, SVecLive;
     }
-    /// <summary>#123: <c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms
-    /// uploads these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they
-    /// were authored, which is the pre-#123 look, not a misrender.</summary>
+    /// <summary><c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms uploads
+    /// these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they were
+    /// authored, which is a stock look rather than a misrender.</summary>
     private static byte* _runtime;
 
-    /// <summary>The same struct as a typed view. Every reader below null-checks <see cref="_runtime"/> first;
-    /// the view itself is one pointer, so this costs nothing.
-    /// <para>#347: <c>CamFocus</c> is the camera's PIVOT, as the engine's own stages read it under the name
-    /// <c>cameraFocus</c> -- <c>GLRender::SetUniforms</c> @0x4cf359 uploads <c>m_shaderExposedRuntimeData +
-    /// 0x90</c> to the location <c>ConnectShaderData</c> resolved for that name. Not the camera POSITION
-    /// (<c>CamPos</c>, +0x64): in chase cam the pivot sits on the controlled character at roughly chest
-    /// height, which is why content measures a sight range against it and not against the eye. #124 reads
-    /// <c>CamPitch</c> (+0x84) and <c>CamDist</c> (+0x8c) of the same struct for the keyhole aperture.</para></summary>
+    /// <summary>The same struct as a typed view; every reader below null-checks <see cref="_runtime"/> first,
+    /// and the view itself is one pointer. <c>CamFocus</c> (+0x90) is the camera's PIVOT, as the engine's own
+    /// stages read it under the name <c>cameraFocus</c> -- not the camera POSITION (<c>CamPos</c>, +0x64): in
+    /// chase cam the pivot sits on the controlled character, which content measures a sight range against.</summary>
     internal static ShaderExposedRuntimeData Rt => new((IntPtr)_runtime);
     /// <summary>Is <see cref="Rt"/> readable at all? The null check every reader of it owes, for a caller
-    /// outside this class (CX-88's sky stage uploads eight of the struct's scalars).</summary>
+    /// outside this class (the sky stage uploads eight of the struct's scalars).</summary>
     internal static bool HasRuntime => _runtime != null;
-    /// <summary>#124: the keyhole diameter pair inside
-    /// <see cref="SymbolMap.GlGlobalShaderConstantsF"/>. Stored unordered -- SetUniforms uploads min as
-    /// <c>keyholeDiameterMin</c> and max as <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>
+    /// <summary>The keyhole diameter pair inside <see cref="SymbolMap.GlGlobalShaderConstantsF"/>. Stored
+    /// unordered -- SetUniforms uploads min as <c>keyholeDiameterMin</c> and max as
+    /// <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>
     internal const int KeyholeDiaA = 21, KeyholeDiaB = 22;
     private static float* _shaderConstF;
 
-    /// <summary>#346: the spell-targeting shape's own slice of the same three tables, indices read off the
+    /// <summary>The spell-targeting shape's own slice of the same three tables, indices read off the
     /// <c>SetUniforms</c>/<c>ConnectShaderData</c> pairing and confirmed against the setters
-    /// (<c>SpellTargeting::UpdateSpellTargetingStaticData</c> @0x958790 writes params 0x1b/0x20/0x28/0x29/
-    /// 0x2a/0x10, and <c>CClientExoAppInternal::MainLoop</c> @0x658c13 the object type and world point).
-    /// Only what the shape actually reads is listed (CX-93: <c>cx_target.glsl</c>, Alloy's own) -- the
-    /// harms/helps/ignores flags and the spell and feat ids are part of the engine's declaration and are
-    /// sampled by nothing.</summary>
+    /// (<c>SpellTargeting::UpdateSpellTargetingStaticData</c> @0x958790, and
+    /// <c>CClientExoAppInternal::MainLoop</c> @0x658c13 for the object type and world point).</summary>
     internal const int TgtShape = 27, TgtOnSelf = 32, TgtObjType = 35,
                        TgtSizeX = 40, TgtSizeY = 41, TgtRange = 42, TgtColour = 16;
-    /// <summary>#347: the rest of the scriptable block the spliced stock includes read, by the same
-    /// pairing -- <c>scriptableInt(n)</c> is <c>m_globalShaderConstantsi[10 + n]</c> and
-    /// <c>scriptableFloat(n)</c> is <c>m_globalShaderConstantsf[23 + n]</c>, from
-    /// <c>ConnectShaderData</c>'s n = 1..16 loop against <c>SetUniforms</c>' slot bases (+0x2c and +0x60).
-    /// 4 gates and scales the noir desaturation, 11 and 12 the racial-vision mode and its range.</summary>
-    /// <summary>#551: the scriptable block is 16 of each, and the engine's own tables hold them at these
-    /// bases -- <c>scriptableInt(n)</c> is <c>m_globalShaderConstantsi[10 + n]</c>, <c>scriptableFloat(n)</c>
-    /// is <c>m_globalShaderConstantsf[23 + n]</c> and <c>scriptableVec(n)</c> is
-    /// <c>m_globalShaderConstantsv4[n - 1]</c>, from <c>ConnectShaderData</c>'s n = 1..16 loop paired with
-    /// <c>SetUniforms</c>' slot bases (+0x2c, +0x60, +0x00). NWScript's own count is 48 uniforms, which is
-    /// these three sixteens.</summary>
+    /// <summary>The scriptable block is 16 of each, and the engine's own tables hold them at these bases:
+    /// <c>scriptableInt(n)</c> is <c>m_globalShaderConstantsi[10 + n]</c>, <c>scriptableFloat(n)</c> is
+    /// <c>m_globalShaderConstantsf[23 + n]</c> and <c>scriptableVec(n)</c> is
+    /// <c>m_globalShaderConstantsv4[n - 1]</c>. NWScript's own 48 uniforms are these three sixteens.</summary>
     internal const int ScriptableSlots = 16, SIntBase = 11, SFloatBase = 24, SVecBase = 0;
 
-    /// <summary>#347: this pass's PROJECTION, latched where the frame reads it off the engine's matrix
-    /// stack, for the spliced stock files that ask for <c>m_proj</c>. Per pass, not per frame: the probe
-    /// cube renders under its own, and a stale one would tell a stock file it was drawing 2D UI.</summary>
+    /// <summary>This pass's PROJECTION, latched where the frame reads it off the engine's matrix stack, for
+    /// the spliced stock files that ask for <c>m_proj</c>. Per pass, not per frame: the probe cube renders
+    /// under its own, and a stale one would tell a stock file it was drawing 2D UI.</summary>
     private static Matrix4x4 _projMtx = Matrix4x4.Identity;
     private static int* _shaderConstI;
     private static float* _shaderConstV, _shaderConstV4;

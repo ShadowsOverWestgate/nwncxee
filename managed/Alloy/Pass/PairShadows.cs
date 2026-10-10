@@ -5,24 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-188 step 4 (ADR 0029): the (static light, mover) PAIR tiles -- the planner and the atlas. A
-/// creature standing under a baked static light owes the lightmap the shadow the bake never saw, and the
-/// forward loop pays that per fragment per light: up to <see cref="CasterPass.DynSpheres"/> segment-vs-sphere
-/// tests, then cube taps on the light's dynamic page (the -10.1 ms <c>lightmap.movers 0</c> measures on the
-/// heavy plaza). This class replaces the page with something the shadow's own size: per
-/// (light, mover) pair, one small perspective depth tile framed on the mover's sphere and fitted to the
-/// light's reach, baked through <see cref="CasterPass"/>'s existing layered path over the DYNAMIC set alone.
-/// <para><b>The budget is per MOVER, not per light.</b> A creature under four lamps casts four shadows; the
-/// <c>lightmap.moverlights</c> strongest are the ones anybody sees, and the rest are what made the old shape
-/// unbounded. <see cref="AddLight"/> collects this frame's candidate lights, <see cref="AddMover"/> ranks them
-/// at each mover by the engine's own curve times luma (cx_lightbuild's ranking), and <see cref="Commit"/>
-/// emits the surviving pairs GROUPED BY CUBE SLOT -- which is what lets a reader walk one light's run and what
-/// lets the debt pass fold two movers of one light into one <c>min()</c>.</para>
-/// <para>A paired light publishes <c>CubeDynPage[slot]</c> NEGATIVE: <c>-(first pair + 1)</c>. Every existing
-/// reader tests <c>&lt; 0.5</c> or <c>&gt; 0.5</c> and so reads it as having no page, which is the truth. The
-/// readers that want those movers back are <c>cx_pairdebt</c> (a baked receiver of the deferred frame) and
-/// <c>CxLocalShadowQ</c> (an unbaked one). <b>Nothing is paired unless the deferred pass is live</b>
-/// (<see cref="On"/>): with <c>light.deferred 0</c> the frame is bit-identical to today's.</para></summary>
+/// <summary>The (static light, mover) PAIR tiles -- the planner and the atlas (ADR 0029). A creature under a
+/// baked static light owes the lightmap a shadow the bake never saw; this replaces the light's dynamic cube
+/// page with one small depth tile per (light, mover), budgeted per MOVER and emitted GROUPED BY CUBE SLOT,
+/// which every reader depends on. A paired light publishes <c>CubeDynPage[slot]</c> as <c>-(first pair + 1)</c>.</summary>
 internal static unsafe class PairShadows
 {
     /// <summary>Pairs the atlas may ever hold. <see cref="CasterPass.MaxBakeViews"/> must cover this plus the
@@ -206,10 +192,9 @@ internal static unsafe class PairShadows
     }
 
     /// <summary>Rank this frame's candidate lights at one mover and keep the <c>lightmap.moverlights</c>
-    /// strongest -- the engine's own curve times luma, which is how <c>cx_lightbuild</c> and the walk itself
-    /// rank a light's importance. Each kept (light, mover) is a pair candidate. A creature arrives here ONCE,
-    /// as the box round all its parts (<see cref="CasterPass"/>'s fold), so a body keeps one set of lamps. Hot
-    /// (per mover per frame) and allocation-free: K is at most 4, so the keep is a five-element insertion.</summary>
+    /// strongest -- the engine's own curve times luma, which is how the walk itself ranks a light. A creature
+    /// arrives here ONCE, as the box round all its parts, so a body keeps one set of lamps. Hot and
+    /// allocation-free: K is at most 4, so the keep is a five-element insertion.</summary>
     internal static void AddMover(float cx, float cy, float cz, float r, int moverId)
     {
         if (!On || _nLights == 0 || !(r > 0f)) return;
@@ -290,13 +275,10 @@ internal static unsafe class PairShadows
         }
     }
 
-    /// <summary>Turn the plan into this frame's pair table: per candidate light, a tile per mover it kept and can
-    /// frame. An unframeable mover (inside the cone ceiling of its lamp) goes without that light's shadow, counted;
-    /// it does not cost the light's other movers theirs, as it did when one refusal left the whole light on its
-    /// page, which the deferred frame never reads on baked ground. Emitted grouped by light (and so by cube slot),
-    /// which is the order every reader depends on. Candidates come in the cube scan's RANK order, so when the
-    /// atlas fills it is the farthest lights that keep their pages. The only GL here is the atlas allocation,
-    /// on the first committing frame of a session.</summary>
+    /// <summary>Turn the plan into this frame's pair table: per candidate light, a tile per mover it kept and
+    /// can frame. An unframeable mover goes without that light's shadow, counted, and does not cost the
+    /// light's other movers theirs. Emitted grouped by light (and so by cube slot), in the cube scan's RANK
+    /// order, so when the atlas fills it is the farthest lights that keep their pages.</summary>
     internal static void Commit()
     {
         if (!On || _nLights == 0) return;
@@ -375,21 +357,10 @@ internal static unsafe class PairShadows
         vp = _vp[pi]; at = new Vector3(_at[pi].X, _at[pi].Y, _at[pi].Z); radius = _at[pi].W;
     }
 
-    /// <summary>CX-188 CPU wave: must this pair's atlas layer be re-baked, or does it already hold this exact
-    /// tile's depth? Before this the answer was always yes -- 84 tiles a frame of the 184 views the still
-    /// plaza baked, every one of them re-recording a creature that had not moved. The key is every input the
-    /// layer's depth is a function of: the light (its identity, and through <paramref name="pi"/>'s view
-    /// projection its position and reach), the mover (its identity, centre and radius -- the view's own cull
-    /// volume), that projection itself, and the LAYER, so an atlas reshuffle that lands a pair somewhere else
-    /// re-bakes rather than inheriting another pair's depth.
-    /// <para><b>Invalidation edges.</b> <paramref name="evt"/>: a mover, a dynamic-set flip or a ghost inside
-    /// the tile's cull volume -- the same population and the same `now | the frame it was baked` union the
-    /// cube's dynamic page takes per face, which is also what makes a still-standing creature's tile re-bake
-    /// every frame it breathes (a skinned caster is a mover unconditionally). <paramref name="forced"/>: the
-    /// frame's blanket invalidate, the slot's re-key, the receiver-cull force. A GAP: the key must be last
-    /// frame's, so a frame that dropped the pair (hidden, roaming, a broken scan) or never held it leaves
-    /// nothing to match -- which is what keeps the event union honest across the gap. And
-    /// <see cref="ForgetKeys"/>, on a context loss, a fresh atlas, and a flush whose bakes never landed.</para></summary>
+    /// <summary>Must this pair's atlas layer be re-baked, or does it already hold this exact tile's depth? The
+    /// key is every input the layer's depth is a function of: the light, the mover (identity, centre, radius),
+    /// the view projection, and the LAYER, so an atlas reshuffle re-bakes rather than inheriting another
+    /// pair's depth. A frame that dropped the pair leaves nothing to match, which keeps the union honest.</summary>
     internal static bool TileStale(int pi, bool evt, bool forced)
     {
         if (pi < 0 || pi >= Count) return true;
@@ -494,11 +465,10 @@ internal static unsafe class PairShadows
                      "a mover subtending more than the cone ceiling has none either");
         check.Expect(hs > r / (at - light).Length(), "the framed half-angle carries the disc's slack");
 
-        check.Expect(RecFloats == 36 && HeaderFloats == 4, "the record and the header are the sizes the GLSL declares");
         check.Expect(MaxPairs <= 1024 - 64 * 6, "the atlas fits inside CasterPass's bake-view queue beside the cube faces");
-        check.Expect(MaxPerLight <= CasterPass.DynSpheres,
-                     "a light's mover list cannot outrun the dyn spheres its page would have held");
         string buf = ShaderSource.Get("cx_pairbuf.glsl"), lib = ShaderSource.Get("cx_pairshad.glsl");
+        check.Expect(ShaderContract.RecordSafe(buf, "CxPair", RecFloats),
+                     "the GLSL CxPair declaration does not add up to the record stride C# stages");
         check.Expect(buf.Contains($"layout(std430, binding = {Binding}) readonly buffer CxPairBuf")
                   && buf.Contains("struct CxPair { mat4 vp; vec4 pr; vec4 col; vec4 sph; vec4 ix; vec4 fx; };"),
                      "the pair table's binding and layout are the ones C# stages");

@@ -8,29 +8,22 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#173: the FRAME DISPATCH. What the Alloy bracket does once per pass and in what order: the prepass, the opaque block, the pass-slot walk that hands each ADR 0011 slot to its owner, and the probe capture that rides the same staged batches. Hot: nothing on this path allocates.</summary>
+/// <summary>The FRAME DISPATCH. What the Alloy bracket does once per pass and in what order: the prepass, the
+/// opaque block, the pass-slot walk that hands each ADR 0011 slot to its owner, and the probe capture that
+/// rides the same staged batches. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>The Alloy opaque block (hot, zero-alloc): view*proj off the matrix stacks and the target
-    /// block once, then -- inside the #80 bracket -- <see cref="BuildBatches"/> revalidates every Alloy part
-    /// and stages its draw (texture id re-fetched every frame per the borrowed-pointer rule, which is also what
-    /// keeps animated textures cycling), and <see cref="Issue.IssueBatches"/> submits the result as one multidraw per
-    /// (program, VDO, texture, primitive) group. Anything that fails revalidation falls straight back to the
-    /// engine walk.</summary>
-    /// <summary>#216/#263: the bail-out a pass takes AFTER the shim has already taken the engine's frame
-    /// away. There is nothing to hand back to and -- since the renderer is chosen at boot -- no way to warm
-    /// the engine's resource world mid-session, so this is a HARD FAILURE: the reason is logged and put on
-    /// screen naming the restart, and the mode does not move. A no-op before the shim's window, where
-    /// returning here really does leave the engine's own frame intact.</summary>
+    /// <summary>The bail-out a pass takes AFTER the shim has already taken the engine's frame away. Nothing to
+    /// hand back to, and the renderer is chosen at boot, so this is a HARD FAILURE: the reason is logged and
+    /// put on screen naming the restart. A no-op before the shim's window, where returning really does leave
+    /// the engine's own frame intact.</summary>
     private static void NoFrameBehindUs(string why)
     {
         AlloyGate.Fail(why);
     }
 
-    /// <summary>CX-120: why this DB-mode frame drew nothing. A frame that refuses has always said so for
-    /// ONE reason at a time and only through a path that happened to log; with the whole scene layer replaced,
-    /// "the world is empty" needs the reason named on the period line rather than inferred from counters.
-    /// One string assignment on a path that is already returning.</summary>
+    /// <summary>Why this frame drew nothing: "the world is empty" needs its reason named on the period line
+    /// rather than inferred from counters. One string assignment on a path that is already returning.</summary>
     internal static string DbNoDrawWhy = "";
     private static bool _saidLitTerms;
     private static long _dbNoDrawN;
@@ -44,9 +37,8 @@ public sealed unsafe partial class AlloyRenderer
     internal static string DbNoDrawNote()
         => _dbNoDrawN == 0 ? "" : $" | NOT DRAWN x{_dbNoDrawN}: {DbNoDrawWhy}";
 
-    /// <summary>CX-120: the view the DB frame is drawing right now, taken from the published snapshot. Set
-    /// by <c>SeamDraw</c> around one view's pass and cleared after; <see cref="DbViewValid"/> is the gate, so
-    /// mode 0 reads exactly as it did.</summary>
+    /// <summary>The view this frame is drawing right now, taken from the published snapshot. Set by
+    /// <c>SeamDraw</c> around one view's pass and cleared after; <see cref="DbViewValid"/> is the gate.</summary>
     internal static AlloyView DbView;
     /// <inheritdoc cref="DbView"/>
     internal static bool DbViewValid;
@@ -69,10 +61,10 @@ public sealed unsafe partial class AlloyRenderer
         internal bool Perspective, LightingOn, Srgb;
     }
 
-    /// <summary>CX-708: everything the pass list needs before its first slot runs -- the snapshot
-    /// revoke, the target and viewport latch, the pose, this pass's camera, the own walk inside the 4.6
-    /// bracket and the batch build. Returns false when the pass is over before it began, having already
-    /// left the bracket; on true the caller owns the bracket and closes it. Hot: allocates nothing.</summary>
+    /// <summary>Everything the pass list needs before its first slot runs -- the snapshot revoke, the target
+    /// and viewport latch, the pose, this pass's camera, the own walk inside the 4.6 bracket and the batch
+    /// build. False = the pass is over before it began, having already left the bracket; on true the caller
+    /// owns the bracket and closes it. Hot: allocates nothing.</summary>
     private static bool BeginOwnedFrame(int* display, int* viewport, out OwnedFrame f)
     {
         f = default;
@@ -519,21 +511,18 @@ public sealed unsafe partial class AlloyRenderer
                     if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
                     {
                         Issue._oitOn = true;
-                        // /alloy bench's blended ladder: the accumulation alone draws with the step's variant
-                        uint lit = Programs._progLit46, lists = Programs._progLitList; LitLoc litL = Programs._lit, listL = Programs._litL;
-                        if (Programs._blendProg != 0) { Programs._progLit46 = Programs._blendProg; Programs._lit = Programs._blendLoc; }
-                        if (Programs._blendList != 0) { Programs._progLitList = Programs._blendList; Programs._litL = Programs._blendListLoc; }
-                        bool blendCounting = _qBlendSamples.Begin(Gl.SAMPLES_PASSED);
-                        bool primCounting = _qBlendPrims.Begin(Gl.PRIMITIVES_GENERATED);
-                        bool fragCounting = _qBlendFrags.Begin(Gl.FRAGMENT_SHADER_INVOCATIONS);
-                        Issue._drawCap = Programs._blendOne ? 1 : 0;
-                        if (!Programs._blendSkip) Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
-                        Issue._drawCap = 0;
-                        if (fragCounting) _qBlendFrags.End(Gl.FRAGMENT_SHADER_INVOCATIONS);
-                        if (primCounting) _qBlendPrims.End(Gl.PRIMITIVES_GENERATED);
-                        if (blendCounting) _qBlendSamples.End(Gl.SAMPLES_PASSED);
+                        // the accumulation alone draws with whatever a diagnostic has pointed the lit slots at
+                        using (var step = Ablation.BlendedStep())
+                        {
+                            bool blendCounting = _qBlendSamples.Begin(Gl.SAMPLES_PASSED);
+                            bool primCounting = _qBlendPrims.Begin(Gl.PRIMITIVES_GENERATED);
+                            bool fragCounting = _qBlendFrags.Begin(Gl.FRAGMENT_SHADER_INVOCATIONS);
+                            if (!step.Skip) Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                            if (fragCounting) _qBlendFrags.End(Gl.FRAGMENT_SHADER_INVOCATIONS);
+                            if (primCounting) _qBlendPrims.End(Gl.PRIMITIVES_GENERATED);
+                            if (blendCounting) _qBlendSamples.End(Gl.SAMPLES_PASSED);
+                        }
                         _blendGroups += _gBlendEnd - _gOpaqueEnd; _blendFrames++;
-                        Programs._progLit46 = lit; Programs._lit = litL; Programs._progLitList = lists; Programs._litL = listL;
                         Issue._oitOn = false;
                         // the class's term split four ways (TIME_ELAPSED cannot nest): Blended is the
                         // accumulation alone, and the composite, the hosted batches and the depth sweep each own one
@@ -724,21 +713,6 @@ public sealed unsafe partial class AlloyRenderer
          + FrameZones.Ticks(FrameZones.Zone.Post) + FrameZones.Ticks(FrameZones.Zone.Probe)
          + FrameZones.Ticks(FrameZones.Zone.Lightmap);
 
-    /// <summary>ADR 0011 step 1 (#119): the Alloy opaque set again, depth-only and colour-masked, so early-Z
-    /// throws away the fragments the shading pass would otherwise light and then overwrite. Every Alloy part
-    /// is opaque, so the set qualifies -- with two exclusions, both #123's:
-    /// <list type="bullet">
-    /// <item>a batch whose feature DISPLACES vertices (wind sway, roof toggle). This stage does not displace,
-    /// so its depth is the part's rest silhouette, and the colour pass's LEQUAL would then kill real
-    /// fragments -- a roof offset by 500m fails everywhere, and whatever stands behind a swaying plant dies
-    /// at the plant's rest outline. Note <see cref="DepthSafe"/> cannot catch this: it is a TEXT check, and
-    /// the displacing stage still contains <see cref="ClipExpr"/> verbatim on its undisplaced path.</item>
-    /// <item>the roof anchor discard is a fragment discard, and those punch holes the same way -- but it only
-    /// exists on a roof, which the first exclusion already removed.</item>
-    /// </list>
-    /// The cutout class the ADR makes a measurement question is still not owned.
-    /// <para>Publishes <see cref="DepthResource"/> on the way out: the buffer is the deliverable, not a
-    /// private optimisation.</para></summary>
     /// <summary>The screen rectangle this pass's water draws can cover, from their cull spheres projected
     /// through the pass camera, with a margin for the water stage's refraction offset. False = take the whole
     /// frame: a sphere without finite bounds, one crossing the near plane, or the dial off.</summary>
@@ -798,17 +772,10 @@ public sealed unsafe partial class AlloyRenderer
         return ok;
     }
 
-    /// <summary>The blended class's DEPTH, laid after its colour draw and before the frame copy water reads.
-    /// Vanilla's <c>Material::SetBlendingMode</c> @0x4c5c50 clears the depth mask for the ADDITIVE pair alone,
-    /// so an ordinary alpha-blended part -- a creature's head gob, a fading tile -- writes depth in the engine
-    /// and the bucket-6 surface behind it is rejected. Under <see cref="OitPass"/> nothing in the class writes
-    /// depth at all, and water saw the lake bed through a head that had already been shaded: it went opaque
-    /// there and painted over it.
-    /// <para>Depth only (colour writes off) at the same LEQUAL the colour draw tested, through the opaque
-    /// prepass's alpha-testing feature stage alone (see <see cref="BlendLaysDepth"/>). AFTER the composite,
-    /// never before: laid first it would occlude the very surfaces OIT accumulates, which is the hole #490
-    /// removed. Mode 0 writes this depth in its own colour draw and never comes here.
-    /// <c>/alloy blenddepth 0</c> stands it down.</para></summary>
+    /// <summary>The blended class's DEPTH -- depth only, at the colour draw's LEQUAL, through the opaque
+    /// prepass's alpha-testing stage (<see cref="BlendLaysDepth"/>), because under <see cref="OitPass"/>
+    /// nothing in the class writes depth and water saw a lake bed through an already-shaded head. AFTER the
+    /// composite: laid first it would occlude the surfaces OIT accumulates. <c>/alloy blenddepth 0</c> off.</summary>
     private static void BlendedDepthSweep(int from, int to, Matrix4x4* vp, int* viewport)
     {
         if (to <= from || !_blendDepth || !_prepassFeat || !Programs.EnsureDepthFeatProgram()) return;
@@ -854,7 +821,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Enable(Gl.BLEND); _blendOn = true;
     }
 
-    /// <summary>CX-45: a solid red band into the frame target for each upload <see cref="StreamRing"/> failed this
+    /// <summary>A solid red band into the frame target for each upload <see cref="StreamRing"/> failed this
     /// frame -- top edge the draw slots, left the cull source, right the previous bones. A scissored clear: no
     /// program, nothing that can itself fail, and the 4.6 context's state is Alloy's alone.</summary>
     private static void PaintStreamFailures(int* display)
@@ -873,28 +840,17 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>Does <see cref="BlendedDepthSweep"/> lay this batch's depth? Only through the alpha-testing
-    /// feature stage (texture alpha times the per-draw multiplier against the class's 0.2): without that test
-    /// a faded-out or fully transparent surface would stamp solid depth over everything drawn after it.
-    /// <para>A WASH is in, and that is the one carve-out this sweep does not inherit from the dead
-    /// <c>BlendedDepthPrepass</c>. That prepass ran BEFORE the blended colour draws, where a light shaft's
-    /// depth would have rejected the floor decal under it; this sweep runs after the composite, so nothing in
-    /// the class can be occluded by it. Out, a wash was the one part of the frame with no depth ANYWHERE --
-    /// never prepassed (it is in the blended class), depth mask off in its colour draw -- and a creature's
-    /// head, whose graded diffuse is exactly what the wash reroute catches
-    /// (<c>AlloyCensus</c>'s <c>gradedblend</c>), was painted over by the water and the particles behind it.
-    /// Vanilla draws that same part alpha-tested and depth-writing in bucket 1, which is what the 0.2 stage
-    /// below reproduces.</para>
-    /// <para>The roof pair and flowmap are out for the reason the prepass keeps them out -- their colour draw
-    /// discards or slides what the stage does not reproduce. Under bindless only lit records carry the handle
-    /// the stage samples (#153).</para></summary>
+    /// feature stage (texture alpha times the per-draw multiplier against the class's 0.2), or a faded-out
+    /// surface would stamp solid depth over everything drawn after it. A WASH is in -- vanilla draws that part
+    /// alpha-tested and depth-writing in bucket 1; the roof pair and flowmap are out, their draw slides it.</summary>
     private static bool BlendLaysDepth(int g)
     {
         int f = _gFeat[g];
         if (f == (int)ShaderFeature.Flowmap || f == (int)ShaderFeature.RoofKn || f == (int)ShaderFeature.RoofKnM) return false;
         return !_bindless || _gLit[g];
     }
-    /// <summary>#617 follow-up: the frame's water batches, depth only, under <paramref name="vp"/> into whatever
-    /// target the caller attached -- the cover map's roof over a pool's bed. The prepass program on the
+    /// <summary>The frame's water batches, depth only, under <paramref name="vp"/> into whatever target the
+    /// caller attached -- the cover map's roof over a pool's bed. The prepass program on the
     /// staged records; the caster bracket bound the record buffer, this binds the staged slot order it needs.</summary>
     internal static void DrawWaterOccluders(Matrix4x4* vp)
     {
@@ -920,11 +876,9 @@ public sealed unsafe partial class AlloyRenderer
     private static bool _blendDepth => Renderer.BlendDepth.V;
 
     /// <summary>The depth prepass over the opaque range, submitting cull output set <paramref name="phase"/>.
-    /// #489: called twice under the cull -- <see cref="CullPass.PhasePrepass"/> for phase one's survivors,
-    /// then <see cref="CullPass.PhaseRetest"/> for the re-tested rejects. The second call is bracketed by
-    /// the caller's <see cref="GpuTerm.PrepassRetest"/>, under which the sweep terms here are refused (one
-    /// query open at a time), and it adds nothing to the staged counters, which are the ceiling and would
-    /// otherwise double.</summary>
+    /// Called twice under the cull -- <see cref="CullPass.PhasePrepass"/> for phase one's survivors, then
+    /// <see cref="CullPass.PhaseRetest"/> for the re-tested rejects. The retest is bracketed by the caller's
+    /// <see cref="GpuTerm.PrepassRetest"/> (one query at a time) and adds nothing to the staged counters.</summary>
     private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport, int phase)
     {
         bool retest = phase == CullPass.PhaseRetest;
@@ -1075,11 +1029,10 @@ public sealed unsafe partial class AlloyRenderer
         return _gCls[g] == (byte)AlloyClass.Cutout || ShaderFeatures.OutOfPrepass(f);
     }
 
-    /// <summary>ADR 0011 step 2, the Alloy opaque set: submit the staged batches, shaded.
-    /// <para>LEQUAL rather than EQUAL against the prepass depth. All three Alloy vertex stages declare
-    /// <c>invariant gl_Position</c> over the identical clip expression (<see cref="ClipExpr"/>), so equal is
-    /// what they produce -- but LEQUAL is also correct when the prepass stood down, which EQUAL is not, and
-    /// early-Z rejects the hidden fragments either way.</para></summary>
+    /// <summary>ADR 0011 step 2, the Alloy opaque set: submit the staged batches, shaded. LEQUAL rather than
+    /// EQUAL against the prepass depth -- all three Alloy vertex stages declare <c>invariant gl_Position</c>
+    /// over the identical clip expression (<see cref="ClipExpr"/>), so equal is what they produce, but LEQUAL
+    /// is also correct when the prepass stood down, which EQUAL is not.</summary>
     private static void OpaqueOwnedPass(int opaqueEnd, Matrix4x4* vp, int* viewport, float near, float far)
     {
         Gl.DepthFunc(Gl.LEQUAL);
@@ -1091,11 +1044,10 @@ public sealed unsafe partial class AlloyRenderer
         if (counting) _qSamples.End(Gl.SAMPLES_PASSED);
     }
 
-    /// <summary>#357: the cutout class, in vanilla's own slot -- bucket 1 follows <c>RenderSkyBoxes</c>.
-    /// It draws unblended (see <see cref="AlloyClasses.Blends"/>), so the order is no longer load-bearing;
-    /// it is kept because it is the engine's, and it costs only the sky pixels foliage then covers.
-    /// <para>Depth mask back ON (the sky left it off) and the same LEQUAL the opaque set used. Not in the
-    /// SAMPLES_PASSED count, which stays #119's opaque-set overdraw baseline.</para></summary>
+    /// <summary>The cutout class, in vanilla's own slot -- bucket 1 follows <c>RenderSkyBoxes</c>. It draws
+    /// unblended (see <see cref="AlloyClasses.Blends"/>), so the order is kept only because it is the engine's.
+    /// Depth mask back ON (the sky left it off) at the opaque set's LEQUAL, and out of the SAMPLES_PASSED
+    /// count, which stays the opaque set's overdraw baseline.</summary>
     private static void CutoutOwnedPass(int opaqueEnd, Matrix4x4* vp, int* viewport, float near, float far)
     {
         // CX-189: the coverage tail waits for its own layer whenever one can arm; a capture draws it here, cut
@@ -1112,10 +1064,10 @@ public sealed unsafe partial class AlloyRenderer
         GpuEnd(GpuTerm.Coverage);
     }
 
-    /// <summary>CX-189: <see cref="CutoutOwnedPass"/> left the <c>NWN_ALPHA_MODE 2</c> tail for the coverage layer.</summary>
+    /// <summary><see cref="CutoutOwnedPass"/> left the <c>NWN_ALPHA_MODE 2</c> tail for the coverage layer.</summary>
     private static bool _a2cHeld;
 
-    /// <summary>CX-189 <see cref="PassId.CoverageOwned"/>: the held coverage tail through <see cref="CoverageLayer"/>,
+    /// <summary><see cref="PassId.CoverageOwned"/>: the held coverage tail through <see cref="CoverageLayer"/>,
     /// scissored to its parts' screen rectangle. A layer that will not open this frame still draws the parts, as
     /// cutouts straight into the frame -- forward lit, since the G-buffer has closed.</summary>
     private static void CoverageOwnedPass(Matrix4x4* vp, int* viewport, float near, float far)
@@ -1180,9 +1132,9 @@ public sealed unsafe partial class AlloyRenderer
         x = viewport[0] + x0; y = viewport[1] + y0; w = x1 - x0; h = y1 - y0;
     }
 
-    /// <summary>#336: one opaque class's batches under two GPU terms -- the plain run, then the keyhole
-    /// dissolve partition #327 placed at its tail. The seam keeps the bound program and its rig (CX-10):
-    /// nothing between the two ranges binds one, so only per-batch state is re-sent.</summary>
+    /// <summary>One opaque class's batches under two GPU terms -- the plain run, then the keyhole dissolve
+    /// partition at its tail. The seam keeps the bound program and its rig: nothing between the two ranges
+    /// binds one, so only per-batch state is re-sent.</summary>
     private static void IssueClass(int from, int to, GpuTerm plain, GpuTerm keyed,
                                    Matrix4x4* vp, int* viewport, float near, float far)
     {
@@ -1202,15 +1154,10 @@ public sealed unsafe partial class AlloyRenderer
         Issue._matchDepth = false;
     }
 
-    /// <summary>#121: capture the area's IBL probe -- the same staged batches, drawn six more times into a
-    /// small cube from the player's position. Runs at the END of the colour bracket, after both on-screen
-    /// passes have issued, for two reasons: the cluster build is per-pass state that each face has to
-    /// overwrite (a face lit by the SCREEN's froxels gets the wrong point lights, which is precisely wrong in
-    /// the interiors the probe exists for), and trashing it here costs nothing because the next pass rebuilds
-    /// it anyway.
-    /// <para>Not per frame: <see cref="EnvProbe.Wanted"/> gates on the area, the walked distance and a frame
-    /// floor. The #119 meters are saved and restored across it -- a capture's draws are not the frame's
-    /// draws, and folding them in would make the overdraw and batching figures lie on capture frames.</para></summary>
+    /// <summary>Capture the area's IBL probe -- the same staged batches, drawn six more times into a small cube
+    /// from the player's position. At the END of the colour bracket, after both on-screen passes: the light
+    /// binning is per-pass state each face overwrites, and the next pass rebuilds it anyway. Gated by
+    /// <see cref="EnvProbe.Wanted"/>; the frame meters are saved and restored, or capture frames would lie.</summary>
     private static void CaptureProbe(int groups, float far)
     {
         long tProbe = FrameZones.Now;
@@ -1265,15 +1212,10 @@ public sealed unsafe partial class AlloyRenderer
         AlloyLights.LastBuildMs = buildMs;
     }
 
-    /// <summary>CX-51: the planar reflection -- the opaque set again, mirrored across the ground at the player's feet
-    /// into <see cref="Ssr"/>'s half-res target, which the trace reads on flat ground at that height. Screen space
-    /// only knows what the camera sees: a figure hides what stands behind it, and an awning never shows its
-    /// underside, so both left holes the probe filled with sky. Under the probe capture's flag (no SSAO, motion,
-    /// viz, keyhole) with <see cref="_planar"/> set, from the mirrored eye, winding flipped, at
-    /// <c>light.ssrplanarres</c>. It reads no clustered light (the lit stage skips the loop under it, so the screen's
-    /// binning is never disturbed): the lightmap, sun and ambient light the reflection.
-    /// <para>The lit stage discards what lies under the plane (<c>uMirrorZ</c>): a river bed or a sunken tile mirrored
-    /// up would roof the whole reflection. ponytail: one plane, the player's; other heights trace.</para></summary>
+    /// <summary>The planar reflection -- the opaque set mirrored across the ground at the player's feet into
+    /// <see cref="Ssr"/>'s half-res target, filling the holes a screen-space trace leaves. Probe-capture flags
+    /// plus <see cref="_planar"/>, mirrored eye, winding flipped, no local light, at <c>light.ssrplanarres</c>;
+    /// the lit stage discards what lies under <c>uMirrorZ</c>. ponytail: one plane, the player's.</summary>
     private static void PlanarPass(Matrix4x4* vp, float near, float far, int* viewport)
     {
         if (_runtime == null || !Ssr.BeginPlanar(viewport[2], viewport[3], out int pw, out int ph)) return;
@@ -1335,10 +1277,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Area light (ambient + sun, brightest channel) below which a domeless area is still fading in.</summary>
     private const float ProbeDarkFloor = 1e-3f;
 
-    /// <summary>What the probe's faces are cleared to -- the sky stand-in where no dome covers, which since
-    /// CX-88 means only an area with the skybox off or one whose sky refused to stage. The sky's own average
-    /// when fog has read one; else the area's ambient plus half its directional -- a black clear would make
-    /// outdoor metal reflect a black dome.</summary>
+    /// <summary>What the probe's faces are cleared to -- the sky stand-in where no dome covers, i.e. an area
+    /// with the skybox off or one whose sky refused to stage. The sky's own average when fog has read one,
+    /// else the area's ambient plus half its directional: a black clear would make outdoor metal reflect a
+    /// black dome.</summary>
     private static Vector3 ProbeClear()
     {
         if (SceneFog.TrySky(out Vector3 sky)) return sky;

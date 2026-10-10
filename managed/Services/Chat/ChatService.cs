@@ -10,11 +10,10 @@ using CX.Ui;
 namespace CX.Services.Chat;
 
 /// <summary>
-/// Native-C# chatbox (map #13, architecture #17). One <see cref="IExtenderService"/>;
-/// concerns split into pure Core classes (<c>Chat/Core/</c>, unit-testable, no native
-/// refs) behind this thin shell of hooks/GL/SDL. State is static because the
-/// <c>[UnmanagedCallersOnly]</c> handlers must be. Coexists with
-/// <c>HotkeyInputService</c>; does not absorb it.
+/// Native-C# chatbox: one <see cref="IExtenderService"/> whose concerns live in pure Core
+/// classes (<c>Chat/Core/</c>, unit-testable, no native refs) behind this thin shell of
+/// hooks/GL/SDL. State is static because the <c>[UnmanagedCallersOnly]</c> handlers must be.
+/// Coexists with <c>HotkeyInputService</c>; does not absorb it.
 /// </summary>
 public sealed unsafe partial class ChatService : IExtenderService
 {
@@ -38,21 +37,21 @@ public sealed unsafe partial class ChatService : IExtenderService
     {
         _log = log;
         UiCategory.Declare();
-        ChatWindow.SelfCheck(log);     // slice #21 drag/resize/tab/scroll proof (off-device)
-        ChatLayout.SelfCheck(log);     // #37 Main-undeletable / always->=1-tab / add-close window proof (off-device)
+        ChatWindow.SelfCheck(log);     // drag/resize/tab/scroll proof (off-device)
+        ChatLayout.SelfCheck(log);     // Main-undeletable / always->=1-tab / add-close window proof (off-device)
         SettingsWindow.SelfCheck(log); // settings window open/toggle/close/ownership proof (off-device)
-        TellTarget.SelfCheck(log);     // #45 tell tab send-decision proof (off-device)
-        TellRouter.SelfCheck(log);     // #46 tell auto-open routing proof (off-device)
-        WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
+        TellTarget.SelfCheck(log);     // tell tab send-decision proof (off-device)
+        TellRouter.SelfCheck(log);     // tell auto-open routing proof (off-device)
+        WindowRenderer.SelfCheck(log); // portrait-gutter emission proof (off-device)
         InputMarkup.SelfCheck(log);      // emote/speech/OOC classification of the line being typed (off-device)
         InputStripLayout.SelfCheck(log); // the input strip's one geometry: hit-test, rows, counter reserve (off-device)
         RowAlign.SelfCheck(log);       // shared row alignment/justify primitive proof (off-device)
-        ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
+        ChatAnim.SelfCheck(log);       // fade/slide/scroll math proof (off-device)
         ChatConfig.SelfCheck(log);     // per-window pair round-trip proof (off-device)
-        TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
+        TextRig.SelfCheck(log);   // session-clear drops cached engine texture pointers (off-device)
         FontRegistry.SelfCheck(log);
         EditBuffer.SelfCheck(log);     // the input line's editing contract (off-device)
-        ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
+        ChatCommands.SelfCheck(log);   // slash-command grammar
         TypingSignal.SelfCheck(log);   // chat-bar focus/unfocus latch (off-device)
         Snippets.SelfCheck(log);       // chat shortcut rows
         NameCompleter.SelfCheck(log);  // Tab name completion
@@ -68,14 +67,14 @@ public sealed unsafe partial class ChatService : IExtenderService
             log.Info("ChatService: chat.enabled=0 -- standing down, vanilla chat left intact (/chat enabled 1 + relaunch)");
             return;
         }
-        if (!SymbolMap.Require(log, "ChatService", RequiredSymbols)) return;   // #419: whole or nothing
-        InitMessageCore(log, hooks);   // build slice #18
-        InitRender(log, hooks);        // build slice #21: own SwapBuffers -> draw the window (bakes the atlas)
-        InitSuppression(log, hooks);   // build slice #23: neutralize vanilla chat rendering
-        InitEditControl(log, hooks);   // build slice #20
+        if (!SymbolMap.Require(log, "ChatService", RequiredSymbols)) return;   // whole or nothing
+        InitMessageCore(log, hooks);   // the inbound tap
+        InitRender(log, hooks);        // own SwapBuffers -> draw the window (bakes the atlas)
+        InitSuppression(log, hooks);   // neutralize vanilla chat rendering
+        InitEditControl(log, hooks);   // the keyboard side
     }
 
-    /// <summary>The chat unit (#419): every symbol the chatbox cannot run without -- ingest tap, vanilla
+    /// <summary>The chat unit: every symbol the chatbox cannot run without -- ingest tap, vanilla
     /// suppression, openers, senders, name lookups, SDL text/clipboard, the glyph bake and the GL loader. One
     /// unresolved member stands the whole feature down (a half-live chatbox is worse than vanilla). Optional and
     /// NOT listed: AurTextureGet (portraits), GetModule (game-time stamps fall back to wall clock).</summary>
@@ -94,7 +93,7 @@ public sealed unsafe partial class ChatService : IExtenderService
         SymbolMap.StbttMakeCodepointBitmap,
     };
 
-    /// <summary>Backlog every ingested line lands in; tab views read from it (slice #19).</summary>
+    /// <summary>Backlog every ingested line lands in; tab views read from it.</summary>
     private static readonly ChatStore _store = new();
 
     private static long _ingestCount;
@@ -102,15 +101,14 @@ public sealed unsafe partial class ChatService : IExtenderService
     /// <summary>Log the first line and every Nth after, so a live run leaves visible tap-&gt;store proof.</summary>
     private const int LogEveryNth = 50;
 
-    /// <summary>16-byte CResRef by value. Only r9 is free when it's passed, so SysV puts the whole
-    /// struct on the stack (r9 unused) -- declaring it as a struct makes NativeAOT lower it that way.
-    /// Passing it as two ulongs instead splits it r9+stack and corrupts the forwarded call.
-    /// Win64 (#419): a 17-byte aggregate travels as a POINTER to a caller copy (the sixth argument is a <c>CResRef*</c>,
-    /// and the callee copies the 17th byte), so there the slot is an <c>IntPtr</c> forwarded untouched.</summary>
+    /// <summary>16-byte CResRef by value. Only r9 is free when it's passed, so SysV puts the whole struct on the
+    /// stack (r9 unused) and declaring it as a struct makes NativeAOT lower it that way; two ulongs instead split
+    /// it r9+stack and corrupt the forwarded call. Win64 passes a 17-byte aggregate as a POINTER to a caller copy
+    /// (sixth argument is a <c>CResRef*</c> whose 17th byte the callee copies), so the slot is an <c>IntPtr</c>.</summary>
     [StructLayout(LayoutKind.Sequential, Size = 16)]
     private struct CResRef16 { public ulong Lo; public ulong Hi; }
     // Left raw: AppendToMsgBuffer's last parameter has a DIFFERENT shape per ABI, so no single
-    // [Fn] signature describes it (CX-37).
+    // [Fn] signature describes it.
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void> _tapOrig;
 #else
@@ -118,7 +116,7 @@ public sealed unsafe partial class ChatService : IExtenderService
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void> _tapOrig;
 #endif
 
-    /// <summary>Slice #18: cold inbound tap on AppendToMsgBuffer -&gt; parse -&gt; ChatStore.Append.</summary>
+    /// <summary>Cold inbound tap on AppendToMsgBuffer -&gt; parse -&gt; ChatStore.Append.</summary>
     private static void InitMessageCore(ExtenderLog log, HookService hooks)
     {
         ColorRunParser.SelfCheck(log);
@@ -173,7 +171,7 @@ public sealed unsafe partial class ChatService : IExtenderService
             _store.Append(line);
 
             long n = ++_ingestCount;
-            // One-shot thread-model probe (#33 follow-up): is ingest really a separate thread from the frame
+            // One-shot thread-model probe: is ingest really a separate thread from the frame
             // present? If ingest tid == swap tid the "cold network thread" comments are wrong and the store
             // races don't exist. Compare the two [chatthread] lines in a live cx.log.
             if (n == 1)
@@ -204,37 +202,28 @@ public sealed unsafe partial class ChatService : IExtenderService
     }
 
 
-    /// <summary>The chat window layout (#37/#41): the ordered window list ChatService drives for draw,
+    /// <summary>The chat window layout: the ordered window list ChatService drives for draw,
     /// input, and persistence. Index 0 is the undeletable Main; <see cref="ChatLayout.FocusedIndex"/>
     /// tracks which window owns the keyboard + input strip.</summary>
     private static ChatLayout? _layout;
 
-    /// <summary>The focused chat window (owns keyboard + input strip, #41). Falls back to Main.</summary>
+    /// <summary>The focused chat window (owns keyboard + input strip). Falls back to Main.</summary>
     private static ChatWindow? _focused => _layout?.Focused;
 
-    /// <summary>The chat settings window (opened from the gear icon), replacing the old inline gear dropdown so
-    /// the option list can grow. Edits <see cref="ChatWindow.Toggles"/>; holds no option state of its own.</summary>
+    /// <summary>The chat settings window (opened from the gear icon). Edits
+    /// <see cref="ChatWindow.Toggles"/>; holds no option state of its own.</summary>
     private static readonly SettingsWindow _settings = new();
 
-    /// <summary>Name→live PlayerId resolver for Tell-pinned tabs (#45). Null until the shell wires a real
-    /// roster-backed implementation; pinned tabs silently drop sends while null (safe degradation).</summary>
-
-    /// <summary>Slice #23: neutralize vanilla chat so only our box draws. Two SkipOriginal groups:
-    /// (1) TEXT -- AppendToChatBuffer (new lines) + SetFilter (backlog re-render / reply buttons); the shared
-    /// ring buffer is filled by AppendToMsgBuffer BEFORE these run, and that caller also frees the by-value
-    /// CExoString temporary (both verified in the disasm), so skipping loses no data and leaks nothing.
-    /// (2) CHROME -- CGuiInGameChatWindow::Show + CGuiInGameChatPrompt::Show, so the docked panels and the
-    /// input prompt never activate into the render tree (Show pairs with Activate, Hide with Deactivate).
-    /// We do NOT call Hide: it clears the window's IsVisible flag (win+0xc68), and rather than mirror that
-    /// flag <see cref="InGame"/> now gates on module-presence, so an un-shown vanilla window doesn't blank
-    /// our box. Input-side openers are skipped in <see cref="InitEditControl"/>. Never reached with the
-    /// master off.</summary>
+    /// <summary>Neutralize vanilla chat so only our box draws, never reached with the master off. SkipOriginal on
+    /// the TEXT path (AppendToChatBuffer, SetFilter) loses nothing: AppendToMsgBuffer fills the shared ring and
+    /// frees the by-value CExoString before they run. Chrome: Window/Prompt Show, never Hide -- Hide clears
+    /// IsVisible (win+0xc68), so <see cref="InGame"/> gates on module presence. Openers: InitEditControl.</summary>
     private static void InitSuppression(ExtenderLog log, HookService hooks)
     {
         _ = hooks.InstallAppendToChatBuffer(&OnSuppressedExo);   // text: new lines
         if (OperatingSystem.IsWindows())
         {
-            // MSVC inlined CGuiInGameChatPrompt::Show into the prompt's ctor (#419), so the skip on Show alone
+            // MSVC inlined CGuiInGameChatPrompt::Show into the prompt's ctor, so the skip on Show alone
             // leaves the "Talk:" prompt activated from birth: undo it right after construction (= vanilla Hide).
             _promptCtorOrig = hooks.InstallChatPromptCtor(&OnPromptCtor);
             _panelDeactivate = EngineFn.GuiPanelDeactivate;

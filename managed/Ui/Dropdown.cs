@@ -4,14 +4,10 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>
-/// The enumerated-choice control's open list (#587): click the closed box, a list of choices drops beneath it
-/// (above it when it would run past <c>clampBottom</c>), pick one, or click anywhere else to close. The list is
-/// a <see cref="ScrollColumn"/> capped at <see cref="MaxVisible"/> items, so a long ladder (font size, 27
-/// entries) scrolls by wheel and by thumb. One instance serves every dropdown row of a panel: the owner opens
-/// it against the pressed row and keeps <see cref="Tag"/> to know whose it is. Pure and zero-alloc in draw.
-/// The closed box is the owner's to draw (<see cref="DrawBox"/> is the shared look). Opened with
-/// <c>search</c>, a text row sits above the list and what is typed (<see cref="Type"/>) filters the choices by
-/// substring; indices given out (<c>picked</c>, <see cref="Selected"/>) are always into <see cref="Choices"/>.
+/// The enumerated-choice control's open list: click the closed box, a list of choices drops beneath it (above
+/// it when it would run past <c>clampBottom</c>), pick one, or click anywhere else to close. The list is a
+/// <see cref="ScrollColumn"/> capped at <see cref="MaxVisible"/> rows, scrolled by wheel and thumb. One instance
+/// serves every dropdown row of a panel; the closed box is the owner's to draw. Pure and zero-alloc in draw.
 /// </summary>
 public sealed class Dropdown
 {
@@ -23,7 +19,8 @@ public sealed class Dropdown
     public bool Open { get; private set; }
     /// <summary>The choices shown; the caller's array, never copied.</summary>
     public string[] Choices = Array.Empty<string>();
-    /// <summary>Index drawn as the current value.</summary>
+    /// <summary>Index drawn as the current value. Every index given out, here and as <c>picked</c>, is into
+    /// <see cref="Choices"/>, never into the filtered rows.</summary>
     public int Selected;
     /// <summary>Index under the pointer, or -1.</summary>
     public int Hover = -1;
@@ -33,7 +30,7 @@ public sealed class Dropdown
     public float ItemH { get; private set; }
     /// <summary>The list viewport; its rect is the list rect (the search row, when any, sits above it).</summary>
     public readonly ScrollColumn List = new();
-    /// <summary>Opened with a search row: typed text filters the list.</summary>
+    /// <summary>Opened with a search row above the list: typed text filters the choices by substring.</summary>
     public bool Searching { get; private set; }
     /// <summary>The search text; "" shows every choice.</summary>
     public string Filter { get; private set; } = "";
@@ -167,7 +164,7 @@ public sealed class Dropdown
         return moved;
     }
 
-    /// <summary>The closed box: a value box with the current choice and a ▾ at its right edge.</summary>
+    /// <summary>The closed box the owner draws: a value box with the current choice and a ▾ at its right edge.</summary>
     public static void DrawBox(VertexBatch b, GlyphAtlas atlas, float x0, float y0, float x1, float y1, float baseline,
                                string value, (float r, float g, float b, float a) bg, uint textRgb, float alpha = 1f)
     {

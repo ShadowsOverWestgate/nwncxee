@@ -8,11 +8,9 @@ namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// The runtime pipeline: a bound key press -> a debounced packet to the server's toolbar system. The framework
-/// input layer (<c>UiInputService</c>) owns raw capture and every environmental gate (focus, a keyboard-owning
-/// window, a NUI edit box, the engine keyboard mode, a native dialog); this service is a chord consumer at tier
-/// 2 that maps a fallen-through key or button to its wire code and does consent + debounce + send. With the CX
-/// chatbox off (<c>chat.enabled=0</c>) it also observes the vanilla chat prompt's focus hooks, so typing there
-/// withholds hotkeys belt-and-braces with the keyboard-mode gate. Cold (input) hooks, so they may allocate.
+/// input layer (<c>UiInputService</c>) owns raw capture and every environmental gate; this service is a tier-2
+/// chord consumer that maps a fallen-through key or button to its wire code and does consent + debounce + send.
+/// With the CX chatbox off it also observes the vanilla chat prompt's focus hooks. Cold hooks, may allocate.
 /// </summary>
 public sealed unsafe class HotkeyInputService : IExtenderService
 {
@@ -35,7 +33,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private static ChatHandleLMouseDownFn _clickOrig;
     private static ChatHandleEscFn _escOrig;
     private static ChatHandleLoseFocusFn _loseOrig;
-    /// <summary>Chain slot on the prompt's Enter (#580): PromptCommandService shares the symbol below us, so this layer
+    /// <summary>Chain slot on the prompt's Enter: PromptCommandService shares the symbol below us, so this layer
     /// observes at a higher priority and always calls through; <c>*_enterSlot</c> is the next layer or the original.</summary>
     private static ChatHandleEnterFn* _enterSlot;
     /// <summary>Above <c>PromptCommandService.EnterPriority</c> (0): the typing flag clears on every Enter, whatever the layer below does.</summary>
@@ -50,7 +48,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // isn't resolvable yet. The store lazy-loads on the first login-path call. SelfCheck is in-memory.
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
 
-        // #64: the framework input layer owns raw capture. Hotkeys are a chord consumer at tier 2 -- fired only
+        // the framework input layer owns raw capture. Hotkeys are a chord consumer at tier 2 -- fired only
         // when no window consumed the key and the chord gate is clear (the arbiter's job). No raw hooks here.
         UiHost.AddChordConsumer(new Consumer());
         log.Info("HotkeyInputService: registered as a chord consumer (framework owns raw capture)");
@@ -78,7 +76,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         return bits;
     }
 
-    /// <summary>The chord-consumer face of hotkeys (#64, default path). The framework input layer owns raw
+    /// <summary>The chord-consumer face of hotkeys (the default path). The framework input layer owns raw
     /// capture, precedence, the auto-repeat gate, and every environmental gate; this consumer only maps a
     /// fallen-through key/button to its wire code and does the consent + debounce + send. Tier 2: below a
     /// window's focused content, above the engine's gameplay keybinds.</summary>
@@ -86,7 +84,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     {
         public int Priority => 2;
 
-        /// <summary>Arbiter query (#61): true when some armed code shares this base key. Off master: nothing is
+        /// <summary>Arbiter query: true when some armed code shares this base key. Off master: nothing is
         /// wanted, the key reaches the game only.</summary>
         public bool WantsKey(int key)
         {

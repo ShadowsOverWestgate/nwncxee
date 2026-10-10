@@ -4,13 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-93: the spell-targeting ground shape as pure geometry -- the same frame, origin shift and
-/// signed distances <c>cx_target.glsl</c> evaluates per fragment, in C# so <see cref="SelfCheck"/> can put
-/// points inside, outside and on the rim of every shape and say which it got. Nothing calls this per frame:
-/// the shader is what draws, and this is the specification it was written from.
-/// <para>The one part worth a seam is the FRAME: which way the shape points, and where a self-origin
-/// rectangle's near end lands. A sign error there draws a cone behind the caster, and no compile catches
-/// it.</para></summary>
+/// <summary>The spell-targeting ground shape as pure geometry -- the same frame, origin shift and signed
+/// distances <c>cx_target.glsl</c> evaluates per fragment, in C# so <see cref="SelfCheck"/> can put points
+/// inside, outside and on the rim of every shape. Nothing calls this per frame: the shader draws, and this is
+/// the specification it was written from. The part worth checking is the FRAME; a sign error compiles fine.</summary>
 internal static class TargetShape
 {
     /// <summary>The engine's <c>TARGET_SHAPE_*</c> enum, as <c>GLRender::m_globalShaderConstantsi[27]</c>

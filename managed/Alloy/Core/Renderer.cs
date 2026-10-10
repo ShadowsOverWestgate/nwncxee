@@ -6,14 +6,9 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>The <c>alloy</c> group (spec §4.3 Renderer), and the storage every Alloy boot gate and world-pass
-/// dial reads. <see cref="Enabled"/> replaces the inverted <c>vanilla</c> key; the Restart rows are read through
-/// <c>Boot</c> by the gate or pass that latches them (<see cref="AlloyGate"/>, <see cref="OwnedTextures"/>,
-/// <see cref="GlContextService"/>, ...); the Live rows are the former <c>/draw</c> dials, read per frame by the
-/// pass. Touched from <see cref="RenderCommands.Register"/> so the group declares at Initialize, on the main
-/// thread, ahead of every stand-down -- bare <c>/alloy</c> must answer in a session that armed nothing.
-/// <para>The <c>viz</c> ceiling is a REAL gate: a value past it used to leave the mode at 0 doing nothing with
-/// no line to say so (#129's water views read as "LIGHTVIZ is broken" for exactly that reason); the slider
-/// range clamps it, so the echo reports what is actually running.</para></summary>
+/// dial reads: the Restart rows are read through <c>Boot</c> by the gate or pass that latches them, the Live
+/// rows per frame by the pass that owns them. Touched from <see cref="RenderCommands.Register"/> so the group
+/// declares at Initialize, ahead of every stand-down: bare <c>/alloy</c> must answer in a dead session.</summary>
 internal static class Renderer
 {
     internal static readonly KnobGroup G;
@@ -23,10 +18,10 @@ internal static class Renderer
     /// frozen for the session.</summary>
     internal static bool On => Enabled.Boot;
     internal static readonly Knob<float> Scale, Weld, Lod;
-    /// <summary>CX-191: how strongly the cutout test makes up for the alpha a mip averages away (<c>cx_alphamip.glsl</c>).</summary>
+    /// <summary>How strongly the cutout test makes up for the alpha a mip averages away (<c>cx_alphamip.glsl</c>).</summary>
     internal static readonly Knob<float> CutMip;
     internal static readonly Knob<string> Highlight, DrawHooks, DumpTex;
-    /// <summary>CX-189: the alpha-to-coverage layer's sample count (<see cref="CoverageLayer"/>), and whether it
+    /// <summary>The alpha-to-coverage layer's sample count (<see cref="CoverageLayer"/>), and whether it
     /// shapes the mask itself (per-primitive rotation, so stacked equal-alpha cards both show).</summary>
     internal static readonly Knob<int> A2c;
     internal static readonly Knob<bool> A2cMask;
@@ -53,7 +48,7 @@ internal static class Renderer
     /// ENGINE's context on the game thread (<c>CX.Alloy.Db.RenderThread</c>'s remarks) are an ordering
     /// question the harness has to answer, not a correctness one the build can.</summary>
     internal static readonly Knob<bool> RenderThread;
-    /// <summary>CX-118: arm <see cref="CX.Alloy.Db.HitProbe"/>, the live hit-test instrument.</summary>
+    /// <summary>Arm <see cref="CX.Alloy.Db.HitProbe"/>, the live hit-test instrument.</summary>
     internal static readonly Knob<bool> HitCheck;
 
     /// <summary>The highlight mode the pass reads per frame: the stock glow, or the owned outline + fill.</summary>

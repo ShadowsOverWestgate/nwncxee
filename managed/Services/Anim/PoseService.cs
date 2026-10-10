@@ -12,28 +12,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// The procedural pose layer. Chains <c>Gob::Animate</c> (in DB mode it rides <c>DbAnim</c>'s step instead, through
-/// <see cref="PoseRig"/>): after the engine has posed a humanoid creature, the
-/// modules correct it in order -- <see cref="FootPlacement"/> (CX-29), <see cref="Stride"/> (pace and foot lock),
-/// <see cref="UpperBody"/> (look-at shared down the spine, lean, aim, hit reactions), <see cref="Follow"/> (arms and head
-/// trail the torso) -- over the animation layer: the engine's pose as <see cref="Transition"/> blends a movement change
-/// and <see cref="Diagonal"/> turns the hips toward a diagonal's travel. Only <see cref="Stride.Pre"/> runs before the engine, to pace the runs it is about to advance.
-/// <para><b>The pose is restored before the engine animates.</b> A crossfade blends FROM the part's current
-/// local value (<c>NewController::Control</c>), and an unkeyed part (the root, usually) keeps whatever it holds,
-/// so a correction left in place would leak into the next crossfade and accumulate on unkeyed parts. Each
-/// creature gob that is corrected owns a slot holding the engine's own values; nothing is ever written to a gob
-/// without one.</para>
-/// <para><b>Bones</b> are <c>{r,l}thigh_g -&gt; {r,l}shin_g -&gt; {r,l}foot_g</c>, <c>torso_g</c>,
-/// <c>neck_g</c>, <c>head_g</c>, <c>pelvis_g</c> (the legs' parent, a sibling of the torso under <c>rootdummy</c>)
-/// and <c>{r,l}bicep_g -&gt; forearm_g -&gt; hand_g</c>, the names FindPart would match (case-insensitive): every stock humanoid (a_ba and its
-/// descendants, 257 of 663 stock a_/c_ models) carries them, and every rest orientation is identity, so a
-/// bone's rest frame is the model's: +X right, +Y forward, +Z up (CX-160).
-/// A gob without all six leg parts is skipped whole.</para>
-/// <para><b>The gate is a deny list</b>: every stock stance/move/attack name would have to be listed for an
-/// allow list, and module-added animations mostly arrive as <c>custom*</c>, which is denied.</para>
-/// <para><b>Hot.</b> Once per creature per frame: pointer reads, a part-tree walk, cached HitCheck casts, a few
-/// quaternion products, no allocation. Only gobs in the engine's view volume and within <c>anim.distance</c>
-/// of the player are corrected; the clause's <c>ms/f</c> is the layer's own time, the engine's excluded.</para>
+/// The procedural pose layer. Chains <c>Gob::Animate</c> (riding <c>DbAnim</c>'s step through <see cref="PoseRig"/>):
+/// after the engine has posed a humanoid creature the modules correct it in order -- <see cref="FootPlacement"/>,
+/// <see cref="Stride"/>, <see cref="UpperBody"/>, <see cref="Follow"/> -- over an animation layer of
+/// <see cref="Transition"/> and <see cref="Diagonal"/>; only <see cref="Stride.Pre"/> runs first. <b>Hot</b>, no allocation.
 /// </summary>
 public sealed unsafe class PoseService : IExtenderService
 {
@@ -59,11 +41,14 @@ public sealed unsafe class PoseService : IExtenderService
 
     /// <summary>Animations whose name starts with one of these (NUL-separated) get no correction: sitting,
     /// lying, knockdown and getting up, death, kneeling emotes, mounting, flying in/out and the module-defined
-    /// customs. Every stock creature animation was listed to pick them (the census in the CX-29 notes).</summary>
+    /// customs. Every stock creature animation was listed to pick them.</summary>
     private static ReadOnlySpan<byte> Denied =>
         "sit\0standup\0kd\0ckd\0dead\0cdead\0die\0gu\0cgu\0getlow\0getmid\0cgetmid\0kneel\0meditate\0worship\0mount\0custom\0appear\0cappear\0disappear\0cdisappear\0"u8;
 
-    /// <summary>The parts the layer writes, found by name each frame (equipment swaps rebuild parts).</summary>
+    /// <summary>The parts the layer writes, found by name each frame (equipment swaps rebuild parts): the names
+    /// <c>FindPart</c> matches case-insensitively, carried by every stock humanoid (a_ba and its descendants, 257 of
+    /// 663 stock a_/c_ models). Every rest orientation is identity, so a bone's rest frame is the model's -- +X right,
+    /// +Y forward, +Z up -- and a gob without all six leg parts is skipped whole.</summary>
     internal struct Bones
     {
         public const int Count = 16;
@@ -128,12 +113,10 @@ public sealed unsafe class PoseService : IExtenderService
         public fixed long OutParts[Bones.Count];
         /// <summary><see cref="FootPlacement.Weight"/>'s stairs grade and the moving hold timer.</summary>
         public float Grade, Moving;
-        /// <summary><see cref="Anim.Gait"/> (CX-67): the engine's own locomotion, read rather than measured.
-        /// <c>Gait</c> is where the movement comes from; <c>GaitSpeed</c> is the exact ground speed and
-        /// <c>GaitAccel</c> the exact acceleration (world units per second, per second squared), both from the
-        /// speed factor and the rate over the engine's whole-millisecond clock, not from the drawn position.
-        /// <c>Starting</c> is the one frame a movement begins. <c>GaitPhase</c> is the driven cycle's position
-        /// 0..1 and <c>GaitCycle</c> its length in seconds (0 when there is none).</summary>
+        /// <summary><see cref="Anim.Gait"/>: the engine's own locomotion, read rather than measured. <c>Gait</c> is
+        /// where the movement comes from; <c>GaitSpeed</c> and <c>GaitAccel</c> are the exact ground speed and
+        /// acceleration (world units per second, per second squared) from the speed factor and rate over the engine's
+        /// whole-millisecond clock; <c>Starting</c> the frame one begins; <c>GaitPhase</c>/<c>GaitCycle</c> the driven cycle's 0..1 position and length in seconds.</summary>
         public GaitMode Gait;
         public float GaitSpeed, GaitAccel, GaitPhase, GaitCycle;
         public bool Starting;
@@ -142,7 +125,7 @@ public sealed unsafe class PoseService : IExtenderService
         public float GaitFactor;
         public int GaitAnim;
         public bool GaitSeen;
-        /// <summary><see cref="Anim.Weight"/> (CX-71): the acceleration every weight cue reads -- the engine's own
+        /// <summary><see cref="Anim.Weight"/>: the acceleration every weight cue reads -- the engine's own
         /// exact one on a path or a drive, and the measured <see cref="Accel"/> where there is no path at all
         /// (world units per second squared, signed).</summary>
         public float Cue;
@@ -160,7 +143,7 @@ public sealed unsafe class PoseService : IExtenderService
         public fixed long RateRun[Stride.TrackedRuns];
         public fixed float RateEngine[Stride.TrackedRuns];
         public fixed float RateWritten[Stride.TrackedRuns];
-        /// <summary><see cref="Skating"/> (CX-70): playing a combat shuffle the engine never paces, the animation
+        /// <summary><see cref="Skating"/>: playing a combat shuffle the engine never paces, the animation
         /// the stance speed was measured on (a change of it is a different stride), the seconds since a foot last
         /// bore the body's weight, and whether the pose is on the ground at all -- off it, the pacing and the foot
         /// lock both stand down.</summary>
@@ -179,7 +162,7 @@ public sealed unsafe class PoseService : IExtenderService
         public long SteppedAt;
         public Footfall.Foot StepR, StepL;
         public float SinceStep;
-        /// <summary><see cref="Anim.Settle"/> (CX-68/CX-69): the contact state the playing cycle's touchdowns are
+        /// <summary><see cref="Anim.Settle"/>: the contact state the playing cycle's touchdowns are
         /// learned from, last frame's <see cref="Loco"/>, and the settle step -- its stage, seconds in, which foot
         /// is acting and whether the lock had held it, the world point that foot leaves and the one the weighted
         /// foot holds, the step's lift, and the leftover offset easing out.</summary>
@@ -436,7 +419,7 @@ public sealed unsafe class PoseService : IExtenderService
     /// <summary>The body gob a creature gob is attached to, or zero when it IS the body (or has no creature).
     /// A cloak, robe, tail or wings carries the creature as external data too (<c>CNWCCreature::LoadModel</c>),
     /// and ~85% of robe models have a full set of leg bones, so "has legs" does not tell a body; the creature's
-    /// own model does (CX-136 §6).</summary>
+    /// own model does.</summary>
     private static IntPtr Owner(IntPtr gob)
     {
         if (!_creatures) return IntPtr.Zero;
@@ -446,13 +429,10 @@ public sealed unsafe class PoseService : IExtenderService
         return body == gob ? IntPtr.Zero : body;
     }
 
-    /// <summary>An attachment computes nothing of its own. Before it animates, its runs are phase-locked to
-    /// the body's (<see cref="Stride.Sync"/>: time, rate times the stride factor, blend). After, it saves its
-    /// engine pose and waits for its body (<see cref="Pending"/>): it animates just before the body in the same
-    /// frame (<c>Scene::Animate</c> walks backwards), and the body then copies its FINAL rotations onto every
-    /// bone name the two share (<see cref="CopyToAttachments"/>). Its skin binds to bones inside its own gob
-    /// (<c>PartSkin</c>), so nothing the body does reaches it otherwise. The body's raise is not copied: the
-    /// attachment hangs off the body's root part, which carries it already.</summary>
+    /// <summary>An attachment computes nothing of its own: before it animates its runs are phase-locked to the body's
+    /// (<see cref="Stride.Sync"/>: time, rate times the stride factor, blend), and after it saves its engine pose and
+    /// waits for its body (<see cref="Pending"/>) -- it animates just before the body in the same frame, as
+    /// <c>Scene::Animate</c> walks backwards -- which then copies onto it (<see cref="CopyToAttachments"/>).</summary>
     private static void Attached(IntPtr gob, IntPtr root, in Bones bones, int slot, IntPtr body,
                                  GobAnimateFn next, float dt, long t0)
     {
@@ -492,9 +472,10 @@ public sealed unsafe class PoseService : IExtenderService
         if (_pendingCount < PendingCount) _pending[_pendingCount++] = new Pending { Body = body, Gob = gob, Slot = slot, At = now };
     }
 
-    /// <summary>After the body's own pose and corrections: each of its waiting attachments takes the body's
-    /// local rotation on every bone both have. Only onto a part the attachment saved this frame, from a slot
-    /// still its own.</summary>
+    /// <summary>After the body's own pose and corrections: each waiting attachment takes the body's FINAL local
+    /// rotation on every bone both have -- its skin binds to bones inside its own gob (<c>PartSkin</c>), so nothing
+    /// the body does reaches it otherwise. Only onto a part the attachment saved this frame, from a slot still its
+    /// own; the body's raise is not copied, since the attachment hangs off the body's root part already.</summary>
     private static void CopyToAttachments(IntPtr body, in Bones bones)
     {
         if (_pendingCount == 0) return;
@@ -623,9 +604,10 @@ public sealed unsafe class PoseService : IExtenderService
         return -1;
     }
 
-    /// <summary>The root first and on its own: it is the one part no animation keys, so leaving it shifted is the
-    /// one mistake that would compound. Each rotation only onto the part it was saved from and found again this
-    /// frame: a part the tree no longer reaches may already be freed.</summary>
+    /// <summary>Puts the engine's own values back BEFORE it animates: a crossfade blends from the part's current local
+    /// value (<c>NewController::Control</c>) and an unkeyed part keeps whatever it holds, so a correction left in place
+    /// would leak into the next crossfade and accumulate. The root first and on its own (no animation keys it); each
+    /// rotation only onto the part it was saved from and found again this frame, as a part the tree lost may be freed.</summary>
     private static void Restore(ref Slot s, in Bones bones)
     {
         PoseRig.SetPos(s.Root, s.RootPos);

@@ -8,14 +8,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Keyframe curves (<c>anim.curves</c>, CX-28). The engine interpolates every linear key track in a straight line
-/// between the two keys around the time (<c>NewController::GetVectorValue</c> / <c>GetQuaternionValue</c>), so a
-/// limb changes speed abruptly at each key. With the knob on, the segment becomes a curve through the neighbouring
-/// keys, timed by the real key times: positions a monotone cubic (Fritsch-Butland tangents, which never overshoot a
-/// hold), rotations squad with the same limit on its key spins. A curve still passes through every key.
-/// <para>The engine's own result stands for a Bezier-authored track, a track under three keys, and a time at or
-/// past either end key. A track whose first and last keys match is a loop: its ends take their neighbours from
-/// the other end, so a cycle's seam is as smooth as its middle.</para>
+/// Keyframe curves (<c>anim.curves</c>). The engine interpolates every linear key track in a straight line between
+/// the two keys around the time (<c>NewController::GetVectorValue</c> / <c>GetQuaternionValue</c>), so a limb changes
+/// speed abruptly at each key; with the knob on the segment curves through the neighbouring keys instead, timed by the
+/// real key times -- positions a monotone cubic, rotations squad -- and still passes through every key.
 /// </summary>
 public sealed unsafe class KeyCurveService : IExtenderService
 {

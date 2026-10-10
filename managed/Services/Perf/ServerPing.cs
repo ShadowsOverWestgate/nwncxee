@@ -8,14 +8,10 @@ using CX.Framework;
 namespace CX.Services.Perf;
 
 /// <summary>
-/// Round-trip time to the connected server, shown by the <c>/fps</c> overlay. The client keeps no live
-/// latency figure -- its only ping machinery (<c>CNetLayerInternal::StartPing</c>) drives the server-browser
-/// list and is indexed by enumerate slot, not by the connection -- so we measure it ourselves with the
-/// engine's own connectionless probe: an 11-byte <c>BNLM</c> datagram, which every server echoes back as
-/// <c>BNLR</c> regardless of connection state (verified against a live server). Our own UDP socket on a
-/// background thread, so nothing touches the engine's netlayer or the frame.
-/// <para>ponytail: through the master-server relay the client's server address is the relay's, so the number
-/// is then the hop to the relay. Accepted; split it if relayed play ever matters.</para>
+/// Round-trip time to the connected server, shown by the <c>/fps</c> overlay. The client keeps no live latency figure
+/// (<c>CNetLayerInternal::StartPing</c> drives the server-browser list, indexed by enumerate slot), so this measures it
+/// with the engine's own connectionless probe -- an 11-byte <c>BNLM</c> datagram every server echoes as <c>BNLR</c>
+/// whatever the connection state -- on its own UDP socket and thread. ponytail: through the relay it times the relay hop.
 /// </summary>
 internal static class ServerPing
 {

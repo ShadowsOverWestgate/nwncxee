@@ -7,18 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#302: the SHADOW pass's view of the ownership table. Alloy already keeps every fact a depth bake
-/// needs -- the model matrix in the persistent record, the bone base in <c>feat.y</c>, the index range in the
-/// VDO item tables under <c>_oVdo/_oItem</c>, the VAO in the shared cache, the world sphere beside the record
-/// -- so <see cref="CasterPass"/> reads them from here rather than maintaining the parallel copy it kept from
-/// before Alloy existed (ADR 0019).
-/// <para>Read-only and NON-CONSUMING by construction. Nothing below clears a flag, advances a cursor or takes
-/// an edge: ADR 0017's hazard was a mover signal spent by whichever pass asked first, and the shadow bracket
-/// runs before the colour build, so a consuming read here would be that same bug by a new route.</para>
-/// <para>One frame late, deliberately. The records describe the world as of the last colour build, which is
-/// the frame before this one -- the same lag the skin poses already carry by design (#113). It is COHERENT:
-/// the mover stamp and the record content describe the same world state, so the re-bake predicate cannot
-/// miss a bake, and the shadow trails a fast rigid mover by one frame rather than disagreeing with it.</para>
+/// <summary>The SHADOW pass's view of the ownership table: the matrix, bone base, index range, VAO and world
+/// sphere a depth bake needs, read from the records rather than a parallel copy (ADR 0019).
+/// <para>Read-only and NON-CONSUMING -- the shadow bracket runs before the colour build, so a consuming read
+/// would spend a mover signal the build needs. One frame late but coherent, so no bake is missed.</para>
 /// </summary>
 public sealed unsafe partial class AlloyRenderer
 {
@@ -26,13 +18,9 @@ public sealed unsafe partial class AlloyRenderer
     /// every build, changed or not). The two being equal is the mover signal: the slot's most recent build
     /// was also a build that moved something.</summary>
     private static readonly int[] _recMovedAt = new int[MaxOwned];
-    /// <summary>#302: the caster's world sphere, written on the same edge as <c>_dSph</c> -- but GEOMETRIC even where
-    /// the cull is exempted, and for a rigid matrix-class part centred on its own vertex box (<c>_oB*</c>) rather than
-    /// on the node origin <c>_dSph</c> keeps. A skinmesh, a dangly mesh and a displacing
-    /// feature all get <see cref="NeverCull"/> in <c>_dSph</c>, which is right for a culler and useless for a
-    /// re-bake predicate: "somewhere" cannot name the views it dirties, so every such part would blanket-
-    /// invalidate and #241's whole win with it. This carries the bind-pose bbox instead, which is exactly
-    /// what the shadow pass located them by before.</summary>
+    /// <summary>The caster's world sphere, written on the same edge as <c>_dSph</c> but always GEOMETRIC:
+    /// centred on the part's own vertex box (<c>_oB*</c>), never <see cref="NeverCull"/>. A re-bake predicate
+    /// needs bounds that name the views they dirty, which "somewhere" cannot.</summary>
     private static readonly float[] _dCastSph = new float[MaxRecords * 4];
     /// <summary>A <c>PartDanglyMesh</c>: its vertices move while its node matrix does not, so no record
     /// compare can infer motion for it. Captured at enrollment, as the caster pass captured it before.</summary>
@@ -48,7 +36,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Frames a dangly slot stays a mover after its last measured displacement. Two covers either
     /// order of the Animate hook against the frame edge; the caster pass's own 8-frame hold sits on top.</summary>
     private const int DanglyMoveHold = 2;
-    /// <summary>#302: the enrolment the table currently holds, which each slot's
+    /// <summary>The enrolment the table currently holds, which each slot's
     /// <see cref="RouteGate.EnrollGen"/> is stamped from (that field says why tenancy is not the record epoch).
     /// Starts at 1 so a record never built (stamp 0) disagrees with every real enrolment.</summary>
     private static int _enrollGen = 1;
@@ -62,20 +50,19 @@ public sealed unsafe partial class AlloyRenderer
     /// build is skipping slots the bake wants.</summary>
     internal static int CasterNoRecord;
 
-    /// <summary>#328: may the shadow pass cast this slot? A LEVEL maintained on the record write edge --
-    /// true when a record landed for the slot's current tenant on a non-fading tile in a depth-writing
-    /// class, false on every refusal (a skipped part, a re-tenanted or freed slot, a tile mid-fade). It
-    /// replaces the per-caster-per-frame tile-fade chase and tenancy compare, and every FLIP bumps
-    /// <see cref="CasterGen"/>. One frame late like the record it rides with, and coherent with it.</summary>
+    /// <summary>May the shadow pass cast this slot? A LEVEL maintained on the record write edge -- true when a
+    /// record landed for the slot's current tenant on a non-fading tile in a depth-writing class, false on
+    /// every refusal. Every FLIP bumps <see cref="CasterGen"/>. One frame late like the record it rides
+    /// with.</summary>
     private static readonly bool[] _castOk = new bool[MaxOwned];
     /// <summary>The slot's tile is mid-fade this frame, written by <c>RouteParts</c> where the fade is
     /// chased for the colour route anyway. Read on the record write edge into <see cref="_castOk"/>.</summary>
     private static readonly bool[] _oFading = new bool[MaxOwned];
 
-    /// <summary>#328: the caster WORLD generation -- bumped whenever the set of castable slots, or a fact the
-    /// bake caches about one (its class, material slots, VDO item, tenant), changes. <see cref="CasterPass"/>
-    /// keeps its collected list across frames while this holds and walks only movers in between; a bump is
-    /// what makes it re-collect. Compared, never consumed (ADR 0017): two readers see the same value.</summary>
+    /// <summary>The caster WORLD generation -- bumped whenever the set of castable slots, or a fact the bake
+    /// caches about one (its class, material slots, VDO item, tenant), changes. <see cref="CasterPass"/> keeps
+    /// its collected list across frames while this holds and walks only movers in between. Compared, never
+    /// consumed (ADR 0017).</summary>
     internal static int CasterGen = 1;
 
     /// <summary>The record epoch, for the shadow side's insurance re-collect: a bump retires texture copies
@@ -83,13 +70,10 @@ public sealed unsafe partial class AlloyRenderer
     /// names. Roughly once a second in a torch-lit area.</summary>
     internal static int RecordEpoch => _recEpoch;
 
-    /// <summary>#336: the slots whose record CHANGED in the latest colour build -- the only slots whose mover
-    /// level or caster sphere can differ from the frame before (both are written on that same edge; an
-    /// untouched slot's <c>RecFrame</c> stamp reads it still). The shadow side's <c>Refresh</c> walks this
-    /// list plus its own dynamic set instead of every caster. Reset by the first note of a new frame, so the
+    /// <summary>The slots whose record CHANGED in the latest colour build -- the only slots whose mover level
+    /// or caster sphere can differ from the frame before. Reset by the first note of a new frame, so the
     /// shadow bracket (which runs BEFORE the build) reads the previous build's list intact; compared, never
-    /// consumed. Overflow (a mid-frame epoch bump rebuilding every slot twice) sets the flag and the refresh
-    /// falls back to the full walk for that frame.</summary>
+    /// consumed. Overflow sets the flag and the refresh falls back to the full walk for that frame.</summary>
     private static readonly int[] _castTouched = new int[MaxOwned];
     private static int _castTouchedN, _castTouchedFrame = -1;
     private static bool _castTouchedOverflow;
@@ -122,12 +106,10 @@ public sealed unsafe partial class AlloyRenderer
         if (!ok) { CasterPass.NoteSlotOff(i); return; }
         if (!CasterPass.InList(i)) CasterGen++;
     }
-    /// <summary>The stage's form: the generation bump is deferred to the fold, one per frame, so workers
-    /// never touch the shared counter. Consumers compare generations, so one bump keeps the contract.</summary>
-    /// <para>A flip is NOT a membership change while the caster list already holds this tenant: the list keeps
-    /// the entry and its refresh turns it off (a ghost at its sphere) or back on (an appearance). Only a slot
-    /// turning on that the list never collected under this tenant needs the re-collect. Tile fades, dissolves
-    /// and texture skips are the flips that re-collected ~20k casters on a quarter of frames.</para>
+    /// <summary>Turns a slot's cast permission on or off. The generation bump is deferred to the fold, one per
+    /// frame, so workers never touch the shared counter; consumers compare generations.
+    /// <para>A flip is NOT a membership change while the caster list already holds this tenant -- its refresh
+    /// turns the entry off or on. Only a slot turning on that the list never collected needs a re-collect.</para></summary>
     private static void SetCastOk(int i, bool ok, ref StageCounters c)
     {
         if (_castOk[i] == ok) return;
@@ -167,16 +149,22 @@ public sealed unsafe partial class AlloyRenderer
     }
     /// <summary>Off-device only: the caster self-check seeds admission for its synthetic slots.</summary>
     internal static void SelfCheckCastOk(int slot, bool ok) => _castOk[slot] = ok;
+    /// <summary>Off-device only: seeds a slot's stored caster sphere, which the vanish sweep reads as a
+    /// departing caster's last known bounds.</summary>
+    internal static void SelfCheckCasterSphere(int slot, float cx, float cy, float cz, float r)
+    {
+        fixed (float* sp = _dCastSph)
+        {
+            float* s = sp + (long)slot * 4;
+            s[0] = cx; s[1] = cy; s[2] = cz; s[3] = r;
+        }
+    }
     internal static int SlotEnrollGen(int slot) => _gate[slot].EnrollGen;
 
-    /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
-    /// slot's most recent build was also a build that moved something.
-    /// <para>#336: ...AND that build was last frame's. The route walk no longer stamps the slots it skips
-    /// (the visible set never visits them), so a slot that moved on its last build and then left the view
-    /// would otherwise read as a mover for as long as it stays out.</para>
-    /// <para>CX-120: or THIS frame's -- DB mode's fold writes a moved record at publish, ahead of the shadow
-    /// bracket, so a continuously moving object's latest build is the current frame's. Mode 0 never stamps the
-    /// current frame before the bracket, so the extra term never fires there.</para></summary>
+    /// <summary>The mover LEVEL for one slot: its most recent build was also a build that moved something,
+    /// and that build was last frame's or this frame's. The route walk no longer stamps slots it skips, so
+    /// without the frame test a slot that moved on its last build would read as a mover for as long as it
+    /// stays out of view; the fold publishes a moved record ahead of the shadow bracket, hence "this".</summary>
     internal static bool SlotRecMoved(int slot)
         => _recMovedAt[slot] == _gate[slot].RecFrame
            && (_gate[slot].RecFrame == _frameSeq - 1 || _gate[slot].RecFrame == _frameSeq);
@@ -209,7 +197,7 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>The mover verdict: the displacement path length since the last report crosses the threshold.
-    /// <c>still</c> 0 reports every frame with any motion, the pre-#383 behaviour.</summary>
+    /// A <paramref name="still"/> of 0 reports every frame with any motion.</summary>
     internal static bool Accumulate(ref float acc, float dist, float still)
     {
         acc += dist;
@@ -239,7 +227,7 @@ public sealed unsafe partial class AlloyRenderer
         /// <summary>The material's diffuse alpha is REFLECTIVITY rather than coverage (env-mapped), so its
         /// cutout runs at the threshold that only drops empty texels.</summary>
         public bool EnvAlpha;
-        /// <summary>#363: a blended part -- it casts at its record alpha (<c>rot.w</c>), so it takes the masked
+        /// <summary>A blended part -- it casts at its record alpha (<c>rot.w</c>), so it takes the masked
         /// stage whatever its diffuse says.</summary>
         public bool Blended;
         /// <summary>The record changed on its last build -- the matrix, the fade, a material colour.</summary>
@@ -293,13 +281,10 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    /// <summary>A caster's sphere as the bake ADMITS it: unknown BOUNDS mean cast ("unknown means cast" is
-    /// right about bounds, never about a record built for another tenant -- that is <see cref="_castOk"/>).
-    /// A degenerate sphere becomes an infinite radius, which passes every reach test and fails every
-    /// sub-texel one, so such a caster is neither culled nor LOD-dropped. Matches CullPass -- and is COUNTED,
-    /// because an infinite mover defeats the re-bake predicate in every view it is admitted to, which is
-    /// exactly the silent cost ADR 0019 S3 exists to keep visible. The ghost sweep reads
-    /// <see cref="CasterSphere"/> instead: a departing caster with unknown bounds takes the blanket.</summary>
+    /// <summary>A caster's sphere as the bake ADMITS it: unknown BOUNDS mean cast (an unknown TENANT does not
+    /// -- that is <see cref="_castOk"/>), and a degenerate sphere becomes an infinite radius, which passes
+    /// every reach test and fails every sub-texel one, so such a caster is neither culled nor LOD-dropped.
+    /// COUNTED: an infinite mover defeats the re-bake predicate in every view it reaches (ADR 0019 S3).</summary>
     internal static void MoverSphere(int slot, out float cx, out float cy, out float cz, out float r)
     {
         CasterSphere(slot, out cx, out cy, out cz, out r);
@@ -309,8 +294,8 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>Cold, for the <c>/shadow movers</c> dump: the slot's diffuse texture name, the one label a
-    /// part carries that a human can read. Borrowed pointers, resolved inside the pass slot.</summary>
-    /// <summary>CX-120: a DB slot has no Material to name a texture from; its diffuse is a registry slot.</summary>
+    /// human can read. A DB slot has no Material, so its diffuse is a registry slot. Borrowed pointers,
+    /// resolved inside the pass slot.</summary>
     internal static string SlotTexNameDb(int slot)
         => _oDbPart[slot] >= 0
             ? TexRegistry.ResrefOf(DrawRecipe.Tex(_oDbRecipe[slot], 0))
@@ -328,19 +313,10 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool VdoDirty(int v)
         => !IsArenaVao(v) && (uint)v < MaxVdos && _vVdo[v] != IntPtr.Zero && OwnedBuffers.DirtySince(_vPos[v].Buf);
 
-    /// <summary>The ITEM-level vertex-dirty signal. <see cref="VdoDirty"/> is per pool BUFFER, and the engine
-    /// pools a whole area into a handful of them (GL_MAX_ELEMENTS 1048576: ~9 VDOs for 16k parts), so one
-    /// dangly solve committing one item marked every caster on its pool a vertex-dirty mover -- measured at
-    /// 290-540 movers/frame, each a dynamic-set flip that re-baked the static cube it stood in and kept every
-    /// sun cascade combined. <c>CommitItemDynamicData</c> names the item, so the hook below records
-    /// (vdo, item) pairs for the frame and a caster is dirty only if ITS item was committed. A pool that is
-    /// dirty with NO item commit on it moved nothing: UnlockPool's NAMED callers (Ghidra xrefs @0x55d3a0) are
-    /// AddItem, Repack, Build, CommitItemStaticData, SetupArrays, the CPU hit-check/bbox reads and load-time
-    /// generators (tangent basis, the IODispatcher model-load chain) -- none is motion -- and the motion
-    /// writers that bypass the commit (PartDanglyMesh::Animate, PartSkin::PostProcess) are the dangly and
-    /// skinned flags. Canary: a shadow that stops following an animated mesh that is neither dangly nor
-    /// skinned is an unnamed bypass writer; /shadow itemdirty 0 is the revert. Reading such a pool as moved flipped its ~2500 casters between the
-    /// shadow sets (DynFlip 470-735/frame in the hitch rows, Bake +3ms, Restage/Chase x2).</summary>
+    /// <summary>The ITEM-level vertex-dirty signal. <see cref="VdoDirty"/> is per pool BUFFER and the engine
+    /// pools a whole area into a handful of them, so one dangly commit would mark every caster on the pool a
+    /// mover; <c>CommitItemDynamicData</c> names the item, so a caster is dirty only if ITS item was
+    /// committed. The motion writers that bypass the commit are covered by the dangly and skinned flags.</summary>
     internal static bool ItemDirty(int v, int item) => VdoDirty(v) && ItemMoved(v, item);
     /// <summary>The item half alone, for a caller that already holds the buffer verdict per VDO.</summary>
     internal static bool ItemMoved(int v, int item) => _ciOverflow || ItemCommitted(v, item);
@@ -426,13 +402,10 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>Does this VDO slot carry a diffuse UV stream? A masked caster needs one to sample its cutout
-    /// with; without it there is nothing to test and the caster draws solid.</summary>
-    /// <summary>CX-120: the caster VAO id is DENSE across both geometry sources. An engine slot keeps its VDO
-    /// slot number (0..<see cref="MaxVdos"/>-1); a DB slot, which has no VDO at all, takes
-    /// <c>MaxVdos + </c><see cref="MeshArena.Fmt"/> -- so the caster grouping cuts the arena's static and
-    /// skinned sections apart exactly as it cuts two VDOs apart, and every engine table below can still be
-    /// indexed by the same value after one range test.</summary>
+    /// <summary>The caster VAO id is DENSE across both geometry sources: an engine slot keeps its VDO slot
+    /// number, a DB slot (no VDO at all) takes <c>MaxVdos + </c><see cref="MeshArena.Fmt"/>, so the caster
+    /// grouping cuts the arena's static and skinned sections apart as it cuts two VDOs apart and every
+    /// VDO-indexed table still works after one range test.</summary>
     internal const int DbVaoBase = MaxVdos;
 
     /// <summary>Is this caster VAO id the mesh arena's rather than a VDO slot's?</summary>
@@ -455,12 +428,10 @@ public sealed unsafe partial class AlloyRenderer
     internal static uint CasterVao(int v)
         => IsArenaVao(v) ? MeshArena.Vao((MeshArena.Fmt)(v - DbVaoBase)) : 0u;
 
-    /// <summary>#302 triage: what the bake will actually transform this slot by, beside what the engine says
-    /// it is right now. The record is the shadow pass's ONE input for placement, so a disagreement here is
-    /// the whole bug and a match acquits the data plane -- there is nothing else it could be reading.
+    /// <summary>Triage: what the bake will transform this slot by, beside what the engine says it is right
+    /// now. The record is the shadow pass's ONE input for placement, so a disagreement here is the whole bug.
     /// <para><paramref name="lag"/> is the record's translation, <paramref name="live"/> the node's this
-    /// instant. They differ by one frame's motion on a mover and by nothing at all on a still part; anything
-    /// else (a zero record, a wildly different place) is a slot whose record was never built.</para></summary>
+    /// instant: one frame's motion apart on a mover, identical on a still part, wildly apart if never built.</para></summary>
     internal static void CasterProbe(int slot, out Vector3 lag, out Vector3 live,
                                      out bool mx, out bool known, out int feat)
     {

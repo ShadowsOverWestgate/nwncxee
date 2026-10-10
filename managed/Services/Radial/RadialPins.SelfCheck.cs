@@ -101,7 +101,7 @@ internal static unsafe partial class RadialPins
         pr.At = 0;
         c = Run(top);
         check.Expect(Order(c) == "s2 Meta s0 s1 s3" && pr.At == 0 && pm.At == 1, $"a tie pushes the later row forward ({Order(c)})");
-        // A far move (CX-694 drop): s3 (index 4) to index 1; the persisted rows in (1..4] shift toward the source, flows fill.
+        // A far move (a drop): s3 (index 4) to index 1; the persisted rows in (1..4] shift toward the source, flows fill.
         Move(RootKind.Creature, new[] { 3 }, null, 4, 1);
         c = Run(top);
         check.Expect(Order(c) == "s2 s3 Meta s0 s1" && pm.At == 2 && Invariant(c, 0), $"a far move shifts the persisted rows it crosses ({Order(c)})");
@@ -116,7 +116,7 @@ internal static unsafe partial class RadialPins
         check.Expect(Reset(RootKind.Creature) == 4 && _rows.Count == 0 && Order(Run(top)) == "s0 s1 s2 s3", "reset drops the root's rows, vanilla order returns");
         check.Expect(Find(RootKind.Creature, new[] { 2 }, hoist: false) == null, "find misses after reset");
 
-        // Hide (CX-694): the pin claims no index, replaces the row's reorder, survives the round-trip, and is dropped
+        // Hide: the pin claims no index, replaces the row's reorder, survives the round-trip, and is dropped
         // per list by Unhide. The row filter itself is the service's (ItemsFor); here the bookkeeping.
         Move(RootKind.Creature, new[] { 1 }, null, 1, 0);
         RadialPin ph = Hide(RootKind.Creature, new[] { 1 });
@@ -132,7 +132,7 @@ internal static unsafe partial class RadialPins
         check.Expect(Unhide(RootKind.Creature, Array.Empty<int>()) == 1 && _rows.Count == 1 && _rows[0].Path.Length == 2, "unhide drops the top list's hides only");
         Reset(RootKind.Creature);
 
-        // Folders (CX-694): a folder row and its members are lists of their own; refile / remove / rename / merge;
+        // Folders: a folder row and its members are lists of their own; refile / remove / rename / merge;
         // the rows round-trip; a cross-root copy is an ordinary hoist of the other kind.
         RadialPin fa = AddFolder(RootKind.Creature, "Buffs", 0);
         RadialPin m1 = AddAt(RootKind.Creature, new[] { 1, 2 }, "fn", 1, "Cast > Bless", 0, "Buffs");
@@ -221,7 +221,7 @@ internal static unsafe partial class RadialPins
             check.Expect(!Validate(new RadialPin { Fn = "_ZNoSuchSymbolEv", Param = 0x1300007a }, leaf), "a name that no longer resolves does not");
         }
 
-        // Identity (CX-694): the file's rows split by key on load; a save writes every identity back; key-less
+        // Identity: the file's rows split by key on load; a save writes every identity back; key-less
         // rows are adopted by the first identity to load.
         _rows.Clear(); _other.Clear(); _who = null; _adopted = false;
         var file = Format(new List<RadialPin>

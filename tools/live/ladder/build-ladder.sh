@@ -13,7 +13,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NWN_DIR="${NWN_DIR:-~/gry/steam/Neverwinter Nights}"
+NWN_DIR="${NWN_DIR:-$(python3 "$HERE/../../../tools/paths.py" NWN_DIR)}"
 # Spelled out of the brace default on purpose: an apostrophe inside ${x:-...} opens a quote in bash.
 STOCK_MOD="The Dark Ranger's Treasure.mod"
 BASE_MOD="${LADDER_BASE_MOD:-}"

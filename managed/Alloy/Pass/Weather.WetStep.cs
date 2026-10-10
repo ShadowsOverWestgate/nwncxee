@@ -7,18 +7,10 @@ using CX.Services.Camera;
 
 namespace CX.Alloy;
 
-/// <summary>Footsteps on rain-wet ground sound wet. Stock footstepsounds.2da carries a <c>Puddles0..2</c> sound for
-/// every footstep type, but no stock step can reach it: <c>PlayFootstep</c> builds its column from surfacemat.2da's
-/// <c>Name</c> plus a digit, the Puddles row's name is <c>Puddle</c>, and <c>C2DA::GetColumnIndex</c> is a full
-/// case-insensitive compare -- <c>Puddle0</c> names no column, so that surface steps in silence. Here, while the
-/// ground is wet and open to the rain, a footfall on a surface that sounds dry plays the creature's own
-/// <c>Puddles</c> sound instead, resolved the way <c>PlayFootstep</c> resolves its row (Linux @0x72ff90, Windows rva
-/// 0x8057c0): the creature's override or its appearance's <c>FootstepType</c>, row 3 when stepping soft, the
-/// player's priority group or one by <c>SIZECATEGORY</c>. The engine's own call is skipped for that step, and with
-/// it the dust puff -- wet ground does not raise dust.
-/// <para>"Open to the rain" is one ray from the foot back up the cover map's own bake direction
-/// (<see cref="CoverDir"/>): the CPU twin of the GPU shelter test, so a step sounds wet exactly where the ground
-/// beside it shows wet -- inside a windward eave yes, in a wall's lee no.</para></summary>
+/// <summary>Footsteps on rain-wet ground sound wet. Stock footstepsounds.2da carries a <c>Puddles0..2</c> sound
+/// no stock step can reach: <c>PlayFootstep</c> builds its column name from surfacemat.2da's <c>Name</c> plus a
+/// digit and the Puddles row is named <c>Puddle</c>, so <c>Puddle0</c> names no column. Here a footfall on wet,
+/// rain-open ground plays that sound instead, resolved the way <c>PlayFootstep</c> resolves its row.</summary>
 internal static unsafe partial class Weather
 {
     /// <summary>surfacemat.2da rows that sound dry and lie open to the weather: Dirt 1, Grass 3, Stone 4, Wood 5,

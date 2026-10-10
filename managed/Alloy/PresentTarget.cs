@@ -4,26 +4,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>
-/// #456: the surface Alloy's frame lands on when the engine renders to the DEFAULT framebuffer, on a
-/// platform where the 4.6 context and the engine's do not agree about what the default framebuffer is.
-/// </summary>
-/// <remarks>
-/// <para>Under GLX both contexts name one drawable and writing framebuffer 0 from either is the same write.
-/// Under WGL it is not: measured under Proton, a magenta clear performed in the 4.6 context immediately
-/// before the context switch is visible to the engine context on only HALF the frames -- 15 of 30, with the
-/// other 15 reading the clear colour or the previous frame's content. A read-after-clear cannot be a race,
-/// so the two contexts genuinely address back buffers that fall out of phase across each swap, and Alloy's
-/// frame lands in whichever one is not about to be presented. That is the black-every-other-frame report.</para>
-/// <para>The fix is to stop writing the presented buffer from the context that does not present it. Alloy
-/// composites into a texture instead, and the engine context blits that texture into the real default
-/// framebuffer after the bracket closes. Textures are shared across the share group; framebuffer OBJECTS are
-/// not, so each side keeps its own container over the same images.</para>
-/// <para>CX-84 dropped the depth half of that blit: the engine's two highlight overlays were the only things
-/// that ever depth-tested against the default framebuffer after the bracket, and both are Alloy passes now.</para>
-/// <para>Windows only, deliberately: on Linux the assumption holds, the blit would be pure cost, and the
-/// map's rule is that the Linux frame stays bit-identical.</para>
-/// </remarks>
+/// <summary>Where Alloy's frame lands when the 4.6 context and the engine's do not agree about the default
+/// framebuffer: under WGL the two address back buffers that fall out of phase across each swap, so Alloy
+/// composites into a shared TEXTURE and the engine context blits that to the real default framebuffer after
+/// the bracket -- each side over its own framebuffer OBJECT, which is not shared. Windows only; GLX is fine.</summary>
 internal static unsafe class PresentTarget
 {
     /// <summary>Does this platform need the frame routed through a texture? Folded to a constant.</summary>
@@ -92,7 +76,7 @@ internal static unsafe class PresentTarget
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
 
-    /// <summary>CX-95: the present texture and its size, for the GUI pass's own framebuffer (colour = this texture,
+    /// <summary>The present texture and its size, for the GUI pass's own framebuffer (colour = this texture,
     /// depth its own): the GUI draws into the same image the world frame composited into.</summary>
     internal static uint Tex => _tex;
     /// <inheritdoc cref="Tex"/>
@@ -100,9 +84,9 @@ internal static unsafe class PresentTarget
     /// <inheritdoc cref="Tex"/>
     internal static int Height => _h;
 
-    /// <summary>CX-95: the reverse of <see cref="HandBack"/>, in the ENGINE context: copy the real default
-    /// framebuffer INTO the present texture, so a GUI flush draws over what is on screen now -- the world frame's
-    /// hand-back, or the engine's clear on a frame with no world.</summary>
+    /// <summary>The reverse of <see cref="HandBack"/>, in the ENGINE context: copy the real default framebuffer
+    /// INTO the present texture, so a GUI flush draws over what is on screen now -- the world frame's hand-back,
+    /// or the engine's clear on a frame with no world.</summary>
     internal static void TakeBack()
     {
         if (!Needed || _tex == 0) return;

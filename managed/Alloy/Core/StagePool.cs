@@ -5,19 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>The stage's worker pool: N persistent threads plus the main thread, each running one static
-/// chunk of <see cref="AlloyRenderer.StageRange"/>. No Parallel.For and no ThreadPool -- both allocate per
-/// call and neither is predictable inside a frame.
-/// <para>Wake latency is the whole cost: a worker that slept 10ms on a semaphore sits on a core in a deep
-/// idle state, and waking six of them can take as long as the work. So <see cref="Prewake"/> is called at
-/// the top of the build, before the routing walk, and a woken worker SPINS on the job generation for up to
-/// <see cref="SpinUs"/> before it blocks again -- long enough to cover the walk, short enough that a frame
-/// with no stage (a menu) does not pin six cores.</para>
-/// <para>Invariant the workers rely on: Alloy runs on the engine's main thread inside its frame, so the
-/// engine mutates nothing while a stage runs; and nothing on the main thread writes the texture index, the
-/// handle hash or the ownership tables between <c>Run</c> and its return. A future async loader breaks
-/// exactly that, and this comment is where it must look. CX-54's <c>cx-load</c> (<see cref="TexLoad"/>) keeps it:
-/// its worker writes none of those tables, and its results are filed on the main thread at the drip.</para></summary>
+/// <summary>The stage's worker pool: N persistent threads plus the main thread, each running one static chunk
+/// of <see cref="AlloyRenderer.StageRange"/>. A woken worker SPINS on the job generation for up to
+/// <see cref="SpinUs"/> before it blocks again, because wake latency can cost as much as the work. Invariant:
+/// nothing writes the texture index, the handle hash or the ownership tables while a stage runs.</summary>
 internal static class StagePool
 {
     /// <summary>Chunks including the main thread's; the knob's ceiling is one less.</summary>
@@ -33,11 +24,9 @@ internal static class StagePool
     private static readonly Thread?[] _threads = new Thread?[MaxChunks];
     private static readonly SemaphoreSlim[] _go = new SemaphoreSlim[MaxChunks];
     /// <summary>1 while the worker spins on the generation, 0 once it is committed to blocking. A release only
-    /// goes to a worker at 0: releasing a spinner left a stale count, so it woke straight back into a full
-    /// <see cref="SpinUs"/> window with no job -- 4ms of every 7ms frame on six cores, read live as 58% of a
-    /// core per worker in a 0,5ms build. Dekker pair with the publish: the worker stores 0 then re-reads the
-    /// generation, Run stores the generation then reads this; both with full fences, so one side always sees
-    /// the other and no worker blocks past a published job.</summary>
+    /// goes to a worker at 0: releasing a spinner leaves a stale count, so it wakes straight back into a full
+    /// <see cref="SpinUs"/> window with no job. Dekker pair with the publish -- the worker stores 0 then
+    /// re-reads the generation, Run stores the generation then reads this, both with full fences.</summary>
     private static readonly int[] _spinning = new int[MaxChunks];
     private static int _pending, _chunks, _gen;
     /// <summary>The generation <see cref="_pending"/> is counting down for, so a straggler from an abandoned run
@@ -160,16 +149,11 @@ internal static class StagePool
     }
 
     /// <summary>
-    /// Run a job other than the stage over the same workers. The pool holds ONE job at a time, so this swaps it
-    /// in; a caller must therefore not nest one inside <see cref="AlloyRenderer.StageRange"/> (nothing does --
-    /// the animation runtime runs in the engine's own animate, before the build).
-    /// <para><b>The field is only restored when the pool is known idle.</b> A worker reads <see cref="_job"/>
-    /// AFTER it has observed the generation, so writing the field back while one is still inside its chunk
-    /// would hand it the other caller's job. A true return means every worker decremented <c>_pending</c>,
-    /// which it does after the call returns, so the swap back is safe exactly then. A false return may be the
-    /// join deadline with a straggler still running: the field is left pointing at a no-op instead, which is
-    /// the only value a late worker can run harmlessly. <see cref="Rearm"/> puts the stage job back, and until
-    /// it is called <see cref="_fault"/> keeps every other <c>Run</c> from publishing anything at all.</para></summary>
+    /// Run a job other than the stage over the same workers. The pool holds ONE job at a time, so this swaps
+    /// it in; a caller must not nest one inside <see cref="AlloyRenderer.StageRange"/>. The field is put back
+    /// only when the pool is known idle (a true return) -- a worker reads <see cref="_job"/> after it has
+    /// observed the generation, so a false return leaves a no-op there until <see cref="Rearm"/>.
+    /// </summary>
     internal static bool Run(int chunks, ExtenderLog? log, Action<int, int> job)
     {
         var saved = _job;

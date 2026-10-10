@@ -4,19 +4,10 @@ using System.Globalization;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-113's perf criterion, made into a reading: <b>distinct meshes against placements</b>.
-/// <para>The engine stores a mesh per PLACEMENT -- every tile instance parses its own copy of the tileset
-/// model, so its records show a 1.00x share no matter how much an area repeats itself. ADR 0017 measured the
-/// content-level figure on the same areas at about 2.5x (1,00x at RECORD identity but 2,5x at CONTENT
-/// identity), and that gap is the whole point of a content-keyed cache. This counts both numbers so the claim
-/// is a number on a line rather than an argument: meshes are distinct <see cref="MeshDef"/> identities,
-/// placements are part instances that reference one.</para>
-/// <para>Whoever builds part trees owns the placement count (CX-114's <c>PartTree.Build</c> /
-/// <c>PartTree.Free</c>): one <see cref="NotePlacement"/> per part that draws a mesh, one
-/// <see cref="DropPlacement"/> when the part range goes. Both are a dictionary probe and an int, no
-/// allocation after the first sighting of a mesh.</para>
-/// <para>The resident-mesh count is maintained at the table's two edges instead of being recomputed: the
-/// period line used to walk every node of every resident model and build a set to print one number.</para></summary>
+/// <summary>The perf reading <b>distinct meshes against placements</b>: the engine stores a mesh per
+/// PLACEMENT, so its share is 1.00x however much an area repeats, while ADR 0017 measured ~2.5x at CONTENT
+/// identity -- the gap a content-keyed cache buys. <c>PartTree.Build</c>/<c>Free</c> owns the count: one
+/// <see cref="NotePlacement"/> per mesh-drawing part, one <see cref="DropPlacement"/> when its range goes.</summary>
 public static partial class ModelCache
 {
     /// <summary>Placements per distinct mesh. Reference identity: two meshes with the same vertices are still
@@ -55,7 +46,7 @@ public static partial class ModelCache
     private static long _strayDrops;
 
     /// <summary>A model entering or leaving the table, <paramref name="delta"/> +1 or -1. One pass over its
-    /// nodes at each edge, which is the walk the period line used to do every period.</summary>
+    /// nodes at each edge, so the resident-mesh count is a <c>Count</c> and never a walk.</summary>
     private static void NoteResidentMeshes(ModelDef m, int delta)
     {
         NodeDef[] nodes = m.Nodes;
@@ -97,8 +88,8 @@ public static partial class ModelCache
     internal static int ResidentMeshes => _residentMeshes.Count;
     internal static long StrayDrops => _strayDrops;
 
-    /// <summary>Forget the placement census. The area edge does not call this -- CX-114 drops its placements
-    /// as it frees the part ranges -- so it exists for the self-checks and for <see cref="Clear"/>.</summary>
+    /// <summary>Forget the placement census. The area edge does not call this -- <c>PartTree</c> drops its
+    /// placements as it frees the part ranges -- so it exists for the self-checks and for <see cref="Clear"/>.</summary>
     internal static void ResetCensus()
     {
         _placements.Clear();

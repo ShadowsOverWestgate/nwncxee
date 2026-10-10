@@ -4,11 +4,10 @@ using CX.Framework;
 namespace CX.Services.Chat.Core;
 
 /// <summary>
-/// The chat input line as pure Unicode state: text, a caret, an optional selection
-/// anchor, an undo/redo history and an input-history ring. No native/engine references — the
-/// native shell (HotkeyInputService / ChatService) reads SDL and drives these methods, so this whole
-/// class is unit-testable off-device via <see cref="SelfCheck"/>. Feature toggles arrive as
-/// parameters; this class never reads a knob.
+/// The chat input line as pure Unicode state: text, a caret, an optional selection anchor, an undo/redo
+/// history and an input-history ring. No native/engine references — the native shell (HotkeyInputService /
+/// ChatService) reads SDL and drives these methods, so the class is unit-testable off-device via
+/// <see cref="SelfCheck"/>. Feature toggles arrive as parameters; this class never reads a knob.
 /// </summary>
 public sealed class EditBuffer
 {

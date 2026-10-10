@@ -207,7 +207,7 @@ vanilla. There is no walk. A decline is geometry that nothing renders, so each b
 Since #264 every census refusal is geometry nothing renders, so each reason is now either an **owned path** or
 a **skip with an engine fact behind it**. Of the seven names the ticket listed, two hid a real hole and got an
 owned path; the other four are correct skips (`item-range` is folded into `empty-item`). Addresses below are
-nm addresses (the read-only dump in `~/nwn-decomp/` prints them + 0x100000).
+nm addresses (the read-only dump in `$NWN_DECOMP/` prints them + 0x100000).
 
 ### Owned paths built
 

@@ -8,16 +8,10 @@ namespace CX.Alloy;
 
 internal static unsafe partial class TexLoad
 {
-    /// <summary>Off-device, no engine: a real <c>BIFF V1</c> file, a real <c>BIFF E1</c> one (whose entries carry
-    /// the compressed flag and the plain size), a real <c>HAK V1.0</c> and a loose file are written to a temp
-    /// directory, and the location reader is asked for a resource out of each. That is the seam the whole
-    /// feature turns on: a location record in, the right bytes out, with the offset arithmetic of both entry
-    /// strides exercised. Then the refusals -- an entry past the end of the file, a missing file, and a
-    /// compressed entry -- each answer null with a reason rather than a wrong buffer (CX-45).
-    /// <para>The container headers are the ones <c>CExoResFile::LoadHeader</c> @0x52f460 and
-    /// <c>CExoEncapsulatedFile::LoadHeader</c> @0x52fbb0 parse, so the fixtures are files the client itself
-    /// would load; only the reader's arithmetic is under test, since the main thread takes the entry fields
-    /// from the engine's own parsed arrays.</para></summary>
+    /// <summary>Off-device, no engine: a real <c>BIFF V1</c>, a real <c>BIFF E1</c> (whose entries carry the
+    /// compressed flag and the plain size), a real <c>HAK V1.0</c> and a loose file are written to a temp
+    /// directory and read back through the location reader, which exercises both entry strides' arithmetic.
+    /// Then the refusals -- an entry past the end, a missing file, a compressed entry -- each answer a reason.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         string dir = Path.Combine(Path.GetTempPath(), "cx54-" + Environment.ProcessId);

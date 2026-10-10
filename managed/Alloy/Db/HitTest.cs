@@ -11,8 +11,8 @@ namespace CX.Alloy.Db;
 /// static geometry (a tile part, a static placeable, the ground plane), or an object.</summary>
 public enum HitKind { None = 0, Static = 1, Object = 2 }
 
-/// <summary>CX-118: one segment cast's inputs -- the engine's <c>CHitInfo</c> input fields, named. A caller
-/// fills this and the seam (CX-120) translates the game's <c>CHitInfo</c> into it both ways.</summary>
+/// <summary>One segment cast's inputs -- the engine's <c>CHitInfo</c> input fields, named. A caller fills
+/// this and the seam translates the game's <c>CHitInfo</c> into it both ways.</summary>
 public struct HitQuery
 {
     /// <summary>The segment, in world space. Both ends matter: the engine's tests are segment tests, not
@@ -40,11 +40,8 @@ public struct HitQuery
     public bool Objects;
     /// <summary>Test the area's STATIC PLACEABLES -- the parts baked into the scene BSP that are in no object
     /// list. The engine reaches them only while <c>hitcheck_static_trimesh_parts</c> is non-zero, which is 0
-    /// by default and set around its own floor casts; a CX cast says so per cast instead of toggling a
-    /// global. It does NOT gate the walkmesh or the triggers: <c>HitPartOnBSPNode</c> @0x47b790 walks the
-    /// trigger list with no gate at all and the tile walkmesh behind
-    /// <c>hitcheck_static_bsp_parts</c>, which is 1 -- so the static pass itself always runs
-    /// (see <see cref="WalkMesh"/>), and that is what a click-to-move pick lands on.</summary>
+    /// by default and set around its own floor casts; a CX cast says so per cast instead of toggling a global.
+    /// It gates neither the triggers nor the walkmesh, so the static pass always runs (<see cref="WalkMesh"/>).</summary>
     public bool StaticPlaceables;
     /// <summary>Test the tile walkmesh parts -- the engine's <c>hitcheck_static_bsp_parts</c>, which is 1 by
     /// default, so this is true in every query the constructors below build.</summary>
@@ -75,11 +72,9 @@ public struct HitQuery
     /// <c>CHitInfo+0xb &amp; 0x40</c>, and it writes <c>1 &lt;&lt; 30</c> into the hit surface).</summary>
     public const int TriggerSurface = 30;
 
-    /// <summary>A hover/click pick, as the game issues it: objects and statics, box-only (every
-    /// <c>CHitInfo</c> the picking path builds is <c>Reset(0, -0x40000001, 0)</c> and the pickers then force
-    /// <c>+0x20 = 1</c>), the door fade honoured, and <see cref="NoTriggers"/> -- the real client replaces
-    /// that mask with <c>CClientExoApp::GetHitCheckMaterialMask</c>'s value, which the seam (CX-120) passes
-    /// through rather than this default.</summary>
+    /// <summary>A hover/click pick, as the game issues it: objects and statics, box-only (the pickers force
+    /// <c>CHitInfo+0x20 = 1</c>), the door fade honoured, and <see cref="NoTriggers"/> -- for which the real
+    /// client substitutes <c>CClientExoApp::GetHitCheckMaterialMask</c>'s value, passed through by the seam.</summary>
     public static HitQuery Pick(DbId scene, Vector3 from, Vector3 to) => new()
     {
         Scene = scene, From = from, To = to, SurfaceMask = NoTriggers,
@@ -129,28 +124,10 @@ public struct HitResult
     public long Trigger;
 }
 
-/// <summary>CX-118: <b>hit testing over CX's scene database</b> -- the replacement for the engine's 52-function
-/// <c>GetGameobjectHit</c> / <c>Camera::HitCheck</c> / BSP / <c>Gob::HitCheck</c> / <c>Part::HitCheckGeom</c> /
-/// <c>polyhit</c> chain. The game layer's calls arrive through the Aurora seam (CX-120) and land here.
-/// <para><b>What vanilla does, which this reproduces.</b> <c>Scene::HitCheck</c> @0x462960 runs two passes and
-/// shortens the segment between them, which is how "nearest wins" is expressed: first the tile BSP
-/// (<c>BSPHitCheck</c> + <c>HitPartOnBSPNode</c>: trigger parts, then static trimesh parts behind
-/// <c>hitcheck_static_trimesh_parts</c>, then the tile walkmesh behind <c>hitcheck_static_bsp_parts</c>, then
-/// the <c>enablenonbspgroundhit</c> z=0 plane), class 1; then the objects (<c>Scene::HitCheckGob</c>, over
-/// <c>gobbucket</c> on a world scene), class 2, on the segment the first pass left. Per object:
-/// classification-1 (effect) models never hit, classification-4 (character) models are skipped when the
-/// caller asks, an alpha at or below zero skips, a door (classification 8) at or below <c>mindooralpha</c>
-/// skips, then a sphere reject, then the part tree -- a part's own geometry first, then its children on the
-/// shortened segment, with the hit point and normal rotated back up the chain one level at a time.</para>
-/// <para><b>What this does differently, on purpose.</b> The broad phase is <see cref="HitGrid"/>, a uniform
-/// grid over world bounds, in place of walking last frame's visible-object list -- so a pick does not depend
-/// on what the renderer drew, and an object behind the camera is hit by a cast aimed at it. Triangles go
-/// through a per-mesh BVH (<see cref="MeshBvh"/>) shared by every placement, in place of the engine's linear
-/// face walk. The per-part reject uses the part's own bounds rather than the engine's "tile parts only" world
-/// box. Everything else -- gate order, the segment shortening, the fields of <c>CHitInfo</c> -- is vanilla's.</para>
-/// <para>Hot and allocation-free: a pick walks grid cells into a stack buffer and the per-mesh trees into
-/// another. The game thread owns the database (ADR 0028 §5), so a cast answers from the columns with no
-/// synchronisation.</para></summary>
+/// <summary><b>Hit testing over CX's scene database</b>, in place of the engine's <c>Scene::HitCheck</c>
+/// @0x462960 chain: the static (tile BSP) pass, class 1, then the objects, class 2, on the segment the first
+/// left -- that shortening IS nearest-wins, and the gate order and <c>CHitInfo</c> fields are vanilla's. Broad
+/// phase is <see cref="HitGrid"/>, triangles a per-mesh <see cref="MeshBvh"/>; allocation-free, game thread.</summary>
 public static class HitTest
 {
     /// <summary>The engine's <c>mindooralpha</c>, the value <c>Gob::HitCheck</c> compares <c>Gob+0x10c</c>
@@ -164,15 +141,10 @@ public static class HitTest
     /// take their <see cref="HitQuery.WalkMesh"/> from it, so CX's default is the client's, not a guess.</summary>
     public static bool WalkMeshDefault = true;
 
-    /// <summary>The engine's <c>enablenonbspgroundhit</c>, read off the LIVE client: the last arm of
-    /// <c>HitPartOnBSPNode</c> @0x47b790 -- a tile whose BSP node carries no walkmesh part answers a
-    /// downward segment that crosses z=0 with the plane itself.
-    /// <para>Measured 0 on build 8193.37-17, so the arm is dormant there; it is implemented because the
-    /// word is the engine's own and a client that sets it changes what every floor cast answers. CX's
-    /// default when the symbol does not resolve is ON, which is the arm existing rather than a silent
-    /// absence.</para>
-    /// <para>Read on first use, not at service start: the word is in BSS and the client writes it from its
-    /// own settings long after CX is loaded.</para></summary>
+    /// <summary>The engine's <c>enablenonbspgroundhit</c>, read off the LIVE client on first use -- the word
+    /// is in BSS and the client writes it from its own settings long after CX loads. It is the last arm of
+    /// <c>HitPartOnBSPNode</c> @0x47b790: a tile whose BSP node has no walkmesh part answers a downward
+    /// segment crossing z=0 with the plane itself. Measured 0 on build 8193.37-17; ON if the symbol misses.</summary>
     public static unsafe bool GroundPlane
     {
         get
@@ -394,13 +366,9 @@ public static class HitTest
     }
 
     /// <summary>Vanilla's LAST static arm: the z=0 ground plane (<see cref="GroundPlane"/>).
-    /// <c>HitPartOnBSPNode</c> @0x47b790 runs it per BSP node whose walkmesh part is absent, behind
-    /// <c>hitcheck_static_bsp_parts</c>, for a segment that crosses z=0 downwards. Here it runs once, after
-    /// the static pass and on the segment that pass left -- which is the same answer, because the plane is
-    /// one global plane and nearest-wins has already shortened the segment past anything above it. The one
-    /// difference from vanilla is that vanilla needs at least one walkmesh-less node on the segment's path;
-    /// in a tile area there always is one, and a GUI scene never reaches here (the static pass is a world
-    /// scene's).</summary>
+    /// <c>HitPartOnBSPNode</c> @0x47b790 runs it per walkmesh-less BSP node for a segment crossing z=0
+    /// downwards; here it runs once, after the static pass and on the segment that pass left -- the same
+    /// answer, since the plane is global and nearest-wins has already shortened past anything above it.</summary>
     private static void GroundZero(in HitQuery q, ref Vector3 to, ref HitResult r)
     {
         if (!q.Ground || !q.WalkMesh) return;
@@ -527,9 +495,8 @@ public static class HitTest
 
     /// <summary>Is <paramref name="p"/> drawable AND every ancestor of it too? <c>Part::HitCheck</c> @0x4394e0
     /// reaches a child only through its parent, so a disabled part prunes its whole subtree -- which a walk
-    /// over the flattened part range loses unless the bit is inherited. The chain is short (an instance tree
-    /// is a handful of levels deep) and the walk is allocation-free, so it is re-derived rather than cached in
-    /// a column another stream would have to keep current.</summary>
+    /// over the flattened part range loses unless the bit is inherited. Short chain, allocation-free, so it
+    /// is re-derived rather than kept in a column.</summary>
     private static bool SubtreeEnabled(int first, int p)
     {
         for (int i = p; i >= first; i = SceneDb.PartParent[i])
@@ -783,48 +750,37 @@ public static class HitTest
         return true;
     }
 
-    /// <summary>Fill a game-visible <c>CHitInfo</c> at <paramref name="info"/> from <paramref name="r"/>,
-    /// field for field as the engine fills it -- the seam's answer to a game-layer hit test. The OUTPUT
-    /// fields only: the caller's input fields (mode, mask, ignore list, box, the two bools) are left as the
-    /// game set them, exactly as <c>Scene::HitCheck</c> leaves them.
-    /// <para>The object pointer at <c>+0x48</c> is the game's own <c>CAurObject*</c>, i.e. the facade
-    /// (<c>SceneDb.ObjFacade</c>), NOT a DB handle: the game reads it through the Aurora vtable. The engine's
-    /// <c>SafePointer</c> back-index at <c>+0x50</c> is written as -1 (unlinked), because a facade's lifetime
-    /// is the seam's and a CX record cannot be revived at a recycled address (ADR 0028 §1).</para></summary>
-    /// <remarks><b>Precondition:</b> the record has been through <c>CHitInfo::Reset</c> (every record the
-    /// game hands a hit test has). The object assignment reads the pointer already at <c>+0x48</c> so it can
-    /// unregister it, so a record that has never been initialised hands the engine garbage to dereference --
-    /// which is vanilla's contract too, and is why a test that fills the buffer with a pattern must still
-    /// zero that pair.</remarks>
+    /// <summary>Fill a game-visible <c>CHitInfo</c> at <paramref name="info"/> from <paramref name="r"/> as the
+    /// engine does: the OUTPUT fields only, the caller's inputs left as the game set them. <c>+0x48</c> takes
+    /// the game's own <c>CAurObject*</c> facade, not a DB handle; <c>+0x50</c>'s back-index is -1. Wants a
+    /// record already through <c>CHitInfo::Reset</c> -- the assignment reads <c>+0x48</c> to unregister it.</summary>
     public static unsafe void Fill(in HitResult r, byte* info)
     {
-        *(int*)(info + EngineLayout.HitInfoKind) = (int)r.Kind;
-        WriteVec(info + EngineLayout.HitInfoPoint, r.Point);
-        WriteVec(info + EngineLayout.HitInfoLocalPoint, r.LocalPoint);
-        WriteVec(info + EngineLayout.HitInfoNormal, r.Normal);
-        *(long*)(info + EngineLayout.HitInfoSurface) = r.Surface >= 0 ? 1L << (r.Surface & 63) : 0L;
-        *(int*)(info + EngineLayout.HitInfoFace) = r.Face;
+        var h = new CHitInfo((nint)info);
+        h.Kind = (int)r.Kind;
+        h.Point = r.Point;
+        h.LocalPoint = r.LocalPoint;
+        h.Normal = r.Normal;
+        h.Surface = r.Surface >= 0 ? 1L << (r.Surface & 63) : 0L;
+        h.Face = r.Face;
         // Vanilla leaves the object pointer NULL on a class-1 (static) hit: Scene::HitCheck assigns the
         // SafePointer from HitCheckGob's return, which is zero unless the object pass took the hit.
         nint facade = r.Kind != HitKind.Object || r.Obj.IsNull || !SceneDb.Objects.Valid(r.Obj)
                         ? 0 : SceneDb.ObjFacade[r.Obj.Index];
         AssignObject(info, facade);
-        *(nint*)(info + EngineLayout.HitInfoPartName) = r.Part >= 0 ? PartName(r.Part) : 0;
-        *(long*)(info + EngineLayout.HitInfoTrigger) = r.Trigger;
+        h.PartName = r.Part >= 0 ? PartName(r.Part) : 0;
+        h.Trigger = r.Trigger;
     }
 
     /// <summary>Put <paramref name="facade"/> (or null) into <c>CHitInfo+0x48</c> through the engine's own
-    /// <c>SafePointer&lt;CAurObject&gt;::operator=</c>, which is the only safe way: it unregisters the record
-    /// from whatever object it held and takes a real back-reference index from the new one. Hand-writing the
-    /// pointer and a -1 index leaves the pair in a state the engine's <c>ClearOutput</c> and
-    /// <c>~CHitInfo</c> then read as "registered at index -1" and index <c>array[-1]</c> with.
-    /// <para>If the symbol is unresolved the pair is left EXACTLY as the caller's own <c>Reset</c> left it
-    /// and the fill is counted and logged once: a cast that cannot report its object honestly reports none
-    /// (no silent fallback), and in particular it never unregisters a registration it did not make.</para></summary>
+    /// <c>SafePointer&lt;CAurObject&gt;::operator=</c>: it unregisters the record from whatever object it held
+    /// and takes a real back-reference index. A hand-written pointer plus a -1 index is read later as
+    /// "registered at index -1" and indexes <c>array[-1]</c>. Unresolved symbol: left as <c>Reset</c> left it.</summary>
     public static unsafe void AssignObject(byte* info, nint facade)
     {
         SafePointerObjectAssignFn fn = EngineFn.SafePointerObjectAssign;
-        if (fn != null) { fn((nint)(info + EngineLayout.HitInfoGob), facade); return; }
+        var h = new CHitInfo((nint)info);
+        if (fn != null) { fn((nint)Unsafe.AsPointer(ref h.Gob), facade); return; }
         UnassignedObjects++;
         if (!_unassignedLogged)
         {
@@ -859,7 +815,4 @@ public static class HitTest
     }
 
     private static readonly System.Collections.Generic.Dictionary<string, nint> _partNames = new(StringComparer.Ordinal);
-
-    private static unsafe void WriteVec(byte* p, Vector3 v)
-    { *(float*)p = v.X; *(float*)(p + 4) = v.Y; *(float*)(p + 8) = v.Z; }
 }

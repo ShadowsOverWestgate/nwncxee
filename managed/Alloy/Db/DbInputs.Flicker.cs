@@ -7,11 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>#629 in DB mode: a torch keeps a steady reach and flickers in brightness instead of the engine's
-/// linear radius pulse. Mode 0 GUESSED which lights were animated (a <c>PartLight*</c> whose range dipped below its
-/// running peak); the database reads it off the model: a light node whose animation keys its radius or multiplier
-/// as a PULSE -- three or more keys, both rising and falling, never reaching zero. A day/night ramp is monotonic
-/// and a blink touches zero, so neither is a pulse, and a window light still goes dark by day.</summary>
+/// <summary>A torch keeps a steady reach and flickers in brightness instead of the engine's linear radius pulse.
+/// Which lights are animated comes off the model: a light node whose animation keys its radius or multiplier as a
+/// PULSE -- three or more keys, both rising and falling, never reaching zero. A day/night ramp is monotonic and a
+/// blink touches zero, so neither is a pulse, and a window light still goes dark by day.</summary>
 internal static partial class DbInputs
 {
     /// <summary>One channel's authored pulse: the lowest and highest key across every pulse track the node has.</summary>

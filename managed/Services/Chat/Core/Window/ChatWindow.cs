@@ -83,7 +83,7 @@ public sealed partial class ChatWindow
     private volatile Tab[] _tabs;
     public volatile int ActiveTab;
 
-    /// <summary>Current send channel (the dropdown selection, #25), the active tab's (CX-59): every write also lands
+    /// <summary>Current send channel (the dropdown selection), the active tab's: every write also lands
     /// on <see cref="Tab.SendChannel"/>, so a tab keeps its channel while another is active and
     /// <see cref="SelectTab"/> gives it back. Dropdown and slash commands both write this; the shell resets every
     /// tab to <see cref="Channel.Talk"/> on relog.</summary>
@@ -103,7 +103,7 @@ public sealed partial class ChatWindow
     public static readonly (uint Bit, string Label)[] Options =
         { (ChatToggle.Timestamp, "Timestamps"), (ChatToggle.Portrait, "Portraits") };
 
-    // ---- per-window settings (#41): each window can look different (unobtrusive combat log vs prominent chat) ----
+    // ---- per-window settings: each window can look different (unobtrusive combat log vs prominent chat) ----
 
     /// <summary>Colour overrides keyed by <see cref="ChatColor"/> (RGBA8). Absent key = renderer default.
     /// Per-window so e.g. a system log can be dim while player chat is vivid.</summary>
@@ -118,9 +118,9 @@ public sealed partial class ChatWindow
     /// <summary>Per-window text outline level (dark halo behind body glyphs for readability): a
     /// <c>TextStyle.OutlineLevels</c> value, 0 off, 1 thin, 2 thick.</summary>
     public int Outline;
-    /// <summary>Per-window text size in design px (CX-683); 0 = follow <c>ui.font</c>.</summary>
+    /// <summary>Per-window text size in design px; 0 = follow <c>ui.font</c>.</summary>
     public int FontPx;
-    /// <summary>Per-window typeface, a <c>FontRegistry</c> name (CX-683); "" = follow <c>ui.typeface</c>.</summary>
+    /// <summary>Per-window typeface, a <c>FontRegistry</c> name; "" = follow <c>ui.typeface</c>.</summary>
     public string Typeface = "";
     /// <summary>Per-window timestamp presentation.</summary>
     public TsFormat TimeFormat = TsFormat.HourMin;
@@ -142,16 +142,16 @@ public sealed partial class ChatWindow
     /// shell's motion path, read by Build for the hover plates the draw eases in/out.</summary>
     public int HoveredTab = -1, LeftTab = -1;
     public System.DateTime HoverSince, LeftSince;
-    /// <summary>When true, the window cannot be moved, resized, or have its tabs dragged (#43).</summary>
+    /// <summary>When true, the window cannot be moved, resized, or have its tabs dragged.</summary>
     public bool Locked;
-    /// <summary>When true, incoming Tell auto-opens route here instead of the focused window (#46).</summary>
+    /// <summary>When true, incoming Tell auto-opens route here instead of the focused window.</summary>
     public bool TellsHere;
 
     /// <summary>Pass-1 wrap cache: block heights + content height, keyed on (width, content, settings).
     /// Volatile swap so concurrent builds see a consistent snapshot.</summary>
     internal volatile LayoutCache? WrapCache;
 
-    /// <summary>Per-window dirty flag (#53 comment finding #1). When false, <see cref="ChatService.Rebuild"/>
+    /// <summary>Per-window dirty flag. When false, <see cref="ChatService.Rebuild"/>
     /// reuses the last-built frame for this window. Cleared before building, so a concurrent ingest-set survives.
     /// The focused window is always built regardless.</summary>
     public volatile bool Dirty = true;
@@ -203,7 +203,7 @@ public sealed partial class ChatWindow
     public bool CanSend(Channel ch) => (Active.ChannelMask & Bit(ch)) != 0;
 
     /// <summary>Can <paramref name="ch"/> appear in the channel dropdown? Tell is hidden when the tab has
-    /// other sendable channels — tells are sent via portrait click, /t command, or dedicated tabs (#46).</summary>
+    /// other sendable channels — tells are sent via portrait click, /t command, or dedicated tabs.</summary>
     public bool CanSelect(Channel ch)
     {
         if (!CanSend(ch)) return false;
@@ -228,7 +228,7 @@ public sealed partial class ChatWindow
         foreach (Channel ch in SendChannels) if (CanSelect(ch)) { SendChannel = ch; return; }
     }
 
-    /// <summary>Make tab <paramref name="i"/> active and give it back the channel last used on it (CX-59), clamped to
+    /// <summary>Make tab <paramref name="i"/> active and give it back the channel last used on it, clamped to
     /// what it can send. A tab not yet typed in this session starts on <see cref="Channel.Talk"/>, clamped, rather
     /// than inheriting whatever the tab before it was on -- a DM-only tab must not leave the next tab on DM.</summary>
     public void SelectTab(int i)
@@ -254,8 +254,8 @@ public sealed partial class ChatWindow
     public static float MaxTabW => 120f * Metrics.Scale;
     /// <summary>Whether this window can be closed (non-Main). Set by the layout owner.</summary>
     public bool Closeable;
-    /// <summary>Width reserved at the tab bar's right edge for buttons: just [⚙] (CX-683 moved [+] and [×] into the
-    /// panel: "Copy this window" and "Close this window").</summary>
+    /// <summary>Width reserved at the tab bar's right edge for buttons: just [⚙]; "Copy this window" and
+    /// "Close this window" are rows in the settings panel.</summary>
     public float ButtonsW => GearW;
     /// <summary>Actual tab width for this window: bar minus button area, divided by tab count, capped at max.
     /// Takes the snapshotted tab count to avoid a torn read when a concurrent thread swaps _tabs.</summary>
@@ -314,7 +314,7 @@ public sealed partial class ChatWindow
         return mx >= X + W - ScrollbarW && mx <= X + W && my >= top && my <= top + h;
     }
 
-    /// <summary>Top y of the input strip (#25). Below the frame by default; above it (top grows up as the
+    /// <summary>Top y of the input strip. Below the frame by default; above it (top grows up as the
     /// input wraps) when <see cref="InputOnTop"/>. Only live while <see cref="FooterVisible"/>.</summary>
     public float StripTop => InputOnTop ? Y - FooterHeight : Y + H;
     /// <summary>The dropdown button (closed state) on the strip's top row (where the renderer draws it).</summary>
@@ -349,7 +349,7 @@ public sealed partial class ChatWindow
     private bool _pressConsumed;        // did we consume the matching mouse-down? (button-pair ownership)
     private float _gx, _gy, _gw, _gh;   // grab anchor: pointer/rect at mouse-down
     private float _gsp;                  // scroll-grab anchor: ScrollPx at the thumb grab
-    private int _dragTabIdx;             // tab index being dragged (#42)
+    private int _dragTabIdx;             // tab index being dragged
     /// <summary>Pixel distance the pointer must travel from the tab press before drag activates.</summary>
     private const float TabDragThreshold = 6f;
 
@@ -390,11 +390,10 @@ public sealed partial class ChatWindow
         ClampSendChannel();
     }
 
-    /// <summary>Remove tab <paramref name="index"/>, refusing the last one so a window always keeps &gt;=1 tab
-    /// (#36); returns false + no change on the last tab or an out-of-range index. Keeps the same tab active --
-    /// removing one before it decrements <see cref="ActiveTab"/>, removing it lands on the tab that slid in, which
-    /// gets its own channel back (CX-59). ActiveTab is written first so a concurrent reader never sees an index
-    /// past the new array's end.</summary>
+    /// <summary>Remove tab <paramref name="index"/>, refusing the last one so a window always keeps &gt;=1 tab;
+    /// returns false and changes nothing on the last tab or an out-of-range index. Keeps the same tab active --
+    /// removing one before it decrements <see cref="ActiveTab"/>, and the tab that slides in gets its own channel
+    /// back. ActiveTab is written first so a concurrent reader never sees an index past the new array's end.</summary>
     public bool RemoveTab(int index)
     {
         Tab[] old = _tabs;
@@ -444,7 +443,7 @@ public sealed partial class ChatWindow
         _tabs = next;
     }
 
-    /// <summary>Drop position in the tab bar for a cross-window tab drag (#42). Returns the insert
+    /// <summary>Drop position in the tab bar for a cross-window tab drag. Returns the insert
     /// index (0..<see cref="Tabs"/>.Count) if the pointer is over the tab bar, or -1 if outside.</summary>
     public int TabBarDropIndex(float mx, float my)
     {
@@ -690,8 +689,8 @@ public sealed partial class ChatWindow
         Active.ScrollPx = o < 0f ? 0f : o;
     }
 
-    /// <summary>Body rectangle: everything between the tab bar and the frame's bottom. Since #25 the input
-    /// strip pops out <em>below</em> the frame, so the body keeps its full height whether or not it shows.
+    /// <summary>Body rectangle: everything between the tab bar and the frame's bottom. The input strip pops out
+    /// <em>below</em> the frame, so the body keeps its full height whether or not it shows.
     /// When <paramref name="headerVisible"/> is false the body expands upward into the header band.</summary>
     public void BodyRect(out float bx, out float by, out float bw, out float bh, bool headerVisible = true)
     {

@@ -4,13 +4,10 @@ using System.Numerics;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-111 seam: one parsed, post-processed model -- CX's replacement for the engine's <c>Model</c> +
-/// <c>MdlNode*</c> tree. Immutable once the parser returns it, EXCEPT for the two fields the model cache owns
-/// and writes on the game thread before the model is handed out: <see cref="Name"/> (filed under the resref it
-/// was asked for) and <see cref="Super"/> (the resolved chain). Everything else is read-only, so any thread may
-/// read it and every instance of the model shares it (identity is the content, never an address). Engine-free by
-/// contract: nothing under <c>Alloy/Mdl/</c> reads engine memory, which is what lets <c>tools/mdlcheck</c> run it
-/// off-device.</summary>
+/// <summary>One parsed, post-processed model -- CX's replacement for the engine's <c>Model</c> +
+/// <c>MdlNode*</c> tree. Immutable once the parser returns it, except for <see cref="Name"/> and
+/// <see cref="Super"/>, which the model cache writes on the game thread before handing it out; every instance
+/// shares it, so any thread may read it. Engine-free by contract, which lets <c>tools/mdlcheck</c> run it.</summary>
 public sealed class ModelDef
 {
     /// <summary>The model's resref, lower-cased (the engine's <c>FindModel</c> key). The parser fills in the
@@ -19,7 +16,7 @@ public sealed class ModelDef
     public string Name = "";
     /// <summary>The supermodel resref, lower-cased; empty for none (the file's <c>"null"</c>).</summary>
     public string SuperName = "";
-    /// <summary>Resolved by the model cache (CX-113), never by the parser.</summary>
+    /// <summary>Resolved by the model cache, never by the parser.</summary>
     public ModelDef? Super;
     /// <summary>The file's classification byte (effect, tile, character, door, ...).</summary>
     public byte Classification;
@@ -100,21 +97,10 @@ public sealed class NodeDef
     public EmitterDef? Emitter;
     public ReferenceDef? Reference;
 
-    /// <summary>CX-188: a consumer's resolved memo of this node's EMITTER rest keys -- the first key of every
-    /// animatable emitter controller, laid out in the channel ordinals of <c>CX.Alloy.EmitterSim</c>, which is
-    /// the one consumer that reads it. <c>Mdl</c> neither fills nor interprets it: the layout belongs to
-    /// whoever resolved it.
-    /// <para>It lives on the NODE because that is what it is a pure function of -- <see cref="Controllers"/>,
-    /// immutable once the parser returns them. So there is no invalidation edge at all, and a node four
-    /// hundred torches share resolves once instead of four hundred times. The particle fill read those keys
-    /// about thirty times per emitter per frame through <see cref="Controller"/>, which is a linear search of
-    /// this list: 4,3% self of the main thread's on-CPU samples (<c>perf-0927</c>, 12 s of a still camera).</para>
-    /// <para>This is an exception to the "immutable once parsed" contract, beside
-    /// <see cref="ModelDef.Name"/>, <see cref="ModelDef.Super"/> and <see cref="LitKeyed"/>'s memo -- the same
-    /// pattern as that one, computed by the consumer rather than inside the node, and the only one a CONSUMER
-    /// writes. It keeps the contract's promise that any thread may read a model: the resolve is idempotent and
-    /// the array is published only once it is filled, so two threads racing cost one duplicate array and never
-    /// a half-written one.</para></summary>
+    /// <summary>A consumer's resolved memo of this node's EMITTER rest keys -- the first key of every animatable
+    /// emitter controller, in <c>CX.Alloy.EmitterSim</c>'s channel ordinals. A pure function of
+    /// <see cref="Controllers"/>, so there is no invalidation edge; idempotent and published only once filled,
+    /// so two threads racing cost one duplicate array and never a half-written one.</summary>
     public Vector4[]? EmRest;
 
     /// <summary>The first controller of <paramref name="type"/>, or null.</summary>
@@ -124,18 +110,14 @@ public sealed class NodeDef
         return null;
     }
 
-    /// <summary>Memo for <see cref="LitKeyed"/>: 0 not yet asked, 1 no, 2 yes. A node's controller array is
-    /// immutable once parsed, so this needs no invalidation edge -- it is collected with the model.
-    /// <para>A memo rather than state -- <see cref="EmRest"/> beside it is the other one -- and the race is
-    /// benign BY CONSTRUCTION, not by argument: the value is a pure function of the immutable array, a byte
-    /// store is atomic, and 0 is the only value that
-    /// means "ask again" -- so two threads racing both compute the same answer and either store wins.</para></summary>
+    /// <summary>Memo for <see cref="LitKeyed"/>: 0 not yet asked, 1 no, 2 yes. The controller array is
+    /// immutable once parsed, so no invalidation edge is needed, and the race is benign by construction -- a
+    /// pure function of that array, an atomic byte store, and 0 the only value meaning "ask again".</summary>
     private byte _litKeyed;
 
     /// <summary>Does a MULTI-KEY light track drive this node (colour, radius or multiplier), i.e. does its
     /// light never settle? Asked once per light per frame by the bake's static verdict and again by the halo
-    /// enrolment, where the array scan was 1.7% of the frame on its own in a 146-light area (CX-188); the
-    /// answer is a property of the parsed node, so it is computed once and kept.</summary>
+    /// enrolment, so the answer -- a property of the parsed node -- is computed once and kept.</summary>
     public bool LitKeyed
     {
         get
@@ -243,10 +225,9 @@ public sealed class SkinDef
     /// against the file), so this member is the one place where the two readers legitimately disagree.</summary>
     public int[] BoneNodes = Array.Empty<int>();
     /// <summary>Which of the two forms <see cref="BoneNodes"/> is in, stated by the reader that filled it
-    /// instead of inferred from its length. False is the ASCII form above -- one entry per SLOT, holding that
-    /// slot's node. True is the compiled binary's BONE MAP -- one entry per model NODE, holding that node's
-    /// slot, or -1. The length cannot tell them apart once the bind arrays are absent, and absent is what
-    /// every stock cloak, tail and wing has.</summary>
+    /// rather than inferred from its length. False is the ASCII form (one entry per SLOT, holding that slot's
+    /// node); true is the compiled binary's BONE MAP (one entry per model NODE, holding that node's slot, or
+    /// -1). Length cannot tell them apart once the bind arrays are absent, as they are on stock cloaks.</summary>
     public bool BoneNodesAreMap;
     /// <summary>The faithful per-vertex bone slots, four per vertex: a slot can exceed 255, which
     /// <see cref="Bones"/>'s byte packing cannot carry.</summary>
@@ -347,26 +328,17 @@ public sealed class AnimNode
     public string Name = "";
     public ControllerTrack[] Controllers = Array.Empty<ControllerTrack>();
     public AnimMeshDef? AnimMesh;
-    /// <summary>CX-113: this node's parent in <see cref="AnimDef.Nodes"/>, -1 for the animation's root. The
-    /// animation carries its OWN hierarchy because the engine's node binding is scoped to it (a child is
-    /// matched only against its matched parent's children: <c>SynchronizeNodes</c> @0x453760). Left at -1 for
-    /// every node, the model cache falls back to a flat name match and says so once.</summary>
+    /// <summary>This node's parent in <see cref="AnimDef.Nodes"/>, -1 for the animation's root. The animation
+    /// carries its OWN hierarchy because the engine's node binding is scoped to it (a child is matched only
+    /// against its matched parent's children: <c>SynchronizeNodes</c> @0x453760). Left at -1 for every node,
+    /// the model cache falls back to a flat name match and says so once.</summary>
     public int Parent = -1;
 }
 
-/// <summary><b>ANSWER FOR EVERY CONSUMER: <see cref="ControllerTrack.Type"/> is a FILE id.</b> Both readers
-/// agree on it -- the binary reader keeps the number the file states, and the ASCII reader maps each keyword
-/// straight to the same number instead of the engine's. So <c>Position == 8</c>, <c>LightColor == 76</c>,
-/// <c>LightMultiplier == 140</c>, and <c>MdlBinary.EngineControllerId(type, kind)</c> is the only thing that
-/// speaks the engine's in-memory numbering (it exists for the live comparison and nothing else).
-/// <para>The controller ids, as the <b>FILE</b> numbers them -- the canonical <c>.mdl</c> ids a binary model
-/// stores verbatim. The engine renumbers them on load into byte offsets inside its runtime <c>Part</c> subclass
-/// (<c>NewController::Control</c> writes <c>*(float*)(part + id)</c>), and the ASCII parser writes those engine
-/// numbers straight out; <c>MdlBinary.EngineControllerId</c> is that map, kept in one place so nothing else
-/// needs it. CX speaks file ids everywhere because they do not move between client builds.
-/// <para>Every id below was read off its <c>AddGenericController*</c> call site and cross-checked against the
-/// loader's remap ladder and the compiler's inverse (<c>FUN_005c01b0</c> / <c>FUN_005ba070</c>). The table is
-/// COMPLETE for this client: three geometry controllers, two mesh, five light and thirty-nine emitter.</para></summary>
+/// <summary><see cref="ControllerTrack.Type"/> is a FILE id -- the canonical <c>.mdl</c> number both readers
+/// agree on, so <c>Position == 8</c>, <c>LightColor == 76</c>, <c>LightMultiplier == 140</c>. The engine
+/// renumbers them on load into <c>Part</c> byte offsets; <c>MdlBinary.EngineControllerId</c> is that map.
+/// <para>COMPLETE for this client: three geometry controllers, two mesh, five light, thirty-nine emitter.</para></summary>
 public static class Ctl
 {
     public const int Position = 8, Orientation = 20, Scale = 36;
@@ -393,9 +365,8 @@ public static class Ctl
 
 /// <summary>What a mesh node's file states before the post-process derives the render geometry: the authored
 /// vertex, UV and face arrays, with a face naming its position corners and its UV corners SEPARATELY. The
-/// engine keeps the same split in its scratch <c>MdlNodeTriMesh_PostProcess</c> and throws it away once
-/// <c>ProcessVerts</c> has paired them; CX keeps it, because it is the only honest answer to "what does the
-/// file say" and the oracle compares an ASCII read against a compiled one on exactly these arrays.</summary>
+/// engine throws the split away once <c>ProcessVerts</c> has paired them; CX keeps it, because the oracle
+/// compares an ASCII read against a compiled one on exactly these arrays.</summary>
 public sealed class MeshRaw
 {
     /// <summary>Authored positions, one per <c>verts</c> line.</summary>

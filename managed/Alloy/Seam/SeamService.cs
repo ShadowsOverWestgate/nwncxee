@@ -9,11 +9,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120's boot switch and the one installer of the Aurora seam. In DB mode
-/// (<c>alloy.scenedb 1</c>) the game layer's <c>NewCAurObject</c> / <c>NewCAurScene</c> /
-/// <c>NewCAurCamera</c> / <c>NewCAurString</c> answer with CX facades and no engine <c>Scene</c>, <c>Gob</c> or
-/// <c>Part</c> is created for the session (ADR 0028). Installed whenever Alloy is (<c>alloy.enabled</c>, read
-/// once at boot); a seam that cannot install stands Alloy down (<see cref="AlloyGate"/>).</summary>
+/// <summary>The one installer of the Aurora seam: the game layer's <c>NewCAurObject</c> / <c>NewCAurScene</c> /
+/// <c>NewCAurCamera</c> / <c>NewCAurString</c> answer with CX facades, and no engine <c>Scene</c>, <c>Gob</c>
+/// or <c>Part</c> is created for the session (ADR 0028). Installed whenever Alloy is (<c>alloy.enabled</c>,
+/// read once at boot); a seam that cannot install stands Alloy down (<see cref="AlloyGate"/>).</summary>
 public sealed unsafe class SeamService : IExtenderService
 {
     /// <summary>True for the session when the seam is installed; never changes after <see cref="Initialize"/>.
@@ -61,8 +60,6 @@ public sealed unsafe class SeamService : IExtenderService
             return sh == 0 ? 1f : *(float*)(sh + SeamLayout.GobScaleFinal) * VisualXform.Scale(sh);
         };
 
-        // The subsystems the object slots lean on, now that CX-112/114 have landed. Each was a counted
-        // refusal until this point, which is why the boot log named them.
         SeamBridge.ObjectBounds = ObjectSlots.PartRangeBounds;
         TexSeam.Wire(log);   // CX-117: the six texture / material-parameter entries
         SeamBridge.HasSkinnedMesh = static m =>
@@ -70,8 +67,8 @@ public sealed unsafe class SeamService : IExtenderService
             foreach (CX.Alloy.Mdl.NodeDef n in m.Nodes) if (n.Skin != null) return true;
             return false;
         };
-        // CX-116: the DB light set. MaxLightRadius is Gob::GetMaximumLightRadius's CollectLights + max;
-        // SetPartLightColour is ControlPartLightColor, which installs a controller rather than poking a field.
+        // MaxLightRadius is Gob::GetMaximumLightRadius's CollectLights + max; SetPartLightColour is
+        // ControlPartLightColor, which installs a controller rather than poking a field.
         SeamBridge.MaxLightRadius = DbLightSet.MaxRadius;
         SeamBridge.SetPartLightColour = DbLightSet.SetPartColour;
         SeamBridge.PartArea = static p =>

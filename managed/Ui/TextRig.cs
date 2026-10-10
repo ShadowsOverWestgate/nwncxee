@@ -9,28 +9,21 @@ using CX.Services.Chat.Core.Model;
 namespace CX.Ui;
 
 /// <summary>
-/// The UI's GL RIG, not a renderer (#176): it owns the shared GL objects -- a stb_truetype glyph
-/// atlas baked once at init (cold), a GL 3.3-core program, and one VAO/VBO pair -- and exposes the
-/// primitives every UI service draws through. Nothing here decides WHAT to draw. Bakes a stb_truetype glyph atlas once at init (cold), owns a tiny
-/// GL 3.3-core shader + VAO/VBO rig, and exposes the generic drawing primitives any service draws
-/// through -- <see cref="DrawBatch"/> (a caller-built vertex batch) and <see cref="DrawPortrait"/>
-/// (an engine-resident texture quad). Callers build batches cold (ingest/input thread) via
-/// <see cref="VertexBatch"/>; the hot draw only uploads-if-changed and issues one <c>glDrawArrays</c>,
-/// allocating nothing in steady state. The client GL context is CORE (no fixed-function/immediate
-/// mode), so everything is shader-driven; blend/depth/cull/scissor are snapshot-restored so the
-/// engine's own state cache stays consistent. The chat-coupled Publish/RenderFrame draw path lives
-/// in <see cref="CX.Services.Chat.Render.ChatRenderer"/>, which drives these primitives.
+/// The UI's GL RIG, not a renderer: it owns the shared GL objects -- a stb_truetype glyph atlas baked once at
+/// init (cold), a GL 3.3-core program and one VAO/VBO pair -- and exposes the primitives every UI service draws
+/// through: <see cref="DrawBatch"/> for a caller-built vertex batch, <see cref="DrawPortrait"/> for an
+/// engine-resident texture quad. The context is core, so everything is shader-driven; nothing here decides WHAT to draw.
 /// </summary>
 public static unsafe partial class TextRig
 {
     /// <summary>The UI typeface's <see cref="FontRegistry"/> name: the embedded DejaVuSans (third_party/dejavu,
-    /// Bitstream Vera licence) unless <c>font.default=</c> overrides it (#470). Shipped rather than searched:
+    /// Bitstream Vera licence) unless <c>font.default=</c> overrides it. Shipped rather than searched:
     /// a per-machine font meant per-machine metrics. Whatever it is bound to only ever decides how TEXT looks --
-    /// the chrome's icons come from <see cref="Icons"/> (#425).</summary>
+    /// the chrome's icons come from <see cref="Icons"/>.</summary>
     private const string DefaultFace = FontRegistry.DefaultName;
 
     /// <summary>The icon source every face draws the <c>icon</c> rows of <see cref="Ranges"/> from: the embedded
-    /// DejaVu, so a configured typeface (Windows' Arial has none of these symbols, #419) cannot lose the chrome.</summary>
+    /// DejaVu, so a configured typeface (Windows' Arial has none of these symbols) cannot lose the chrome.</summary>
     private static (string Name, byte[]? Font) Icons => (FontRegistry.EmbeddedName, FontRegistry.Bytes(FontRegistry.EmbeddedName));
 
     private const float FontPx = 18f;
@@ -79,7 +72,7 @@ public static unsafe partial class TextRig
         => _sheet != null && _sheet.TryFace(FontRegistry.Effective(typeface), px, out GlyphAtlas f) ? f : null;
 
     /// <summary>A face of the <see cref="FontRegistry"/> name <paramref name="typeface"/> at <paramref name="px"/>;
-    /// see <see cref="Face(float)"/>. An unknown or refused name is the default typeface (#470).</summary>
+    /// see <see cref="Face(float)"/>. An unknown or refused name is the default typeface.</summary>
     public static GlyphAtlas? Face(string typeface, float px)
     {
         lock (_bakeLock) return FaceLocked(typeface, px);
@@ -102,7 +95,7 @@ public static unsafe partial class TextRig
         return _sheet.TryFace(typeface, px, out f) ? f : null;
     }
 
-    /// <summary>#593: the icon font's icon rows alone at <paramref name="px"/> -- the main-menu gear's sprite face,
+    /// <summary>The icon font's icon rows alone at <paramref name="px"/> -- the main-menu gear's sprite face,
     /// past <see cref="AtlasMaxPx"/> where no text face is ever requested. Cold: a miss re-bakes the sheet, and a
     /// new px drops the previous icon-only request so the sheet carries one. Null when headless or refused.</summary>
     public static GlyphAtlas? IconFace(float px)
@@ -124,9 +117,9 @@ public static unsafe partial class TextRig
     public static GlyphAtlas? BakedIconFace(float px)
         => _sheet != null && _sheet.TryFace(Icons.Name, px, out GlyphAtlas f) ? f : null;
 
-    /// <summary>Drop a face request of the registry name <paramref name="typeface"/> a caller no longer needs (#471: a
-    /// superseded peak face), so the sheet stops carrying it from the next re-bake on. Cold; no bake of its own -- the
-    /// face stays usable until then. The default face (index 0) is never dropped.</summary>
+    /// <summary>Drop a face request of the registry name <paramref name="typeface"/> a caller no longer needs (a
+    /// superseded peak face), so the sheet stops carrying it from the next re-bake on. Cold; no bake of its own --
+    /// the face stays usable until then. The default face (index 0) is never dropped.</summary>
     public static void ReleaseFace(string typeface, float px)
     {
         typeface = FontRegistry.Effective(typeface);
@@ -178,7 +171,7 @@ public static unsafe partial class TextRig
 
     /// <summary>Sample the live GL viewport into <see cref="ViewportW"/>/<see cref="ViewportH"/>. The frame host
     /// calls it once per present, before the window roll-call, and every draw below reads the published pair
-    /// instead of re-querying the driver (CX-709). A no-op off-device, where the pair stays 0.</summary>
+    /// instead of re-querying the driver. A no-op off-device, where the pair stays 0.</summary>
     public static void SampleViewport()
     {
         if (_log == null || !Gl.Init(_log) || Gl.GetIntegerv == null) return;
@@ -209,8 +202,8 @@ public static unsafe partial class TextRig
     internal static bool _vaoUp;
     private static bool _progUp;
 
-    // Portrait pass (#26): its own RGBA program + VAO/VBO (a second buffer so the text VBO's
-    // upload-if-changed cache stays valid). The engine CAurTexture* is NEVER cached -- see ResolveTid (#33).
+    // Portrait pass: its own RGBA program + VAO/VBO (a second buffer so the text VBO's
+    // upload-if-changed cache stays valid). The engine CAurTexture* is NEVER cached -- see ResolveTid.
     // internal: ChatRenderer's multi-portrait sub-pass drives this same rig.
     internal static uint _progRgb, _pvao, _pvbo;
     internal static int _uProjRgb, _uTexRgb;
@@ -248,9 +241,6 @@ public static unsafe partial class TextRig
     /// 32 (effective = font * GUIScale) without the slider itself going that high; caps the atlas size.</summary>
     public const float AtlasMaxPx = 96f;
 
-    /// <summary>Re-bake the atlas at a new glyph height (cold, on a settings change) and flag the GL texture
-    /// for re-upload next frame. No-op when unchanged (debounced for sub-pixel slider drags) or headless.
-    /// Swaps the atlas reference atomically; the caller re-publishes the frame so its UVs/metrics match.</summary>
     /// <summary>A face size at the GUI scale, clamped like the UI atlas: <paramref name="fontPx"/>, or <c>ui.font</c>
     /// when 0 (a window / menu following the UI size), × <see cref="Metrics.GameUiScale"/>.</summary>
     public static float FacePx(int fontPx)
@@ -259,6 +249,9 @@ public static unsafe partial class TextRig
         return px < MinFontPx ? MinFontPx : px > AtlasMaxPx ? AtlasMaxPx : px;
     }
 
+    /// <summary>Re-bake the atlas at a new glyph height (cold, on a settings change) and flag the GL texture for
+    /// re-upload next frame. No-op when unchanged (debounced for sub-pixel slider drags) or headless. Swaps the
+    /// atlas reference atomically; the caller re-publishes the frame so its UVs and metrics match.</summary>
     public static void SetFont(float px)
     {
         if (_sheet == null || _log == null) return;
@@ -276,7 +269,7 @@ public static unsafe partial class TextRig
     /// is the load-time binding.</summary>
     private static string _typeface = FontRegistry.DefaultName;
 
-    /// <summary>#681: rebind <c>default</c> to <paramref name="name"/> and re-bake every default-typeface face on its
+    /// <summary>Rebind <c>default</c> to <paramref name="name"/> and re-bake every default-typeface face on its
     /// bytes (cold, on a settings change). The icon rows still come from the embedded font. A font stbtt refuses
     /// keeps the old sheet AND the old binding, so the knob may say a name the screen does not show -- logged.</summary>
     public static void SetTypeface(string name)
@@ -318,15 +311,12 @@ public static unsafe partial class TextRig
         Gl.BindVertexArray(_vao);
     }
 
-    // ---- portrait pass (#26) ------------------------------------------------------------------
+    // ---- portrait pass ------------------------------------------------------------------
 
-    /// <summary>resref -&gt; live GL texture id, or 0 if not yet uploaded / unresolvable. Re-fetches the
-    /// engine <c>CAurTexture*</c> from the resman EVERY frame and NEVER caches it (#33): the engine frees
-    /// and reloads its portrait textures on area transitions and module unloads, so any stored pointer
-    /// dangles and crashes when bound (confirmed via core dump: cached ptr -> AurTextureGetTID -> jump into
-    /// freed heap). AurTextureGet is a resref-keyed lookup that returns the current live (borrowed) pointer,
-    /// so asking it per frame is the only way to never hold a stale one. Zero GC alloc on our side
-    /// (stackalloc name; engine owns the texture).</summary>
+    /// <summary>resref -&gt; live GL texture id, or 0 if not yet uploaded / unresolvable. Re-fetches the engine
+    /// <c>CAurTexture*</c> from the resman EVERY frame and NEVER caches it: the engine frees and reloads its
+    /// portrait textures on area transitions and module unloads, so any stored pointer dangles and crashes when
+    /// bound. AurTextureGet returns the current live (borrowed) pointer, the only way to never hold a stale one.</summary>
     internal static int ResolveTid(string resref)
     {
         IntPtr tex = ResolveTexture(resref);
@@ -342,11 +332,10 @@ public static unsafe partial class TextRig
     /// virtual <c>+0x1d8</c> with <c>edx = 1</c>, @nm <c>0x75be6e</c>) and why those portraits looked blurry.</summary>
     private const byte SizeMedium = (byte)'m';
 
-    /// <summary>If <paramref name="name"/> (a NUL-terminated resref of <paramref name="len"/> bytes including
-    /// the NUL) ends in a size letter SMALLER than medium, rewrite it to medium in place. Pure, allocation-free
-    /// and self-checked; the caller is responsible for putting the original letter back if the medium variant
-    /// turns out not to exist.</summary>
-    /// <returns>the index that was rewritten, or -1 if nothing was.</returns>
+    /// <summary>If <paramref name="name"/> (a NUL-terminated resref of <paramref name="len"/> bytes including the
+    /// NUL) ends in a size letter SMALLER than medium, rewrite it to medium in place. Pure and allocation-free; the
+    /// caller must put the original letter back if the medium variant turns out not to exist.</summary>
+    /// <returns>The index that was rewritten, or -1 if nothing was.</returns>
     private static int PreferMedium(Span<byte> name, int len)
     {
         int last = len - 2;                                     // the byte before the NUL
@@ -357,12 +346,10 @@ public static unsafe partial class TextRig
         return last;
     }
 
-    /// <summary>Portrait TID, preferring the MEDIUM size variant of the resref and falling back to the resref
-    /// as given. The engine hands the chat log a tiny (<c>_t</c>) portrait and both portrait paths magnify it,
-    /// so the preference is what fixes the blur; the fallback is what keeps a custom portrait that ships no
-    /// <c>_m</c> from vanishing outright. Nothing is cached and nothing is allocated -- the rewrite happens in
-    /// the stack buffer the resref is marshalled into. A resref already at medium or larger costs exactly one
-    /// lookup, as before; only a genuine miss pays a second.</summary>
+    /// <summary>Portrait TID, preferring the MEDIUM size variant of the resref and falling back to the resref as
+    /// given: the engine hands the chat log a tiny (<c>_t</c>) portrait and both portrait paths magnify it, so the
+    /// preference is what fixes the blur and the fallback keeps a custom portrait shipping no <c>_m</c>. Nothing is
+    /// cached or allocated -- the rewrite happens in the stack buffer the resref is marshalled into.</summary>
     internal static int ResolvePortraitTid(string resref)
     {
         if (resref.Length == 0) return 0;
@@ -430,12 +417,10 @@ public static unsafe partial class TextRig
         return n + 1;
     }
 
-    /// <summary>Fraction of a portrait texture that is real image, from the engine's own ConvertPortrait
-    /// (content = 1/1.28 of a pow2-padded height; the rest is black at the image bottom). The nominal
-    /// 100/128 leaves a row or two of the pad visible along the bottom edge -- linear filtering samples
-    /// across the content/pad boundary -- so the crop is two texels tighter, as a fraction so it holds at
-    /// every portrait resolution. ponytail: if a live frame ever shows a portrait cropped or with a black
-    /// band, this one const is the knob (1.0 = raw).</summary>
+    /// <summary>Fraction of a portrait texture that is real image, from the engine's own ConvertPortrait (content =
+    /// 1/1.28 of a pow2-padded height; the rest is black at the image bottom). Two texels tighter than the nominal
+    /// 100/128, because linear filtering samples across the content/pad boundary; a fraction, so it holds at every
+    /// resolution. ponytail: a portrait ever cropped or showing a black band, this one const is the knob (1.0 = raw).</summary>
     private const float PortraitContentV = 98f / 128f;   // 0.765625, nominal 0.78125 less two texel rows
 
     /// <summary>Two triangles for a portrait quad. The engine uploads portraits GL-bottom-origin, so the
@@ -477,23 +462,18 @@ public static unsafe partial class TextRig
         return true;
     }
 
-    /// <summary>Lazily create the sampler both portrait paths draw through. A portrait source (medium, 64x100)
-    /// lands in a plate around 36px tall, so the quad is a ~2.8x MINIFICATION -- with whatever filter the engine
-    /// last left on that <c>CAurTexture</c> name (often NEAREST) that reads as the reported aliasing. A sampler
-    /// object overrides the texture's own filter/wrap for the units it is bound to and mutates NOTHING on the
-    /// texture, which is the point: <c>glTexParameteri</c> here would persist on an object the engine owns and
-    /// caches (#237), and <c>glGenerateMipmap</c> would respecify it (the AMD/Mesa mip trap). Deliberately
-    /// un-mipmapped: the engine's portrait texture may carry only level 0, and a <c>LINEAR_MIPMAP_*</c> min
-    /// filter against an incomplete chain is undefined (black, in practice). CLAMP wrap because the crop UVs
-    /// stop short of the pow2 padding -- REPEAT could fetch across the edge.
-    /// ponytail: bilinear still skips texels at 2.8x; the ceiling is a mip chain on a texture we own, or a
-    /// supersampled fetch in <see cref="FSrcRgb"/>.</summary>
-    /// <returns>false when the driver's loader gave us no sampler entry points -- callers then draw exactly as
-    /// they did before, inheriting the texture's own filter.</returns>
+    /// <summary>Lazily create the sampler both portrait paths draw through: LINEAR for the 2.8x minification a medium
+    /// (64x100) source in a ~36px plate is, CLAMP because the crop UVs stop short of the pow2 padding, un-mipmapped
+    /// because the portrait may carry level 0 only, where a <c>LINEAR_MIPMAP_*</c> min filter reads black.</summary>
+    /// <returns>false when the loader gave no sampler entry points; callers then inherit the texture's own filter.</returns>
     internal static bool EnsurePortraitSampler()
     {
         if (_psamp != 0) return true;
         if (Gl.BindSampler == null) return false;
+        // A sampler object, never glTexParameteri/glGenerateMipmap: those mutate a texture the engine owns and
+        // caches, and the respecify is the AMD/Mesa mip trap.
+        // ponytail: bilinear still skips texels at 2.8x; the ceiling is a mip chain on a texture we own, or a
+        // supersampled fetch in FSrcRgb.
         _psamp = Gl.LinearClampSampler();
         return _psamp != 0;
     }
@@ -598,7 +578,7 @@ public static unsafe partial class TextRig
         for (int l = 1; l < AtlasSheet.MipLevels && l - 1 < a.Mips.Length; l++)
             fixed (byte* px = a.Mips[l - 1])
                 Gl.TexImage2D(Gl.TEXTURE_2D, l, (int)Gl.R8, a.Side >> l, a.Side >> l, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
-        // #237: back to the GL default, in the ENGINE's context, or every engine texture upload after this
+        // back to the GL default, in the ENGINE's context, or every engine texture upload after this
         // one reads its rows one byte at a time. GLRender::CreateTexture @0x4ca2b0 -- the CAurTexture upload
         // path, and the one an area transition runs for every texture it loads -- calls glTexImage2D with no
         // pixel-store call of its own, and GLRender::DirectCreateTexture @0x4c9cc0 SKIPS both its set and its
@@ -643,16 +623,10 @@ public static unsafe partial class TextRig
         fixed (float* p = b) Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(count * sizeof(float)), p, Gl.DYNAMIC_DRAW);
     }
 
-    /// <summary>Draw a caller-built vertex batch (x,y,u,v,r,g,b,a) through the shared text program, atlas,
-    /// VAO and VBO -- the same primitives the chatbox uses, so rects sample the solid texel and glyphs sample
-    /// their atlas cell. Used by <c>DialogService</c> (#dialog) to render its own overlay inside the frame
-    /// present ChatService owns. Sets its own full GL preamble; no state snapshot (#210). Uploads go to the batch
-    /// rig's own VBO (<see cref="MakeVao"/>), so chat's shared VBO and its settled-frame cache stay intact --
-    /// chat does not re-upload while a dialog modal is open.</summary>
-    /// <param name="offX">Vertex translation (px) applied via <c>uOffset</c> -- the dialog scrolls its content
-    /// with it; 0 for un-scrolled batches.</param>
-    /// <param name="clip">When true, scissor the draw to (<paramref name="cx"/>,<paramref name="cy"/>,
-    /// <paramref name="cw"/>,<paramref name="ch"/>) in screen px (y-down, top-left); the box is saved + restored.</param>
+    /// <summary>Draw a caller-built vertex batch (x,y,u,v,r,g,b,a) through the shared text program, atlas and VAO,
+    /// uploading to the batch rig's own VBO so chat's and its settled-frame cache stay intact. Full preamble, no snapshot.</summary>
+    /// <param name="offX">Vertex translation in px via <c>uOffset</c>; 0 for an un-scrolled batch.</param>
+    /// <param name="clip">Scissor to (cx, cy, cw, ch), screen px y-down from the top-left; the box is saved + restored.</param>
     public static void DrawBatch(float[] verts, int count, float alpha = 1f, float offX = 0f, float offY = 0f,
                                  bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
@@ -670,7 +644,7 @@ public static unsafe partial class TextRig
         _textAlpha = alpha < 1f ? alpha : 1f;   // read by BindText; restored to 1 before returning
         _texOffX = offX; _texOffY = offY;       // ditto -- restored to (0,0) before returning
 
-        // #210: no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
+        // no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
         // sets its own full preamble.
         Gl.ActiveTexture(Gl.TEXTURE0);
 
@@ -706,7 +680,7 @@ public static unsafe partial class TextRig
     /// <summary>Draw a single speaker portrait quad (resref -> engine-resident GL texture, never cached -- see
     /// <see cref="ResolveTid"/>) through the shared RGBA portrait program. Used by <c>DialogService</c> to put
     /// a portrait in its overlay. No-op until the engine has uploaded the texture (TID 0) or when the resref is
-    /// empty. Sets its own full GL preamble (no snapshot, #210); the image is flipped upright + pow2-pad-cropped like the chat pass.</summary>
+    /// empty. Sets its own full GL preamble, taking no state snapshot; the image is flipped upright and pow2-pad-cropped.</summary>
     public static void DrawPortrait(string resref, float x, float y, float w, float h, float alpha = 1f,
                                     bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
@@ -717,7 +691,7 @@ public static unsafe partial class TextRig
         int tid = ResolvePortraitTid(resref);
         if (tid == 0) return;   // not uploaded yet this frame
 
-        // #210: no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
+        // no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
         // sets its own full preamble.
         Gl.ActiveTexture(Gl.TEXTURE0);
 
@@ -752,7 +726,7 @@ public static unsafe partial class TextRig
     /// callers size a portrait rect to match the texture and avoid distortion.</summary>
     public const float PortraitAspect = 0.64f;
 
-    /// <summary>Icon program (CX-690): the portrait program discards texture alpha and icons carry theirs, so a
+    /// <summary>Icon program: the portrait program discards texture alpha and icons carry theirs, so a
     /// second fragment source over the same VAO/VBO/sampler rig.</summary>
     private static uint _progIcon;
     private static int _uProjIcon, _uTexIcon;
@@ -761,11 +735,10 @@ public static unsafe partial class TextRig
         "#version 330 core\nin vec2 vUV;\nin vec3 vCol;\nin float vA;\nuniform sampler2D uTex;\nout vec4 o;\n" +
         "void main(){ o = texture(uTex, vUV) * vec4(1.0, 1.0, 1.0, vA); }\n";
 
-    /// <summary>CX-120: the same icon quad for a PLT layer. An item's PLT icon is a PAIR texture (intensity
-    /// R, layer G) and its colour is <c>master[rows[layer]][intensity]</c> -- the lookup the engine performs
-    /// when it composites a (resref, scheme) texture, which in DB mode it never builds. texelFetch, because
-    /// the pair texture must never be filtered: the mean of two layer indices is a third layer. Bilinear is
-    /// done over the RESOLVED colours instead.</summary>
+    /// <summary>The same icon quad for a PLT layer. An item's PLT icon is a PAIR texture (intensity R, layer G) and
+    /// its colour is <c>master[rows[layer]][intensity]</c> -- the lookup the engine performs when it composites a
+    /// (resref, scheme) texture, which Alloy never builds. texelFetch, because the pair texture must never be
+    /// filtered: the mean of two layer indices is a third layer. Bilinear runs over the RESOLVED colours.</summary>
     private const string FSrcIconPlt =
         "#version 330 core\nin vec2 vUV;\nin vec3 vCol;\nin float vA;\n" +
         "uniform sampler2D uTex;\nuniform sampler2D uPal;\nuniform int uRows[10];\nout vec4 o;\n" +
@@ -860,7 +833,7 @@ public static unsafe partial class TextRig
         return true;
     }
 
-    /// <summary>Draw one engine texture by resref as an icon quad (CX-690): full UV (icons are square pow2
+    /// <summary>Draw one engine texture by resref as an icon quad: full UV (icons are square pow2
     /// textures with no pad), flipped upright like <see cref="FillQuad"/>, WITH the texture's alpha. The resref
     /// is looked up as given (no portrait size-suffix rewrite) and never cached -- see <see cref="ResolveTid"/>.
     /// No-op until the engine has uploaded the texture.</summary>
@@ -873,7 +846,7 @@ public static unsafe partial class TextRig
     /// <summary>The <see cref="DrawIcon"/> body for a live GL texture id the caller already holds; 0 draws nothing.
     /// <paramref name="u1"/> / <paramref name="v0"/> crop a padded sheet to its top-left content (the <c>GUI_ICON_*</c>
     /// models' UVs); <paramref name="clip"/> scissors to (<paramref name="cx"/>, <paramref name="cy"/>, <paramref name="cw"/>,
-    /// <paramref name="ch"/>), y-down px. Sets its own full GL preamble (no snapshot, #210).</summary>
+    /// <paramref name="ch"/>), y-down px. Sets its own full GL preamble, taking no state snapshot.</summary>
     public static void DrawIconTid(int tid, float x, float y, float w, float h, float alpha = 1f, float u1 = 1f, float v0 = 0f,
                                    bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {

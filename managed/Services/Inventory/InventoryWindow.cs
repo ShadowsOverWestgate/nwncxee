@@ -13,10 +13,8 @@ internal enum InvActKind { Equip, Unequip, Move, Merge, Split, Drop, Use, Radial
 
 /// <summary>One request out of the window. <see cref="Mask"/> is an equip-slot bitmask (a Drop's source slot, 0 from the
 /// backpack), <see cref="X"/>/<see cref="Y"/> a backpack cell (global row; a Put's is a container cell, a Take's
-/// <see cref="InventoryWindow.AutoCell"/> when the server picks), a split's count, or the screen point of a
-/// Use / Radial (where the radial opens) / Drop (the world pick);
-/// <see cref="Other"/> the second object of a merge, or the open container of a Take / Put / CloseLoot / Drop out of it;
-/// <see cref="Text"/> the reason of a refusal.</summary>
+/// <see cref="InventoryWindow.AutoCell"/> when the server picks), a split's count, or a Use / Radial / Drop's screen
+/// point; <see cref="Other"/> a merge's second object or the open container; <see cref="Text"/> a refusal's reason.</summary>
 internal readonly record struct InvAction(InvActKind Kind, uint Oid = 0, uint Mask = 0, int X = 0, int Y = 0, uint Other = 0, string Text = "");
 
 /// <summary>An item icon the owner draws after the chrome batch (the <c>CascadeMenu.Icons</c> pattern): object id, rect,
@@ -30,11 +28,10 @@ internal enum InvHitKind { None, Title, Close, Search, Tab, Scroll, Cell, Slot, 
 internal readonly record struct InvHit(InvHitKind Kind, int Index = -1, int X = -1, int Y = -1);
 
 /// <summary>
-/// The CX inventory window, GL- and engine-free: the vanilla panel's layout (CX-146 §2.5) in
-/// design px scaled for the screen, the drag-and-drop rules of <c>ProcessItemDrop</c> / <c>CGuiInvbox::HandleDragDropAsDest</c>
-/// (§5.1), and the emit into a chrome batch, a skin and an icon list. Every component carries a policy id: a server may hide
-/// it, move it or relabel it (<c>inventory.&lt;id&gt;.visible|dx|dy|label</c>), limit the pages, or make the window read-only;
-/// see <c>docs/ui-policy-contract.md</c>. Input is cold, the emit allocates nothing.
+/// The CX inventory window, GL- and engine-free: the vanilla panel's layout in design px scaled for the screen, the
+/// drag-and-drop rules of <c>ProcessItemDrop</c> / <c>CGuiInvbox::HandleDragDropAsDest</c>, and the emit into a chrome
+/// batch, a skin and an icon list. Every component carries a policy id: a server may hide it, move it or relabel it
+/// (<c>inventory.&lt;id&gt;.visible|dx|dy|label</c>), limit the pages or make the window read-only; see <c>docs/ui-policy-contract.md</c>.
 /// </summary>
 internal sealed partial class InventoryWindow
 {
@@ -436,11 +433,10 @@ internal sealed partial class InventoryWindow
         return true;
     }
 
-    /// <summary>The drop rules (inventory-screen.md §5.1) for the dragged item over <paramref name="h"/>:
-    /// a cell -> Move / Unequip / Take (out of the loot) / Merge onto a like stack; a tab -> the first free cell from that
-    /// page on; a slot -> Equip / Merge; a loot cell -> <see cref="LootDrop"/>; outside the window -> Drop at the release
-    /// point (the service picks the world there). The per-frame preview passes <paramref name="describe"/> false so a
-    /// refusal builds no text.</summary>
+    /// <summary>The drop rules for the dragged item over <paramref name="h"/>: a cell -> Move / Unequip / Take (out of
+    /// the loot) / Merge onto a like stack; a tab -> the first free cell from that page on; a slot -> Equip / Merge; a
+    /// loot cell -> <see cref="LootDrop"/>; outside the window -> Drop at the release point. The per-frame preview
+    /// passes <paramref name="describe"/> false so a refusal builds no text.</summary>
     internal InvAction? Drop(InvHit h, bool inside, bool describe = true)
     {
         uint oid = _dragOid;

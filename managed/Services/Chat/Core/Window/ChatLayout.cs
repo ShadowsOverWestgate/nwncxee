@@ -3,11 +3,10 @@ using CX.Framework;
 namespace CX.Services.Chat.Core;
 
 /// <summary>
-/// The ordered window list ChatService drives for draw/input/persistence (#36/#37/#41). Index 0 is the
-/// always-present, undeletable <b>Main</b> window. <see cref="FocusedIndex"/> tracks which window owns
-/// the keyboard and input strip. The backing array is swapped atomically (volatile) so concurrent threads
-/// (ingest, render) never see a torn list — the same pattern <see cref="ChatWindow"/> uses for its tabs.
-/// Pure Core — no native refs — so it self-checks off-device.
+/// The ordered window list ChatService drives for draw/input/persistence. Index 0 is the always-present,
+/// undeletable <b>Main</b>; <see cref="FocusedIndex"/> tracks which window owns the keyboard and input strip.
+/// The backing array is swapped atomically (volatile) so ingest and render never see a torn list — the same
+/// pattern <see cref="ChatWindow"/> uses for its tabs. Pure Core — no native refs — so it self-checks off-device.
 /// </summary>
 public sealed class ChatLayout
 {
@@ -86,7 +85,7 @@ public sealed class ChatLayout
         return true;
     }
 
-    /// <summary>Move a tab from one window to another (#42). Guards the &gt;=1-tab invariant on the source
+    /// <summary>Move a tab from one window to another. Guards the &gt;=1-tab invariant on the source
     /// window: if the tab is the source's last, the transfer is refused. Returns whether it succeeded.</summary>
     public bool TransferTab(int srcWinIdx, int srcTabIdx, int dstWinIdx, int dstTabIdx)
     {
@@ -135,10 +134,11 @@ public sealed class ChatLayout
         check.Expect(layout.FocusedIndex == 1 && layout.Focused == w2, "closing below focused decrements index");
         layout.CloseWindow(1);   // clean up
 
-        // Window cap
-        while (layout.Count < ChatLayout.MaxWindows)
+        // Window cap. Bounded by the cap itself: an AddWindow that refused early used to spin here forever
+        // instead of failing the check below.
+        for (int i = layout.Count; i < ChatLayout.MaxWindows; i++)
             layout.AddWindow(new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) }));
-        check.Expect(layout.Count == MaxWindows, "reached the cap");
+        check.Expect(layout.Count == MaxWindows, $"adding windows one at a time reaches the cap ({layout.Count})");
         check.Expect(layout.AddWindow(new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) })) == null,
             "AddWindow at cap returns null");
         check.Expect(layout.Count == MaxWindows, "count unchanged at cap");
@@ -149,7 +149,7 @@ public sealed class ChatLayout
         layout.FocusedIndex = -1;
         check.Expect(layout.FocusedIndex >= 0, "negative focus rejected");
 
-        // Cross-window tab transfer (#42): move + last-tab guard.
+        // Cross-window tab transfer: move + last-tab guard.
         while (layout.CloseWindow(1)) { }   // clean slate: Main only
         var tm = layout.Main;
         tm.SetTabs(new[] { new Tab("A", 1u), new Tab("B", 2u) });
@@ -162,7 +162,7 @@ public sealed class ChatLayout
         check.Expect(!layout.TransferTab(0, 0, 0, 0), "same-window transfer refused");
         check.Expect(!layout.TransferTab(0, 0, 99, 0), "out-of-range dst refused");
 
-        // Locked destination refuses tab drop (#43).
+        // Locked destination refuses tab drop.
         tw.Locked = true;
         tm.SetTabs(new[] { new Tab("A", 1u), new Tab("C", 8u) });
         check.Expect(!layout.TransferTab(0, 0, 1, 0), "transfer to locked window refused");

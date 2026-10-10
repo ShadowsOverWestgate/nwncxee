@@ -6,16 +6,10 @@ namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// Announces the extender to the server on login via NWN:EE's own capability channel
-/// (SendPlayerToServerDeviceAdvertiseProperty), then sends the abuse-report contact
-/// as an ASCII device message (AbuseContact). A vanilla client never advertises, so the
-/// server treats it as un-extended -- additive, optional, no packet-format hacking.
+/// (SendPlayerToServerDeviceAdvertiseProperty), then sends the abuse-report contact as an ASCII device
+/// message. A vanilla client never advertises, so the server treats it as un-extended. Advertises ONLY
+/// CX_ENABLED=1, never the armed key list (consent is per-server); the master gates actions, not this.
 /// </summary>
-/// <remarks>
-/// Advertises ONLY CX_ENABLED=1, never the armed key list: consent is per-server under
-/// the token model, and advertising the list was the old global-consent leak. The server
-/// owns its bindings and re-pushes them via ArmSet. Advertises whatever <c>hotkeys.enabled</c>
-/// says (spec §4.5): the master gates the actions, never the handshake.
-/// </remarks>
 public sealed unsafe class HotkeyHandshakeService : IExtenderService
 {
     private static ExtenderLog? _log;

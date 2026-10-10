@@ -11,24 +11,21 @@ namespace CX.Alloy.Db;
 /// tables, so it is resolved at the locate step and is not part of the slot key.</summary>
 internal enum TexKind : byte
 {
-    /// <summary>The caller names a texture and does not know what it is -- which is the usual case, because a
-    /// model's <c>bitmap</c> line is just a resref: a creature body part's is a PLT, a wall's is a DDS. The
-    /// locate step tries DDS, then TGA, then PLT, exactly as the engine's own loader and
-    /// <c>Material::ReplaceTexturePLT</c>'s <c>CExoResMan::Exists(resref, 6)</c> gate do between them, and
-    /// the slot takes the kind it found (<see cref="TexRegistry.KindOf"/>). A caller that passes
-    /// <see cref="Plain"/> or <see cref="Plt"/> only narrows that search -- it does not make a second slot.</summary>
+    /// <summary>The caller names a texture and does not know what it is -- the usual case, since a model's
+    /// <c>bitmap</c> line is just a resref. The locate step tries DDS, then TGA, then PLT, as the engine's loader
+    /// and <c>Material::ReplaceTexturePLT</c>'s <c>CExoResMan::Exists(resref, 6)</c> gate do between them, and the
+    /// slot takes the kind it found. <see cref="Plain"/>/<see cref="Plt"/> narrow the search, not the slot.</summary>
     Auto,
     /// <summary>A DDS or TGA: decoded to its own GL texture and sampled directly.</summary>
     Plain,
-    /// <summary>A PLT: uploaded as RG8 (intensity, layer) and resolved against
-    /// <see cref="PltPalettes"/> in the shader, per instance (CX-117). One copy serves every creature
-    /// wearing it, whatever colours they chose.</summary>
+    /// <summary>A PLT: uploaded as RG8 (intensity, layer) and resolved against <see cref="PltPalettes"/> in the
+    /// shader, per instance. One copy serves every creature wearing it, whatever colours they chose.</summary>
     Plt,
 }
 
-/// <summary>Where a registry slot is in its life. Every state is explicit and counted: a texture that is
-/// not <see cref="TexRegistry.Resident"/> draws the white stand-in, and <see cref="Failed"/> says so on the
-/// period line rather than leaving a hole nobody can name (CX-45).</summary>
+/// <summary>Where a registry slot is in its life. Every state is explicit and counted: a texture that is not
+/// <see cref="TexRegistry.Resident"/> draws the white stand-in, and <see cref="Failed"/> says so on the period
+/// line rather than leaving a hole nobody can name.</summary>
 internal enum TexState : byte { Free, Loading, Resident, Failed, Idle }
 
 /// <summary>A generation-checked handle into <see cref="TexRegistry"/>, the same shape as
@@ -43,41 +40,13 @@ internal readonly record struct TexId(uint Value)
     public static TexId Make(int index, uint gen) => new(((gen & 0xFFF) << DbId.IndexBits) | (uint)index);
 }
 
-/// <summary>CX-117 / ADR 0028: <b>CX's texture registry</b> -- the table that decides which textures exist in
-/// Alloy mode, in place of the engine's <c>CAurTexture</c> population. Identity is the resolved resref plus
-/// the atlas cell, never an address and never the engine's anagram-blind hash, so two areas that share a
-/// texture share one upload and an area change re-uses everything the next area wants (ADR 0023's lifetime,
-/// now without the engine's delete funnel to work around). Refcounted by the materials that name it.
-/// <para>Nothing here holds a <c>CAurTexture*</c>: a slot is a resref, a GL name and a bindless handle. That
-/// is the whole of CX-117's first "done when" -- the borrowed-pointer verdicts of ADR 0015 have no subject
-/// left in DB mode.</para>
-/// <para><b>PLT is not composited.</b> A PLT slot holds the file's (intensity, layer) pairs as RG8; the
-/// per-creature colour rows live on the object record (<see cref="PltColors"/>) and the shader resolves
-/// colour = master[row[layer]][intensity]. So one copy of <c>pmh0_head001</c> serves every human male head in
-/// the area, a colour change is a record write, and there is no per-creature texture.</para>
-///
-/// <para><b>Threading (ADR 0028 section 5).</b> Three threads touch this, and which one may do what is the
-/// contract, not an accident of today's single-threaded frame -- <c>Db/RenderThread.cs</c> exists to make the
-/// bracket a different thread:</para>
-/// <list type="bullet">
-/// <item><b>Game thread</b>: <see cref="Acquire"/>, <see cref="Release"/>, <see cref="Swap"/>,
-/// <see cref="AddDependent"/> and <see cref="Tick"/>. Everything that reads the engine's resource manager
-/// (<c>CExoResMan</c> is not thread-safe) or writes <see cref="SceneDb"/> is here and nowhere else.</item>
-/// <item><b>The <c>cx-tex</c> worker</b>: the file read and the decode. Pure -- it sees only a
-/// <c>TexLocation</c> value record copied for it at the offer.</item>
-/// <item><b>Alloy's 4.6 bracket</b>: <see cref="Drain"/> and <see cref="ContextLost"/>. GL only: the upload,
-/// the bindless mint (a handle belongs to the share group, so it may be minted nowhere else) and the deletes.
-/// It publishes finished slots to a queue the game thread's <see cref="Tick"/> files.</item>
-/// </list>
-/// <para>Every mutation of the table takes <see cref="_lock"/>, which is uncontended in practice: acquires
-/// and releases happen at a material change, uploads at a texture's arrival. The per-draw READS
-/// (<see cref="Handle"/>, <see cref="Resident"/>, <see cref="StateOf"/>, <see cref="KindOf"/>) are lock-free
-/// on purpose, and are safe because a record that draws a slot holds a REFERENCE on it and eviction only ever
-/// touches a slot whose reference count is zero: the one value a draw must not read stale -- a resident
-/// handle for a retired texture -- cannot arise.</para></summary>
+/// <summary>ADR 0028: <b>CX's texture registry</b>, in place of the engine's <c>CAurTexture</c> population; a slot
+/// is a resref plus atlas cell (<see cref="KeyOf"/>), refcounted by the materials that name it. The game thread owns
+/// acquire/release/swap/dependents/tick and all of <c>CExoResMan</c> and <see cref="SceneDb"/>; <c>cx-tex</c> reads
+/// and decodes; the GL bracket uploads, mints and deletes. Per-draw reads are lock-free -- eviction needs 0 refs.</summary>
 internal static unsafe partial class TexRegistry
 {
-    /// <summary>Slots held at once. A heavy SoW area measured ~1,200 distinct textures and the resident cache
+    /// <summary>Slots held at once. A heavy persistent-world area measured ~1,200 distinct textures and the resident cache
     /// holds several areas' worth; 16k is past any module's whole texture set.</summary>
     internal const int MaxSlots = 1 << 14;
     /// <summary>Open-address index over <see cref="_key"/>, power of two and at least 2x <see cref="MaxSlots"/>
@@ -107,13 +76,13 @@ internal static unsafe partial class TexRegistry
     /// <summary>The atlas cell this slot holds, which is part of its identity (a cycle texture's frames are
     /// cells of one resref).</summary>
     private static readonly int[] _cell = new int[MaxSlots];
-    /// <summary>What the slot's alpha channel MEANS (CX-120's draw classification, feed review r1 finding 8).
-    /// Derived from the DECODED pixels on the worker, once, and kept across a context loss because it is a
-    /// property of the content and not of a GL name.</summary>
+    /// <summary>What the slot's alpha channel MEANS, for the draw classification. Derived from the DECODED
+    /// pixels on the worker, once, and kept across a context loss: it is a property of the content, not of a GL
+    /// name.</summary>
     private static readonly TexCoverage[] _cov = new TexCoverage[MaxSlots];
     /// <summary>Each slot's mean colour as decoded (its own encoding), and whether one was taken: the sky
-    /// texture's average that the sky-matched fog converges on (SceneFog), which mode 0 reads off the
-    /// engine's upload funnel and DB mode has only here.</summary>
+    /// texture's average that the sky-matched fog converges on (SceneFog), which is available only here --
+    /// no engine upload funnel runs to read it off.</summary>
     private static readonly System.Numerics.Vector3[] _mean = new System.Numerics.Vector3[MaxSlots];
     private static readonly bool[] _meanOk = new bool[MaxSlots];
 
@@ -145,20 +114,16 @@ internal static unsafe partial class TexRegistry
     /// finds it, and its last release retires it instead of leaving it idle.</summary>
     private static readonly bool[] _detached = new bool[MaxSlots];
     /// <summary>Where this slot is in the load pipeline: <see cref="PendNone"/>, <see cref="PendWaiting"/>
-    /// (queued for an offer the game thread will make) or <see cref="PendFlight"/> (the worker has it). The
-    /// state machine's missing half before review r1: a Release during a load left the slot Idle with no
-    /// name, and the next Acquire set it Loading again WITHOUT re-offering -- loading for ever, white for
-    /// ever, nothing logged.</summary>
+    /// (queued for an offer the game thread will make) or <see cref="PendFlight"/> (the worker has it). Without
+    /// it a Release during a load leaves the slot Idle and name-less, and the next Acquire sets it Loading again
+    /// WITHOUT re-offering -- loading for ever, white for ever, nothing logged.</summary>
     private static readonly byte[] _pend = new byte[MaxSlots];
     private const byte PendNone = 0, PendWaiting = 1, PendFlight = 2;
 
-    /// <summary>CX-188: bumped (under <see cref="_lock"/>) wherever a slot ENTERS
-    /// <see cref="TexState.Loading"/> -- an acquire that seats a new slot, an acquire that re-offers a
-    /// name-less one, an idle slot taken back with nothing uploaded, and the context reload. It is the only
-    /// edge that can make a settled set of parts start streaming again, which is what lets a reader latch
-    /// "nothing of mine is waiting" instead of re-scanning every frame (<c>DbGui</c>'s panel prescan).
-    /// <para>A reader off the game thread may see the previous value for a frame -- an <c>int</c> read is
-    /// atomic, so the cost is one extra scan or one frame's delay, never a wrong answer.</para></summary>
+    /// <summary>Bumped (under <see cref="_lock"/>) wherever a slot ENTERS <see cref="TexState.Loading"/>: a new
+    /// slot, a re-offered name-less one, an idle slot taken back with nothing uploaded, and the context reload.
+    /// The only edge that can restart streaming in a settled set of parts, so a reader may latch "nothing of mine
+    /// is waiting". Off the game thread it may lag a frame -- an <c>int</c> read is atomic, so never wrong.</summary>
     internal static int LoadSerial = 1;
 
     /// <summary>Head of this slot's dependent-part edge list, -1 for none. Kept only while the slot is
@@ -166,7 +131,7 @@ internal static unsafe partial class TexRegistry
     private static readonly int[] _depHead = new int[MaxSlots];
 
     /// <summary>The idle set as a doubly-linked LRU, oldest at <see cref="_idleHead"/>. Eviction takes the
-    /// head; before review r1 it rescanned 1..<see cref="_high"/> per victim, inside the bracket.</summary>
+    /// head, so it costs no scan inside the bracket.</summary>
     private static readonly int[] _idleNext = new int[MaxSlots], _idlePrev = new int[MaxSlots];
     private static int _idleHead = -1, _idleTail = -1;
 
@@ -205,15 +170,10 @@ internal static unsafe partial class TexRegistry
 
     // ---- identity ----
 
-    /// <summary>The slot key: a 64-bit FNV-1a over the lower-cased resref, with the atlas cell in the low 16
-    /// bits. NOT the engine's <c>AurTextureCalculateHashID</c>, which is a per-character product modulo a
-    /// prime and therefore blind to anagrams (<c>tex_core_0145_d</c> and <c>_0154_d</c> hash equal; 2,202 such
-    /// values across the base game and the SoW haks), and which the engine only survives by
-    /// <c>strcasecmp</c>-ing after the match. A table keyed on it hands the second texture of a family the
-    /// first one's image, which is what PR 523 was -- and why <see cref="Probe"/> compares the resref too.
-    /// <para>The KIND is deliberately not folded in: a resref resolves to one resource, so the kind is a
-    /// function of the name, and keying on the kind ASKED made <c>Acquire(n)</c> and <c>Acquire(n, Plt)</c>
-    /// two slots and two uploads of one file.</para></summary>
+    /// <summary>The slot key: a 64-bit FNV-1a over the lower-cased resref, with the atlas cell in the low 16 bits.
+    /// NOT the engine's <c>AurTextureCalculateHashID</c>, which is blind to anagrams (<c>tex_core_0145_d</c> and
+    /// <c>_0154_d</c> collide) and only survives by <c>strcasecmp</c>-ing after the match, which is why
+    /// <see cref="Probe"/> compares the resref too. The KIND is not folded in: a resref resolves to one resource.</summary>
     internal static ulong KeyOf(string resref, int cell)
     {
         const ulong Prime = 0x100000001B3UL;   // not-an-offset: FNV-1a 64 prime
@@ -359,14 +319,10 @@ internal static unsafe partial class TexRegistry
         }
     }
 
-    /// <summary>Drop the cached slot for <paramref name="resref"/> so the NEXT acquire reads the file again,
-    /// and answer whether one went. Only an unreferenced slot is dropped: anything still held keeps its
-    /// pixels, because a texture under a draw must not change under it.
-    /// <para>The engine never needs this -- a <c>CAurTexture</c> dies at its last reference and the next
-    /// <c>AurTextureGet</c> rebuilds it from whatever the resource chain now answers. CX keeps the slot idle
-    /// instead (ADR 0023), so a resref whose FILE has been swapped underneath -- the load panel adds and
-    /// removes a save directory per selection, and every save's preview is called <c>Screen</c> -- would
-    /// otherwise hand the next acquire the previous one's pixels. Game thread.</para></summary>
+    /// <summary>Drop the cached slot for <paramref name="resref"/> so the NEXT acquire reads the file again, and
+    /// answer whether one went. Only an unreferenced slot goes: a texture under a draw must not change under it.
+    /// Needed because a slot is kept idle rather than destroyed (ADR 0023), so a resref whose FILE was swapped
+    /// underneath -- every save's preview is called <c>Screen</c> -- would serve the previous pixels. Game thread.</summary>
     internal static bool Forget(string resref, int cell = 0)
     {
         if (string.IsNullOrEmpty(resref) || (uint)cell >= MaxCells) return false;
@@ -431,24 +387,20 @@ internal static unsafe partial class TexRegistry
         _idleNext[i] = _idlePrev[i] = -1;
     }
 
-    /// <summary>Unlink a slot from the table: its index entry, its dependents, its generation and its free-list
-    /// place. The GL name goes to the graveyard for the bracket to delete -- a delete is GL and this runs on
-    /// the game thread. The generation moves on here, so every outstanding <see cref="TexId"/> for it is dead,
-    /// which is why no holder needs a death notice. Caller holds <see cref="_lock"/>.</summary>
     /// <summary>Bumped (under the lock) wherever a slot's coverage or bumpy-shiny answer changes: acquire, land,
     /// retire. <see cref="DrawRecipe.Reclassify"/> re-asks its classes only when this moved.</summary>
     internal static int CoverageSerial;
 
-    /// <summary>CX-188: bumped (under <see cref="_lock"/>) wherever ANY answer a record feed reads off a slot
-    /// can change -- its GL name, its bindless handle, its kind, its env-map bit, or its validity. The
-    /// renderer stamps it per ownership slot (<c>_recTexStamp</c>) and skips re-resolving a part's eight
-    /// texture slots on a frame it did not move, so a write that forgets to bump it leaves records sampling a
-    /// dead handle: the complete writer set is Acquire, Retire, Land, Fail, DropHandle, the kind discovery in
-    /// Begin, the idle re-acquire and ContextLost. Starts at 1 so a never-stamped slot (0) always disagrees.
-    /// <para>Deliberately coarser than per slot: a texture event is rare (a transcode drip, an area load) and
-    /// one full re-resolve pass per event is cheaper than a per-slot dependency table to maintain.</para></summary>
+    /// <summary>Bumped (under <see cref="_lock"/>) wherever ANY answer a record feed reads off a slot can change
+    /// -- GL name, bindless handle, kind, env-map bit, validity. The renderer stamps it per ownership slot and
+    /// skips re-resolving on a frame it did not move, so a write that forgets to bump it leaves records sampling a
+    /// dead handle. Writers: Acquire, Retire, Land, Fail, DropHandle, Begin's kind discovery, ContextLost.</summary>
     internal static int TableSerial = 1;
 
+    /// <summary>Unlink a slot from the table: its index entry, its dependents, its generation and its free-list
+    /// place. The GL name goes to the graveyard for the bracket to delete, since a delete is GL and this is the
+    /// game thread. The generation moves on here, so every outstanding <see cref="TexId"/> for it is dead and no
+    /// holder needs a death notice. Caller holds <see cref="_lock"/>.</summary>
     private static void Retire(int i)
     {
         DropHandle(i);
@@ -515,12 +467,9 @@ internal static unsafe partial class TexRegistry
     private static readonly Queue<uint> _graveyard = new();
 
     /// <summary>Bindless handle VALUES this registry has stopped keeping resident, waiting for the bracket to
-    /// clear them out of the renderer's record blocks (<see cref="AlloyRenderer.ZeroHandle"/>). A record
-    /// copies its handles at staging and holds them across frames, so a drop the records never hear about is
-    /// a non-resident handle under a live draw -- garbage on NVIDIA, a GPU reset on radeonsi.
-    /// <para>Sized for an area change's eviction burst so the steady state never grows it: this runs on the
-    /// game thread under <see cref="_lock"/>, which is cold, but it is the same no-allocation discipline the
-    /// rest of the drop path keeps.</para></summary>
+    /// clear them out of the renderer's record blocks (<see cref="AlloyRenderer.ZeroHandle"/>). A record copies its
+    /// handles at staging and holds them across frames, so a drop the records never hear about is a non-resident
+    /// handle under a live draw -- garbage on NVIDIA, a GPU reset on radeonsi. Sized for an eviction burst.</summary>
     private static readonly Queue<ulong> _dyingHandles = new(256);
 
     /// <summary>Dying handle values the bracket has handed to <see cref="AlloyRenderer.ZeroHandle"/>. The
@@ -553,7 +502,7 @@ internal static unsafe partial class TexRegistry
 
     /// <summary>This slot's GL name and resident bindless handle, or false -- the caller then draws the white
     /// stand-in, which is an explicit, counted state and not a hole. A consumer that binds by NAME as well as
-    /// by handle wants both (CX-119's bitmap font atlases do).</summary>
+    /// by handle wants both, as the bitmap font atlases do.</summary>
     internal static bool TryResident(TexId id, out uint name, out ulong handle)
     {
         if (Valid(id) && _name[id.Index] != 0 && !_preview[id.Index])
@@ -561,9 +510,9 @@ internal static unsafe partial class TexRegistry
         name = 0; handle = 0; return false;
     }
 
-    /// <summary>As <see cref="TryResident"/>, and a PREVIEW answers too: for a consumer that re-resolves every frame
-    /// or is told on arrival (a world part, an emitter, a caster mask, the sky), never for one that keeps the name --
-    /// the preview's is deleted when the full chain lands.</summary>
+    /// <summary>As <see cref="TryResident"/>, and a PREVIEW answers too: for a consumer that re-resolves every
+    /// frame or is told on arrival, never for one that KEEPS the name -- a preview's name is deleted when the full
+    /// chain lands.</summary>
     internal static bool TryDrawable(TexId id, out uint name, out ulong handle)
     {
         if (Valid(id) && _name[id.Index] != 0)
@@ -579,26 +528,19 @@ internal static unsafe partial class TexRegistry
     /// the per-instance palette rows (<see cref="PltColors.Stage"/>) instead of clearing them.</summary>
     internal static TexKind KindOf(TexId id) => Valid(id) ? _kind[id.Index] : TexKind.Plain;
 
-    /// <summary>CX-188: is this slot's answer FINAL -- will it stay what it is until something bumps
-    /// <see cref="TableSerial"/>? True for a slot that can never become resident on its own: a null id (the
-    /// caller declares no texture) and a FAILED load, which keeps the white stand-in as an explicit state for
-    /// the rest of the session (CX-45). A slot still LOADING is not final: its arrival is what a memo keyed on
-    /// the serial is waiting for. The renderer's per-slot texture memo is the caller -- without the failed and
-    /// null cases a texture-less part (a junk material name on a placeable) would re-resolve every frame for
-    /// ever, which is the whole cost the memo removes.</summary>
+    /// <summary>Is this slot's answer FINAL -- will it stay what it is until something bumps
+    /// <see cref="TableSerial"/>? True only for a slot that can never become resident on its own: a null id and a
+    /// FAILED load. A slot still LOADING is not final, since its arrival is what a memo keyed on the serial waits
+    /// for. Without the null and failed cases a texture-less part would re-resolve every frame for ever.</summary>
     internal static bool Final(TexId id) => id.IsNull || StateOf(id) == TexState.Failed;
     internal static TexState StateOf(TexId id) => Valid(id) ? _state[id.Index] : TexState.Free;
     /// <summary>Does this slot's sampler clamp rather than repeat? Staged into the PLT flag word.</summary>
     internal static bool Clamps(TexId id) => Valid(id) && _clamp[id.Index];
 
-    /// <summary>CX-117: change this texture's SAMPLER state -- a <c>.txi</c> <c>clamp</c>/<c>filter</c>/
-    /// <c>mipmap</c> through <c>Gob::SetTextureAttributes</c>, or the nearest-filter flag through
-    /// <c>Gob::SetOverrideTextureFilter</c>. A null leaves that axis alone. True when something changed, so
-    /// the caller knows to mark the records that read it.
-    /// <para>It cannot be applied here: a bindless handle freezes its sampler state at the mint, which is why
-    /// "a handled texture is immutable from this moment" is the registry's rule. So the wish is recorded and
-    /// the BRACKET applies it -- <c>glTextureParameteri</c>, then drop and re-mint the handle -- and the
-    /// caller's dirty marks are what make the records take the new one. Game thread; cold (a script call).</para></summary>
+    /// <summary>Change this texture's SAMPLER state -- a <c>.txi</c> <c>clamp</c>/<c>filter</c>/<c>mipmap</c>, or
+    /// the nearest-filter flag; a null leaves that axis alone, and true means the caller must mark the records that
+    /// read it. It cannot be applied here: a bindless handle freezes its sampler state at the mint, so the wish is
+    /// recorded and the BRACKET applies it, then drops and re-mints the handle. Game thread; cold.</summary>
     internal static bool RequestSampler(TexId id, bool? clamp, bool? nearest, bool? mipmap)
     {
         lock (_lock)
@@ -627,18 +569,15 @@ internal static unsafe partial class TexRegistry
     private static long _samplerAsks, _samplerDone;
 
     /// <summary>What this texture's alpha MEANS, so a draw can be classified opaque, alpha-tested or blended
-    /// without asking the engine's memoised <c>GetIsOpaque</c> verdicts or the GL internal format, both of
-    /// which lie (<c>texture-coverage-is-a-decode-question</c>). <see cref="TexCoverage.Unknown"/> until the
-    /// decode has run: a caller keeps its conservative guess and is told again at arrival, because the
-    /// landing marks every dependent part <see cref="Dirty.Texture"/> through the same edge that replaces the
-    /// white stand-in. Lock-free, like the other per-draw reads.</summary>
+    /// without the engine's memoised <c>GetIsOpaque</c> verdicts or the GL internal format, both of which lie.
+    /// <see cref="TexCoverage.Unknown"/> until the decode has run: a caller keeps its conservative guess and is
+    /// told again at arrival, when the landing marks every dependent part. Lock-free, like the other draw reads.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static TexCoverage Coverage(TexId id) => Valid(id) ? _cov[id.Index] : TexCoverage.Unknown;
-    /// <summary>Did this texture's <c>.txi</c> name a <c>bumpyshinytexture</c>? False until the decode has
-    /// run, and the arrival re-asks through the same dependent edge <see cref="Coverage"/> is re-asked on.
-    /// <para>This is the engine's own water term: <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 tests
-    /// <c>Material::HasBumpyShinyMap</c> (under <c>g_nEnableBumpyWater</c>) before it looks at the blend pair,
-    /// and that map comes from the diffuse's <c>.txi</c> and nothing else.</para></summary>
+    /// <summary>Did this texture's <c>.txi</c> name a <c>bumpyshinytexture</c>? False until the decode has run,
+    /// re-asked at arrival through the same dependent edge as <see cref="Coverage"/>. This is the engine's own
+    /// water term: <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 tests <c>Material::HasBumpyShinyMap</c>
+    /// (under <c>g_nEnableBumpyWater</c>) before the blend pair, off the diffuse's <c>.txi</c> and nothing else.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool BumpyShiny(TexId id) => Valid(id) && _bumpyShiny[id.Index];
 
@@ -646,7 +585,6 @@ internal static unsafe partial class TexRegistry
     /// answer <c>HasEnvMap</c> for it, and <c>PartTriMesh::Draw</c> @0x4513d0 would route the part into the
     /// environment-mapped branch, where the diffuse alpha is REFLECTIVITY rather than coverage.</summary>
     internal static bool EnvMapped(TexId id) => Valid(id) && _envMap[id.Index];
-    /// <summary>The slot's resref, for a log or a diagnostic line.</summary>
     /// <summary>The resref resident under GL texture <paramref name="name"/>, "" if none: a linear scan, for a diagnostic.</summary>
     internal static string ResrefOfGl(uint name)
     {
@@ -654,15 +592,15 @@ internal static unsafe partial class TexRegistry
         return "";
     }
 
+    /// <summary>The slot's resref, for a log or a diagnostic line.</summary>
     internal static string ResrefOf(TexId id) => Valid(id) ? _resref[id.Index] ?? "" : "";
 
     // ---- dependents: arrival dirties the records that drew the stand-in ----
 
-    /// <summary>Note that part record <paramref name="part"/> draws this texture, so its arrival marks the
-    /// record <see cref="Dirty.Texture"/>. Only recorded while the slot is still loading: a resident or failed
-    /// slot has nothing left to announce, which is what bounds the list to the parts enrolled before the
-    /// upload landed. This is the whole of CX-117's second perf bullet -- the staging walk never re-resolves a
-    /// texture, because arrival comes to it. Game thread.</summary>
+    /// <summary>Note that part record <paramref name="part"/> draws this texture, so its arrival marks the record
+    /// <see cref="Dirty.Texture"/>. Only recorded while the slot is still loading -- a resident or failed slot has
+    /// nothing left to announce -- which bounds the list to the parts enrolled before the upload landed, and is
+    /// what lets the staging walk never re-resolve a texture. Game thread.</summary>
     internal static void AddDependent(TexId id, int part)
     {
         if ((uint)part >= SceneDb.MaxParts)

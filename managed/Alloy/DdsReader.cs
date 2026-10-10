@@ -6,23 +6,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52 step 1: Alloy's reader of both DDS containers the engine accepts -- the legacy 20-byte
-/// BioWare header (container 1) and the 124-byte Microsoft one behind <c>'DDS '</c> (container 2). A pure
-/// function from the resource bytes to what <c>CAuroraInterface::GetCompressedRaster</c> reports, plus the
-/// one thing it never reads: how many levels the file actually carries.
-/// <para>Engine parity (<c>CResDDS::GetDDSAttrib</c> @0x1135620, <c>GetChannelCount</c> @0x1135520): the
-/// FourCC vocabulary is exactly DXT1 = 3, DXT5 = 4, ATI2 = 2, ATI1 = 1 channels; the Microsoft level-0 size is
-/// computed, never read, and its alpha mean is 0.5 at 4 channels, else 1.0. Legacy stores both.</para>
-/// <para>The engine end (<c>alloy.ddsread</c>): the <c>AurGetCompressedImage</c> / <c>AurReleaseRaster</c>
-/// slots are swapped as a pair. The getter wraps the engine's, so the format race (KTX/DDS/4PC/TGA by source
-/// kind) and the <c>CExoResMan</c> demand stay the engine's; this reader then re-parses the resource bytes and
-/// must agree with every out param and the level-0 address, or the engine's answer stands and the
-/// disagreement is counted and logged (CX-45). An agreed full chain is handed back as is -- the bytes are
-/// already exactly what this reader would emit. A partial chain, which the engine's unbounded mip walk
-/// reads past the end of, is copied into a buffer of ours with the missing levels padded, and tagged so the
-/// release frees it; every other buffer goes to the engine's release.</para>
-/// <para>Step 4 (<c>DdsReader.Formats.cs</c>): a file the engine's reader gets wrong -- a DX10 header, another
-/// FourCC, a cube -- is answered by this parse alone.</para></summary>
+/// <summary>
+/// Alloy's reader of both DDS containers the engine accepts: the legacy 20-byte BioWare header (container 1) and
+/// the 124-byte Microsoft one behind <c>'DDS '</c> (container 2). The <c>AurGetCompressedImage</c> and
+/// <c>AurReleaseRaster</c> slots are swapped as a pair, and the getter wraps the engine's, so the format race and
+/// the <c>CExoResMan</c> demand stay the engine's. <c>alloy.ddsread</c> turns the whole thing off.
+/// </summary>
 internal static unsafe partial class DdsReader
 {
     /// <summary>The release tag's distance before level 0 for each DDS container: the header, then the
@@ -89,11 +78,10 @@ internal static unsafe partial class DdsReader
     internal static string Note()
         => _armed ? $"dds: {_agreed} agreed, {_padded} partial chains padded, {_mismatched} MISMATCHED, {_refused} refused{FormatsNote()}" : "dds: engine";
 
-    /// <summary>CX-54 step 1, worker-safe: parse <paramref name="raw"/> and lay its padded mip chain out in a
-    /// buffer shaped exactly as <see cref="OnGet"/>'s own answers are, with <see cref="Prefix"/> bytes of
-    /// headroom for the release tag the main thread writes. Returns level 0, or null with
-    /// <paramref name="why"/> set. No engine read, no GL, no shared state -- everything it needs is in the
-    /// bytes it was handed.</summary>
+    /// <summary>Worker-safe: parse <paramref name="raw"/> and lay its padded mip chain out in a buffer shaped
+    /// exactly as <see cref="OnGet"/>'s own answers are, with <see cref="Prefix"/> bytes of headroom for the
+    /// release tag the main thread writes. Returns level 0, or null with <paramref name="why"/> set. No engine
+    /// read, no GL, no shared state -- everything it needs is in the bytes it was handed.</summary>
     internal static byte* Prepare(ReadOnlySpan<byte> raw, out Info info, out string? why)
     {
         if (!Parse(raw, out info, out why)) return null;
@@ -127,7 +115,7 @@ internal static unsafe partial class DdsReader
         return ours;
     }
 
-    /// <summary>CX-54 step 1's hand-back, and the check mode's oracle beside it.</summary>
+    /// <summary>The prefetch worker's hand-back, and the check mode's oracle beside it.</summary>
     private static byte* FromCache(IntPtr name, int* container, int* w, int* h, int* ch, int* size, float* alpha)
     {
         byte* ours = TexLoad.Take(name, out Info i);
@@ -144,9 +132,9 @@ internal static unsafe partial class DdsReader
         return null;
     }
 
-    /// <summary>CX-54 step 0: the slot's two halves timed apart -- the engine's getter is the resource READ
-    /// (a DDS demand is pure I/O), everything after it is this reader's DECODE. Hot-path safe: four
-    /// timestamps, no allocation.</summary>
+    /// <summary>The slot's two halves timed apart -- the engine's getter is the resource READ (a DDS demand is
+    /// pure I/O), everything after it is this reader's DECODE. Hot-path safe: four timestamps, no
+    /// allocation.</summary>
     [UnmanagedCallersOnly]
     private static byte* OnGet(IntPtr name, int* container, int* w, int* h, int* ch, int* size, float* alpha)
     {
@@ -166,7 +154,10 @@ internal static unsafe partial class DdsReader
         return r;
     }
 
-    /// <summary>The engine's answer re-parsed and checked; see the class remarks.</summary>
+    /// <summary>The engine's answer re-parsed and checked against every out param and the level-0 address: a
+    /// disagreement leaves the engine's buffer standing, counted and logged; an agreed full chain is handed back as
+    /// is; a partial chain -- which the engine's unbounded mip walk reads past the end of -- is copied into a
+    /// padded buffer of ours, tagged so our own release frees it.</summary>
     private static byte* Reparse(IntPtr name, byte* data, int* container, int* w, int* h, int* ch, int* size, float* alpha)
     {
         int c = *container;

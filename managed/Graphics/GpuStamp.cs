@@ -1,12 +1,9 @@
 namespace CX.Graphics;
 
-/// <summary>#324: a GPU timestamp pair per frame, ring-buffered so the read never stalls. Unlike
+/// <summary>A GPU timestamp pair per frame, ring-buffered so the read never stalls. Unlike
 /// <see cref="GpuQuery"/> (TIME_ELAPSED, which cannot nest) two stamps can bracket a span that already
-/// holds elapsed queries. The span is WALL time on the GPU timeline between the two stamps: it includes
-/// any idle gap where the GPU waited on the CPU and excludes everything outside the stamps, so it is a
-/// footprint, not a busy figure. Query names live in whichever context issued them; the 4.6 context is
-/// created once per session (a failure disables the bracket for good), so like <see cref="GpuQuery"/>
-/// this has no context-loss edge.</summary>
+/// holds elapsed queries. The span is WALL time on the GPU timeline, so it includes any idle gap where the
+/// GPU waited on the CPU: a footprint, not a busy figure. Like <see cref="GpuQuery"/>, no context-loss edge.</summary>
 public unsafe struct GpuStamp
 {
     private const int Depth = 4;

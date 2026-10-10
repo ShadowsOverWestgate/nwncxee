@@ -5,22 +5,10 @@ using System.Runtime.CompilerServices;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: the ASCII <c>.mdl</c> reader, ported keyword for keyword from the engine's own interpreter.
-/// <para><b>The shape.</b> The outer file is a tiny console script: <c>dofile</c> @0x434930 trims and
-/// comment-filters each line and <c>FuncInterp</c> @0x433720 dispatches the first token, which a whitelist
-/// (<c>FUN_00546330</c>) narrows to nine commands. <c>beginmodelgeom</c> and <c>newanim</c> hand the line stream
-/// to <c>ImportMaxTree</c> @0x447ef0, which feeds every line to the current tree's <c>InternalParseField</c>
-/// until a line starting <c>end</c> or <c>done</c>; a <c>node</c> line goes to <c>ParseNode</c> @0x447540, which
-/// makes the node and feeds ITS lines to the node's <c>InternalParseField</c> until <c>endnode</c>. A field
-/// handler is <c>firstword</c> + <c>strcasecmp</c> + <c>::Parse(line + strlen(keyword))</c>, and an array field
-/// reads its own following lines straight off the stream.</para>
-/// <para><b>Quirks that change the result, all ported deliberately:</b> block terminators are case-SENSITIVE
-/// prefix compares, so <c>endfoo</c> ends a block; <c>dummy</c> is not a node-type keyword (anything
-/// unrecognised becomes a plain node); <c>wirecolor</c> is parsed and thrown away; a plain controller line with
-/// exactly four numbers and a keyed line with exactly five are read as axis-angle and converted to a quaternion,
-/// by value count and not by keyword; <c>bitmap</c> is <c>texture0</c> but wipes the field first; only the first
-/// <c>faces</c> block of a node is kept; <c>ignorefog 0</c> does nothing; a malformed value leaves the field at
-/// its previous value, because <c>sscanf</c> does.</para></summary>
+/// <summary>The ASCII <c>.mdl</c> reader, ported keyword for keyword from the engine's line interpreter
+/// (<c>dofile</c> @0x434930, <c>FuncInterp</c> @0x433720, <c>ImportMaxTree</c> @0x447ef0, <c>ParseNode</c>
+/// @0x447540). Its quirks are deliberate: case-SENSITIVE <c>end</c>/<c>done</c> prefix terminators, unknown
+/// node types becoming plain nodes, axis-angle by VALUE COUNT (four plain, five keyed), sscanf's keep-on-error.</summary>
 internal static class MdlAscii
 {
     internal static ModelDef? Read(ReadOnlySpan<byte> data, string name, out string? error)
@@ -145,11 +133,9 @@ internal static class MdlAscii
         internal int Clamped;
 
         /// <summary>How many elements of <paramref name="stride"/> bytes the REST OF THE FILE could still
-        /// supply, so a declared count cannot be believed into a huge allocation.
-        /// <para>This is a deliberate difference from the engine, which allocates whatever the file declares
-        /// and would itself die on <c>tverts 2000000000</c>. A line body needs at least two bytes (a value and
-        /// its break), and a blob needs <paramref name="stride"/>; anything past that is a lie and is counted
-        /// in <see cref="Clamped"/>.</para></summary>
+        /// supply, so a declared count cannot be believed into a huge allocation -- a deliberate difference
+        /// from the engine, which allocates whatever the file declares. A line body needs at least two bytes,
+        /// a blob needs <paramref name="stride"/>; anything past that is counted in <see cref="Clamped"/>.</summary>
         private int Cap(int declared, int stride, bool blob)
         {
             if (declared <= 0) return 0;
@@ -1229,10 +1215,8 @@ internal static class MdlAscii
 
         /// <summary><c>MdlNode::ReorderChildren</c> @0x458120: when any mesh child carries a transparency hint
         /// of one or more, the whole child list goes through <c>std::sort</c>. Most children compare EQUAL
-        /// under the engine's comparator, so the resulting order is the one libstdc++'s introsort happens to
-        /// leave -- not a stable sort's. The compiled binary stores that order, so the three libstdc++ pieces
-        /// are transcribed below from the decompile (<c>__introsort_loop</c> @0x4586e0,
-        /// <c>__insertion_sort</c> @0x458490, and the final insertion pass inlined into ReorderChildren).</summary>
+        /// under the engine's comparator, so the order is whatever libstdc++'s introsort leaves -- not a stable
+        /// sort's -- so <c>__introsort_loop</c> @0x4586e0 and <c>__insertion_sort</c> @0x458490 are ported too.</summary>
         private void ReorderKids(List<int> k)
         {
             int n = k.Count;

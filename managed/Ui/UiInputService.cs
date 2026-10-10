@@ -8,18 +8,11 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>
-/// The framework's raw-input layer (spec #64): owns the SDL/engine input hooks and feeds every captured event
-/// into the <see cref="UiHost"/> arbiter, so every window from every service gets routed input for free and no
-/// service owns capture. The fixed precedence is: the focused/keyboard-owning window's content → registered
-/// chord consumers (hotkeys) → the engine's gameplay keybinds. It also owns the centralized keyboard gate (the
-/// engine keyboard-mode toggle + the drive-latch reset, #34, once for all consumers), the environmental chord
-/// gates (a NUI edit box, the debug console, a native dialog), and the pointer cursor (folded in from the old
-/// CursorService: over any window's UI → the walk cursor).
+/// The framework's raw-input layer: it owns the SDL/engine input hooks, the centralized keyboard gate, the
+/// environmental chord gates and the pointer cursor, feeding every captured event into the <see cref="UiHost"/>
+/// arbiter so no service owns capture. Precedence: focused content → chord consumers → gameplay keybinds.
 /// </summary>
-/// <remarks>
-/// State is static (the <c>[UnmanagedCallersOnly]</c> handlers demand it); the input hooks are cold, so they
-/// may allocate.
-/// </remarks>
+/// <remarks>State is static (the <c>[UnmanagedCallersOnly]</c> handlers demand it); the hooks are cold, so they may allocate.</remarks>
 public sealed unsafe class UiInputService : IExtenderService
 {
     private static ExtenderLog? _log;
@@ -45,7 +38,7 @@ public sealed unsafe class UiInputService : IExtenderService
     private static readonly HashSet<uint> _keysDown = new();   // held keys, for the auto-repeat gate on chords
 
     private static IntPtr _exoInputGlobal, _appMgr;
-    // Resolved at type init, not Initialize: the engine-GUI probes serve MouseLookService before Initialize runs (#539).
+    // Resolved at type init, not Initialize: the engine-GUI probes serve MouseLookService before Initialize runs.
     private static readonly IntPtr _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);
     private static readonly NkWindowIsAnyHoveredFn _nkAnyHovered = EngineFn.NkWindowIsAnyHovered;
     private static readonly IntPtr _guiManGlobal = Native.Sym(SymbolMap.GuiMan);         // &g_pGuiMan
@@ -53,7 +46,7 @@ public sealed unsafe class UiInputService : IExtenderService
 
     // Trampolines to the engine originals.
     private static HandleWMKeyDownFn _keyOrig;
-    /// <summary>Chain slot on the SDL pump (#539: MouseLookService sits above us); <c>*_winMsg</c> is the next layer.</summary>
+    /// <summary>Chain slot on the SDL pump (MouseLookService sits above us); <c>*_winMsg</c> is the next layer.</summary>
     private static WinMessageHandlerFn* _winMsg;
     private static OnGainFocusFn _gainOrig;
     private static OnLostFocusFn _lostOrig;
@@ -66,7 +59,7 @@ public sealed unsafe class UiInputService : IExtenderService
         _exoInputGlobal  = Native.Sym(SymbolMap.ExoInput);
         _appMgr          = Native.Sym(SymbolMap.AppManager);
 
-        UiHost.KeyboardGate = KbGate;   // centralized engine keyboard gate (#64 AC3): one owner for all consumers
+        UiHost.KeyboardGate = KbGate;   // centralized engine keyboard gate: one owner for all consumers
 
         _keyOrig    = hooks.InstallHandleWMKeyDown(&OnKeyDown);
         _winMsg     = hooks.ChainWinMessageHandler(&OnWinMessage, 0);
@@ -95,7 +88,7 @@ public sealed unsafe class UiInputService : IExtenderService
     /// <summary>Drive the engine's gameplay-key gate for the keyboard owner. On the off→on edge only, also run
     /// vanilla's <c>TurnOffKeyboardModal</c> (the step CGuiEdit::SetFocus does after KeyboardModeOn) to clear the
     /// WASD drive latch and send AbortDriveControl -- without it a keyup gated mid-walk leaves the player stuck
-    /// moving (#34). Edge-gated so a re-sync doesn't re-hit the HUD on every key.</summary>
+    /// moving. Edge-gated so a re-sync doesn't re-hit the HUD on every key.</summary>
     private static void KbGate(bool on)
     {
         if (_exoInputGlobal == IntPtr.Zero) return;
@@ -140,11 +133,10 @@ public sealed unsafe class UiInputService : IExtenderService
         return _keyOrig != null ? _keyOrig(key, flags) : 0;   // observe, never consume gameplay
     }
 
-    /// <summary>The environmental chord gate: hotkeys fire only while the app is focused and no other text sink
-    /// or modal owns input -- the keyboard owner (chat typing), a window withholding chords (our dialog), a NUI
-    /// edit box, the engine keyboard mode (debug console / vanilla field), or a native conversation panel. Any
-    /// null link reads as "clear". Keys the owner ate never reach here (DispatchKey consumed them); the owner
-    /// check matters for mouse chords, which the owner does not consume.</summary>
+    /// <summary>The environmental chord gate: hotkeys fire only while the app is focused and no other text sink or
+    /// modal owns input -- the keyboard owner (chat typing), a window withholding chords (our dialog), a NUI edit
+    /// box, the engine keyboard mode (debug console / vanilla field), or a native conversation panel. Any null link
+    /// reads as "clear". Keys the owner ate never reach here, so the owner check only matters for mouse chords.</summary>
     internal static bool ChordGateClear()
         => _focused && !UiHost.AnyKeyboardOwner && !UiHost.AnySuppressChords
            && !NuiEditFocused() && !KeyboardModeActive() && !NativeDialogOpen();
@@ -200,7 +192,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     if (KeyDiag)
                         _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()} gui=0x{gui:x} menuOurs={ours}");
                     if (UiHost.DispatchMouseButton(true, btn, mx, my, captureOnly: true)) return 0;   // Window.CapturesPointer: ahead of the GUI yield
-                    // NUI (or a vanilla GUI object: radial menu, tooltip, panel; #451) draws over us -> it gets the
+                    // NUI (or a vanilla GUI object: radial menu, tooltip, panel) draws over us -> it gets the
                     // press. Blur first: this is a click elsewhere, and FocusAt (skipped here) is what would
                     // otherwise have released our windows' focus.
                     if (NuiHovered() || (gui != IntPtr.Zero && !ours)) { UiHost.Blur(); break; }
@@ -245,7 +237,7 @@ public sealed unsafe class UiInputService : IExtenderService
         }
         int mx = 0, my = 0;
         if (EngineFn.SdlGetMouseState != null) EngineFn.SdlGetMouseState(&mx, &my);
-        bool overUi = UiHost.HitTest(mx, my) != null;   // any window's UI under the pointer (US #11)
+        bool overUi = UiHost.HitTest(mx, my) != null;   // any window's UI under the pointer
         if (overUi != _prevOverUi)
         {
             _prevOverUi = overUi;
@@ -256,7 +248,7 @@ public sealed unsafe class UiInputService : IExtenderService
         if (_origUpdateCursor != null) _origUpdateCursor(@this, param1);
     }
 
-    // ponytail: over any UI forces the walk cursor (id 3), the pre-#64 behaviour; distinct grip/link cursors
+    // ponytail: over any UI forces the walk cursor (id 3); distinct grip/link cursors
     // need the real engine cursor ids (Ghidra the SetMouseCursor callers) -- add when a report asks for them.
     [UnmanagedCallersOnly]
     private static void OnSetMouseCursor(IntPtr @this, int cursorId, int hotspot, int p3, int p4, int p5)
@@ -267,12 +259,10 @@ public sealed unsafe class UiInputService : IExtenderService
     }
 
     // ---- environmental probes -------------------------------------------------------------------
-    /// <summary>True while the pointer is over a NUI window. Those draw ON TOP of our windows (the roll-call
-    /// runs at nk_sdl_render), so they take the press and the wheel; without this a NUI window dragged over the
-    /// chatbox would look on top and still lose every click to it. Only the acquisition edges consult it --
-    /// motion and button-up stay unconditional so a drag that starts on our window still finishes when the
-    /// pointer crosses a NUI one. State is nuklear's from the frame just drawn, so it lags by at most a frame.
-    /// </summary>
+    /// <summary>True while the pointer is over a NUI window. Those draw ON TOP of our windows, so they take the press
+    /// and the wheel; without this a NUI window dragged over the chatbox would look on top and still lose every click
+    /// to it. Only the acquisition edges consult it -- motion and button-up stay unconditional, so a drag started on
+    /// our window still finishes across a NUI one. State is nuklear's from the frame just drawn: one frame of lag.</summary>
     private static bool NuiHovered()
     {
         if (_nuklearGlobal == IntPtr.Zero || _nkAnyHovered == null) return false;
@@ -284,17 +274,13 @@ public sealed unsafe class UiInputService : IExtenderService
     private const int GuiPressMask = 1, GuiWheelMask = 8;
 
     /// <summary>Would the ENGINE's GUI take a press right now -- a NUI window under the pointer or a vanilla GUI
-    /// object at its tracked position? The engine gets first refusal on a right-drag (#539).</summary>
+    /// object at its tracked position? The engine gets first refusal on a right-drag.</summary>
     internal static bool EngineGuiWantsPress() => NuiHovered() || VanillaGuiAt(GuiPressMask) != IntPtr.Zero;
 
-    /// <summary>#593: the exemption from the #451 yield. At the main menu the viewport-filling
-    /// <c>CMainMenuBackgroundPanel</c> accepts every interactivity bit, so <see cref="VanillaGuiAt"/> is non-null under
-    /// EVERY press and the yield would hand the gear's and the panel's presses to the engine. Over one of our windows
-    /// while the menu is up the press is ours; wherever our hit-test misses the engine's own buttons keep winning.
-    /// The in-game Options panel is the gear's second surface: a modal whose objects would take the yield the same
-    /// way, so the exemption covers it too -- the only windows that hit there are the gear, the settings panel and
-    /// a dialog (chat hit-tests on InGame, the rest are zero-rect). In play this never fires, so the #451 behaviour
-    /// there is untouched.</summary>
+    /// <summary>The exemption from the engine-GUI yield. At the main menu the viewport-filling
+    /// <c>CMainMenuBackgroundPanel</c> accepts every interactivity bit, so <see cref="VanillaGuiAt"/> is non-null
+    /// under EVERY press and the yield would hand the gear's and the panel's presses to the engine. Over one of our
+    /// windows the press is ours, elsewhere the engine's buttons keep winning; the Options panel needs it the same way.</summary>
     private static bool MenuWindowAt(int x, int y) => GearSurface && UiHost.HitTest(x, y) != null;
 
     /// <summary>The two surfaces the gear and the settings panel stand on: the main menu and the in-game Options panel.</summary>
@@ -309,11 +295,10 @@ public sealed unsafe class UiInputService : IExtenderService
         return UiHost.HitTest(mx, my) != null;
     }
 
-    /// <summary>The vanilla GUI object under the engine's tracked pointer, or null (#451). Exactly the call the
-    /// engine's own press/wheel handler is about to make, so "would the engine find something" is answered by
-    /// the engine. Acquisition edges only, like <see cref="NuiHovered"/>.
-    /// ponytail: while our motion handler swallows motion the engine's tracked position goes stale; if that
-    /// bites live, pass fresh=1 with the SDL coords (Y flipped via GuiManVpH) instead.</summary>
+    /// <summary>The vanilla GUI object under the engine's tracked pointer, or null. Exactly the call the engine's own
+    /// press/wheel handler is about to make, so "would the engine find something" is answered by the engine.
+    /// Acquisition edges only, like <see cref="NuiHovered"/>. ponytail: while our motion handler swallows motion the
+    /// tracked position goes stale; if that bites live, pass fresh=1 with the SDL coords (Y flipped via GuiManVpH).</summary>
     private static IntPtr VanillaGuiAt(int mask)
     {
         if (_guiManGlobal == IntPtr.Zero || EngineFn.GuiObjectHitCheck == null) return IntPtr.Zero;

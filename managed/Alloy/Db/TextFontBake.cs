@@ -6,13 +6,10 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-119: load a font CX-side, with no <c>CAurFont</c> and no engine render layer -- the DB-mode
-/// requirement. Reads the resources itself, bakes a TTF atlas with the client's <b>own</b> statically linked
-/// <c>stb_truetype</c> at the engine's own parameters, and hands the pixels to <c>TextAtlas</c> for the GL
-/// upload inside Alloy's bracket.
-/// <para>The arithmetic lives in <see cref="TextFontLoad"/> and is checked off-device; this file is the part
-/// that needs the process -- the resource chain, the <c>stbtt_*</c> exports, the GUI scale and the codepage
-/// mapper. Cold: a font is baked once, on the first <c>SetFont</c> that names it.</para></summary>
+/// <summary>Load a font CX-side, with no <c>CAurFont</c> and no engine render layer: read the resources, bake
+/// a TTF atlas with the client's <b>own</b> statically linked <c>stb_truetype</c> at the engine's parameters,
+/// and hand the pixels to <c>TextAtlas</c> for the GL upload inside Alloy's bracket. The arithmetic lives in
+/// <see cref="TextFontLoad"/>; a font is baked once, on the first <c>SetFont</c> that names it.</summary>
 public static unsafe class TextFontBake
 {
     private static ExtenderLog? _log;
@@ -284,10 +281,9 @@ public static unsafe class TextFontBake
         return s;
     }
 
-    /// <summary>Sizes of the three opaque <c>stb_truetype</c> structs. <c>stbtt_pack_context</c> is 72 bytes in
-    /// this client (<c>CAuroraTTFTexture::Load</c> reserves 72 bytes of stack for it) and <c>stbtt_fontinfo</c> 168
-    /// (<c>GetBaseLine</c> reserves 168); both are over-allocated here against a future build.
-    /// <c>stbtt_packedchar</c> is 28 and <c>stbtt_pack_range</c> 40, and both are read field by field, so they
-    /// are exact.</summary>
+    /// <summary>Sizes of the opaque <c>stb_truetype</c> structs. This client's <c>stbtt_pack_context</c> is 72
+    /// bytes (the stack <c>CAuroraTTFTexture::Load</c> reserves) and <c>stbtt_fontinfo</c> 168
+    /// (<c>GetBaseLine</c>'s); both are over-allocated here against a future build. <c>stbtt_packedchar</c> 28
+    /// and <c>stbtt_pack_range</c> 40 are exact, being read field by field.</summary>
     private const int PackContextBytes = 128, FontInfoBytes = 256, PackedCharBytes = 28, PackRangeBytes = 40;
 }

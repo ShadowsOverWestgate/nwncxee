@@ -11,23 +11,10 @@ using static CX.Alloy.AlloyRenderer;
 
 namespace CX.Alloy;
 
-/// <summary>#232's second mode, CX-82's default: the OWNED highlight. Instead of replaying the engine's
-/// <c>Scene::DoHighlightGob</c> glow (three additive quads per part, cut from its bounding box), redraw the
-/// highlighted object flat: a 50%-alpha fill over its visible surface plus a thick, smooth silhouette
-/// outline. <c>alloy.highlight</c> (Renderer → Selection highlight) picks it; <c>glow</c> sends every root to
-/// <see cref="HighlightGlow"/> instead. Whatever the outline cannot cover -- an unclaimed source channel, a
-/// root with no Alloy draw records -- goes to <see cref="HighlightGlow"/> in the same slot.
-/// <para>Runs right after <see cref="PostChain"/>'s composite: the target framebuffer holds the finished
-/// DISPLAY-space frame and <see cref="PostChain.DepthTex"/> holds the frame's depth. The pass is
-/// SCREEN-SPACE and, whatever the highlight count, exactly two draws deep: (1) ALL highlighted objects'
-/// Alloy draw records rasterise one RGBA MASK (rgb = that root's highlight colour, a = coverage),
-/// depth-tested against the frame's own depth under a small polygon offset -- the offset is what makes
-/// this robust where a depth-EQUALITY fill speckles; (2) ONE fullscreen triangle blends the result over
-/// the frame, fill from the mask (bilinear edge = antialiased) and outline from a ring-tap dilation of it
-/// (a coverage ramp = thick AND smooth). Per-frame cost is therefore one geometry re-draw of the
-/// highlighted set plus one fixed 24-tap fullscreen pass, not a pass per object.</para>
-/// <para>An ADR 0014 module, not a partial (CX-699): it reaches the renderer's tables and state through
-/// <c>using static</c>, a compile-time alias that emits the same static load the same-class read did.</para></summary>
+/// <summary>The OWNED highlight, <c>alloy.highlight</c>'s default: instead of the engine's
+/// <c>Scene::DoHighlightGob</c> glow quads, the highlighted object is redrawn flat -- a <see cref="FillAlpha"/>
+/// fill plus a thick, smooth silhouette outline -- right after <see cref="PostChain"/>'s composite, and two
+/// draws deep whatever the highlight count: one RGBA mask, then one fullscreen dilation blend over it.</summary>
 internal static unsafe class Highlight
 {
 
@@ -37,21 +24,15 @@ internal static unsafe class Highlight
     /// hundreds of simultaneous highlights mattering, swap it for a fixed-size open-addressed table.</summary>
     private const int MaxHlRoots = 128, MaxHlTargets = 256;
 
-    /// <summary>#336: the highlight CHANNELS, as <c>CNWCAnimBase</c> lays them out. A hilite is written into
-    /// one of five slots -- active flag at +0x9c[ch], colour at +0x60[ch] (12 bytes), "also add a glow gob"
-    /// at +0xb0[ch] -- and <c>RefreshHilite</c> takes the LOWEST active slot as the winner. The gob the
-    /// winner is published against sits at +0xc8.
-    /// <para>The channel is the SOURCE, which the Scene highlight list does not carry: Tab and mouseover
-    /// arrive on 2 (<c>HiliteAreaObjects</c> @0x7119f0), while every VFX that highlights arrives on 3 --
-    /// <c>CNWCVisualEffectOnObject::ApplySelfIllumination</c>, <c>::ApplyAlpha</c> and
-    /// <c>::UpdateSelfIlluminationPulse</c> all call <c>Hilite(colour, 3, 1)</c>. Lowest-wins is why a
-    /// Tab over a glowing creature shows the Tab colour.</para></summary>
+    /// <summary>The highlight CHANNELS as <c>CNWCAnimBase</c> lays them out: active flag at +0x9c[ch], colour
+    /// at +0x60[ch] (12 bytes), "also add a glow gob" at +0xb0[ch], the winner's gob at +0xc8, and
+    /// <c>RefreshHilite</c> takes the LOWEST active slot. The channel is the SOURCE the Scene highlight list
+    /// does not carry: Tab and mouseover arrive on 2, every VFX that highlights on 3.</summary>
     private const int HiliteChannels = 5;
 
-    /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
-    /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. 4 is the
-    /// tab-target lock (CX-636), a Tab highlight in all but source, so it is. Everything unclaimed falls through
-    /// to <see cref="HighlightGlow"/>'s glow. <c>/alloy hlchan</c>.</summary>
+    /// <summary>Channels the owned outline claims, as a bitmask (<c>/alloy hlchan</c>). 3 is the VFX channel
+    /// and is NOT claimed: a spell glow drawn as a crisp outline reads as a Tab highlight. 4, the tab-target
+    /// lock, is a Tab highlight in all but source, so it is. Unclaimed falls through to the glow.</summary>
     internal static int HlChannels => Renderer.HlChan.V;
     internal const int DefHlChannels = 0b10111;
 
@@ -70,11 +51,8 @@ internal static unsafe class Highlight
         if (animBase == IntPtr.Zero) return;
         var anim = new CNWCAnimBase(animBase);
         IntPtr gob = anim.Gob.Ptr;
-        // #456: the trace goes AHEAD of the early return, not after it. Sited below, "no [hldiag] lines at
-        // all" reads as "the hook never fired" when it may equally be "fired, published no gob" -- and on
-        // Windows those two have completely different causes. The engine's own body takes the same branch
-        // on a null here (win rva 0x966170: `mov rcx,[rcx+0xc8]` / `test rcx,rcx` / `je`), so a null is a
-        // legitimate state and the only way to tell them apart is to count the calls.
+        // The trace goes AHEAD of the early return: a null gob is a legitimate state (the engine's own body
+        // takes the same branch), so "fired, published no gob" has to be distinguishable from "never fired".
         if (HlDiag) _log?.Info($"[hldiag] enter animBase={animBase:x} gob={gob:x}");
         if (gob == IntPtr.Zero) return;
         int win = -1;
@@ -116,10 +94,9 @@ internal static unsafe class Highlight
         return false;
     }
 
-    /// <summary>The highlighted root's attached children, in the shape <c>Gob::GetAttachedGobs</c> hands back
-    /// in engine mode. The database has no child list -- attachment is a field ON THE CHILD -- so this is one
-    /// walk of the object table per highlighted root, which is cold (it runs only while something is
-    /// highlighted) and allocates nothing.</summary>
+    /// <summary>The highlighted root's attached children, in the shape <c>Gob::GetAttachedGobs</c> hands
+    /// back. Attachment is a field ON THE CHILD, so this is one walk of the object table per highlighted
+    /// root -- cold (only while something is highlighted) and allocation-free.</summary>
     private static int DbAttached(DbId root, byte rootIndex, IntPtr* targets, byte* targetRoot, int nT)
     {
         for (int o = 1; o < SceneDb.Objects.High && nT < MaxHlTargets; o++)
@@ -221,16 +198,10 @@ internal static unsafe class Highlight
         return true;
     }
 
-    /// <summary>The pass. Called from the frame walk immediately after the post-process composite; the
-    /// engine target is bound with the finished frame in it.
-    /// <para>CX-82: it covers EVERY highlighted root, because nothing engine-side draws afterwards any more.
-    /// A root whose source channel the outline claims and whose parts Alloy drew gets the mask outline; every
-    /// other root -- an unclaimed VFX channel, or no Alloy records at all -- is staged into
-    /// <see cref="HighlightGlow"/>, which draws the engine's glow quads in the same slot.</para>
-    /// <para>#391: the mask is drawn at the RENDER size (<paramref name="viewport"/>) because it depth-tests
-    /// against the render-res frame depth; the composite over the finished frame runs at
-    /// <paramref name="display"/>, sampling the mask bilinearly. The outline radius is in mask texels, so it
-    /// widens by 1/scale on screen -- noted, not corrected.</para></summary>
+    /// <summary>The pass, called from the frame walk right after the post-process composite with the engine
+    /// target bound. Every highlighted root is covered: one the outline claims and Alloy drew takes the mask,
+    /// the rest are staged into <see cref="HighlightGlow"/>. The mask draws at the RENDER size
+    /// (<paramref name="viewport"/>) to depth-test the frame depth, the composite at <paramref name="display"/>.</summary>
     internal static void OutlineHighlightPass(int groups, Matrix4x4* vp, Matrix4x4* view, Matrix4x4* proj,
                                              float jx, float jy, int* viewport, int* display)
     {
@@ -268,9 +239,7 @@ internal static unsafe class Highlight
             rootHit[i] = 0;
             if (!outline || nT >= MaxHlTargets) continue;
             IntPtr gob = arr[i];
-            // #336: the list is source-agnostic -- a spell's glow sits in it looking exactly like a Tab
-            // highlight, and drawn as a crisp outline it reads as one. Only what the source hook claimed is
-            // ours.
+            // The list is source-agnostic, so only what the source hook claimed is ours.
             if (!OwnedHighlightDb(new DbId((uint)gob))) continue;
             targetRoot[nT] = (byte)i;
             targets[nT++] = gob;
@@ -296,13 +265,13 @@ internal static unsafe class Highlight
             Gl.PolygonOffset(MaskOffsetFactor, MaskOffsetUnits);
             DrawTargets(groups, targets, targetRoot, rootHit, nT, cols);
             Gl.Disable(Gl.POLYGON_OFFSET_FILL);
-            Gl.DepthFunc(Gl.LEQUAL);   // #364: the cutout run leaves EQUAL bound; every later pass assumes LEQUAL
+            Gl.DepthFunc(Gl.LEQUAL);   // the cutout run leaves EQUAL bound; every later pass assumes LEQUAL
         }
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo);
         Gl.Viewport(display[0], display[1], display[2], display[3]);
 
-        // CX-82: whatever the outline could not cover -- an unclaimed source channel, or a root with no Alloy
-        // draw records at all -- is the glow's, in the slot the engine's DoHighlightGob had.
+        // Whatever the outline could not cover -- an unclaimed source channel, or a root with no Alloy draw
+        // records at all -- is the glow's, in the slot the engine's DoHighlightGob had.
         int hit = 0;
         for (int i = 0; i < nGobs; i++)
         {
@@ -371,21 +340,10 @@ internal static unsafe class Highlight
         }
     }
 
-    /// <summary>One walk over the staged batches, issuing a single-draw multidraw for every record whose
-    /// owning gob is in the target set, with the root's colour bound and the root marked hit. Same
-    /// per-batch VAO/cull discipline as the depth prepass.
-    /// <para>#364: cutout batches are IN, under a different depth test, because a highlighted creature's
-    /// hair, cloak and helmet trim are cutout and leaving them out is what made an object take its outline
-    /// in pieces. The mask has no alpha to discard on -- but it does not need one. Cutout is the one class
-    /// the prepass skips (a discard's prepass depth would be its solid silhouette), so it writes its own
-    /// depth in the COLOUR pass, with the discard already applied. Drawn at <c>GL_EQUAL</c> with no bias,
-    /// only the fragments that survived that discard match, and the mask gets the exact silhouette for
-    /// free. It rests on <see cref="DepthVs"/> computing <c>gl_Position</c> character-for-character as the
-    /// colour stages do under <c>invariant gl_Position</c> -- which <c>ShaderContract</c> asserts, and which
-    /// the whole prepass already rests on.</para>
-    /// <para>Still out, and both are silhouette holes rather than timing: DISPLACING batches, whose colour
-    /// stage moves vertices this one does not, so nothing would match under either test; and everything past
-    /// <see cref="_gBlendEnd"/> (water and additive), which writes no depth to match against.</para></summary>
+    /// <summary>One walk over the staged batches, a single-draw multidraw per record whose owning gob is in the
+    /// target set, the root's colour bound and the root marked hit. Cutout batches are IN, at <c>GL_EQUAL</c>
+    /// with no bias, so only fragments that survived their colour-pass discard match. Out: displacing batches,
+    /// and everything past <see cref="_gBlendEnd"/>, which writes no depth to match against.</summary>
     private static void DrawTargets(int groups, IntPtr* targets, byte* targetRoot, byte* rootHit, int nT,
                                     float* cols)
     {
@@ -419,10 +377,10 @@ internal static unsafe class Highlight
                     boundColor = root;
                     Gl.Uniform3f(_hlColor, cols[root * 3], cols[root * 3 + 1], cols[root * 3 + 2]);
                 }
-                // #364: the two depth regimes. Opaque took its depth from the prepass, so the mask is
-                // biased toward the viewer and tested LEQUAL to clear exact-equality speckle; cutout wrote
-                // its own, discard-applied, in the colour pass, so the mask tests EQUAL against it with no
-                // bias at all -- the bias is what would let the alpha holes through.
+                // The two depth regimes: opaque took its depth from the prepass, so the mask is biased toward
+                // the viewer and tested LEQUAL against exact-equality speckle; cutout wrote its own,
+                // discard-applied, in the colour pass, so the mask tests EQUAL with no bias -- a bias there
+                // would let the alpha holes through.
                 int wantCut = _gCls[g] == (byte)AlloyClass.Cutout ? 1 : 0;
                 if (wantCut != boundCut)
                 {

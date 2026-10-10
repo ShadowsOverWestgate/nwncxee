@@ -5,19 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>The weather's precomputed surface terms: what the lit stage, the grass and the water used to work out
-/// per pixel per frame for a world that had not changed. Three textures, three compute passes:
-/// <list type="bullet">
-/// <item><b>shelter cache</b> (<c>cx_wx_shel_c</c>), once per cover BAKE in the cover view's own uv: the shelter
-/// disk and the snow drift for the surface the rain lands on at each texel. A fragment that is that surface
-/// (<c>CxWxTop</c>: one hardware compare) reads one texel; under a roof, on a wall or a slope it runs the live
-/// disk as before.</item>
-/// <item><b>noise tile</b> (<c>cx_wx_noise_c</c>), once per context: the splice's value-noise fields, so the snow
-/// relief march reads a texel per step instead of hashing three octaves.</item>
-/// <item><b>ripple tile</b> (<c>cx_wx_ripl_c</c>), once per frame while it rains: the rings over a wrapped
-/// 4.8 m tile, one fetch on the film and on the water.</item>
-/// </list>
-/// All three are read by <c>layout(binding)</c> units past the 0..15 budget (TextureSlots' reason).</summary>
+/// <summary>The weather's precomputed surface terms: what the lit stage, the grass and the water used to work
+/// out per pixel per frame for a world that had not changed. Three textures -- the shelter disk and snow drift
+/// per cover bake, the value-noise tile per context, the ripple tile per rainy frame -- all read through
+/// <c>layout(binding)</c> units past the 0..15 budget (<see cref="TextureSlots"/>' reason).</summary>
 internal static unsafe partial class Weather
 {
     internal static Knob<bool> ShelterCache = null!;

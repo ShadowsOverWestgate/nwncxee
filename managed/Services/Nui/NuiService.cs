@@ -6,14 +6,11 @@ using CX.Ui;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// NUI speed-ups (CX-154). The off-screen cull (§9) hooks every leaf widget's per-frame
-/// <see cref="SymbolMap.NuiWidgetRender"/> and skips a widget whose rect lies wholly outside its panel's clip.
-/// nuklear's own <c>nk_widget</c> would draw nothing for it anyway; the skip saves the NUI layer's work before
-/// that point -- bound-value reads, text encoding, image loads -- which is what makes a long plain scroll list slow.
-/// It also arms <see cref="NuiItemIcons"/> (the <c>@item:</c> images), <see cref="NuiScrollbars"/>, <see cref="NuiScrollbarHide"/>,
-/// <see cref="NuiSolver"/> and <see cref="NuiLayoutErrors"/>.
+/// NUI speed-ups. The off-screen cull hooks every leaf widget's per-frame <see cref="SymbolMap.NuiWidgetRender"/> and
+/// skips a widget whose rect lies wholly outside its panel's clip: nuklear's own <c>nk_widget</c> would draw nothing
+/// for it anyway, so the saving is the NUI layer's work before that point -- bound-value reads, text encoding, image
+/// loads. Hot (every widget, every frame), allocation-free. Also arms the other <c>Nui*</c> fixes in this folder.
 /// </summary>
-/// <remarks>The hook is hot (every widget, every frame): it allocates nothing and reads only fields.</remarks>
 public sealed unsafe class NuiService : IExtenderService
 {
     // nuklear 4.08 as compiled, the same on both builds: nk_widget @0xde84f0, nk_layout_widget_space @0xdd8340,

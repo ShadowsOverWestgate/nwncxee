@@ -8,34 +8,10 @@ using CX.Services.Nameplate;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Camera-relative WASD (#540; CX-137 §10). Pre-hooks the engine's per-frame drive
-/// step, <c>CClientExoAppInternal::UpdateDriveMode</c>: while a drive key is down and the mode's <c>drive</c>
-/// knob is on, the player creature's orientation is written to camera yaw + key direction (W = the camera's
-/// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees
-/// for the call (the walk or the run key, whichever is held, so the engine's own walk/run choice stands;
-/// #637), and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1°
-/// quantum (at most <c>&lt;mode&gt;.hz</c> times a second for camera turns; a key change latches at once).
-/// The engine then derives the packet angle from that orientation, sends, predicts, keeps alive and aborts
-/// on release by itself, and the server adopts the world-space heading: no server change, no new opcode. The
-/// one release the engine does not abort on is a turn key's, so that one sends the same
-/// <c>AbortDriveControl</c> (major 6, minor 0x21) from here.
-/// <para>Face mode (<c>&lt;mode&gt;.face</c>, chase's default): the creature always faces the camera's forward
-/// and the engine's own back/strafe bits carry S and the strafe keys, while the turn keys become a keyboard
-/// orbit (<see cref="TurnAxis"/>) the creature follows on the next move -- the camera faces where the
-/// character faces by construction, with no recenter swing. Under <c>&lt;mode&gt;.siderun</c> the turn keys
-/// instead run the creature sideways; while the tab-target camera is locked on
-/// (<see cref="TabTargetService.LockedOn"/>) every side key does, since the camera is the lock's.</para>
-/// <para>A drive starts on the keys' heading (the wire angle is a path, so a slew from the old facing would
-/// walk an arc); while it runs the heading slews toward the keys at <c>&lt;mode&gt;.turn</c> deg/s, and the
-/// creature's local facing-target pair is written with it every frame so the model turns as smoothly as the
-/// wire does. While the drive is active the engine's chase cam stands down
-/// (<see cref="EngineLayout.ModuleChaseSuppressed"/> held up, its idle edge held down): a chase swinging behind
-/// a creature strafing at 90° would turn "strafe" into a spiral.</para>
-/// <para>Stands down (engine drive untouched) under every <see cref="CameraService"/> gate -- dialog,
-/// cutscene, clear-view, attached elsewhere, a server lock -- under the mode's own master off
-/// (<c>&lt;mode&gt;.enabled</c>: the stock character-relative drive), before the first camera solve, and when
-/// the creature's own drive gates are shut. Hot: once per frame from ProcessInput, pointer reads and one
-/// atan2, no allocation.</para>
+/// Camera-relative WASD: pre-hooks the engine's per-frame drive step, <c>CClientExoAppInternal::UpdateDriveMode</c>,
+/// and writes the player creature's orientation from camera yaw + key direction before it runs, so the engine still
+/// derives the packet angle, sends, predicts and aborts by itself -- no server change, no new opcode. Only a turn
+/// key's release goes unaborted by the engine, so that one <c>AbortDriveControl</c> is sent here. Allocates nothing.
 /// </summary>
 public sealed unsafe class CameraDriveService : IExtenderService
 {
@@ -61,16 +37,14 @@ public sealed unsafe class CameraDriveService : IExtenderService
           "CX camera off for this mode", "turning the camera" };
 
     private static bool _live, _probeOk, _active, _engineAborts;
-    /// <summary>#541: the drive is running without a forward component (strafe/turn keys alone, or back), so the
-    /// movement is a deliberate sidestep or back-pedal the recenter must not swing behind -- a strafe would
-    /// become a spiral and a back-pedal a 180° swing that has no side to take.</summary>
+    /// <summary>The drive is running without a forward component (strafe/turn keys alone, or back), so the movement
+    /// is a deliberate sidestep or back-pedal the recenter must not swing behind -- a strafe would become a spiral
+    /// and a back-pedal a 180° swing that has no side to take.</summary>
     internal static bool NoForward { get; private set; }
     /// <summary>The engine was handed a key that moves the player on the last drive step -- walk, run, back or
-    /// strafe, as it saw them after any rewrite here -- so <c>DrivePlayer</c> keeps re-extending the drive's path.
-    /// It does that only every 250 ms between packets (<c>UpdateDriveMode</c>'s <c>+0x198</c> gate), so a path
-    /// running short is no sign of a release; this is. False once they are up: a driving player is then coasting
-    /// to its stop. A turn key alone moves nothing -- the engine re-paths it to where the creature stands. Read by
-    /// the pose layer only once <see cref="Live"/>.</summary>
+    /// strafe, as it saw them after any rewrite here. <c>DrivePlayer</c> re-extends the path only every 250 ms (the
+    /// <c>+0x198</c> gate in <c>UpdateDriveMode</c>), so a path running short is no sign of a release; this is. A
+    /// turn key alone moves nothing. Read by the pose layer only once <see cref="Live"/>.</summary>
     internal static bool Held { get; private set; }
     /// <summary>The drive step has run, so <see cref="Held"/> is a reading and not the default.</summary>
     internal static bool Live => _live;
@@ -113,7 +87,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         Span<int> keys = a.DriveKeys;
         if (FreeCameraService.Active)
         {
-            // #543: the keys fly the camera; the engine sees none held (a drive under way is aborted, once).
+            // The keys fly the camera; the engine sees none held (a drive under way is aborted, once).
             _why = Why.Free; NoForward = false;
             if (_active) { _active = false; ClientApi.Send(MajorInput, MinorAbortDrive, null, 0); _aborts++; }
             int walk0 = a.DriveWalk, s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
@@ -132,7 +106,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         float f = 0f, s = 0f;
         int liveMode = CameraService.Mode;
         bool face = liveMode >= 0 && CameraModes.ByMode[liveMode].Face.V;
-        // Side run (CX-636): a turn key under <mode>.siderun, or any side key while locked on a target, runs the
+        // Side run: a turn key under <mode>.siderun, or any side key while locked on a target, runs the
         // creature sideways facing where it runs -- no orbit for the turn keys, no held facing to strafe under.
         bool sideRun = false;
         if (face)
@@ -234,7 +208,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
 
     /// <summary>The forward slots the engine is handed (run = <see cref="EngineLayout.InternalDriveKeys"/>[0], walk =
     /// <see cref="EngineLayout.InternalDriveWalk"/>): a forward drive passes the pressed pair through so the engine's own
-    /// walk/run choice stands (#637); without a forward component, non-face still needs a forward slot (run), face none.</summary>
+    /// walk/run choice stands; without a forward component, non-face still needs a forward slot (run), face none.</summary>
     private static (int run, int walk) ForwardSlots(bool face, float f, int run, int walk) =>
         f > 0f ? (run, walk) : (face ? 0 : 1, 0);
 
@@ -292,7 +266,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
     }
 
     /// <summary>The heading maths and the forward-slot hand-off off-device: the four cardinal keys against a camera
-    /// looking north (right = +X), and which forward key the engine sees for each held pair (#637).</summary>
+    /// looking north (right = +X), and which forward key the engine sees for each held pair.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "CameraDrive.SelfCheck");

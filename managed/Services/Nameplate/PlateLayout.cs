@@ -91,19 +91,9 @@ public static partial class PlateLayout
 
     /// <summary>
     /// Turn the engine's stored bubble anchor (<see cref="NameplateNative.AnchorRaw"/>) into the pixels a
-    /// <c>Window</c> draws in: top-left origin, y down, extents <paramref name="drawW"/>×<paramref name="drawH"/>.
-    /// Three terms, each one a line of <c>Camera::MapToScreen</c>:
-    /// <list type="number">
-    /// <item>the GUI-scale shrink (@0x4a3e1a) centred the projection in a rect <paramref name="guiScale"/>
-    /// times smaller, leaving the rect's centre fixed -- undone by scaling back out about that centre, and
-    /// only outside the engine's own <see cref="GuiScaleEpsilon"/> dead band;</item>
-    /// <item>the value is relative to the camera's viewport origin and in its extents, so it is rebased and
-    /// rescaled onto the draw viewport (the engine's render viewport need not be the GL one -- same aspect,
-    /// possibly upscaled);</item>
-    /// <item>y is measured UP from the bottom (the GL window transform), so it is flipped last.</item>
-    /// </list>
-    /// A non-positive camera extent means "unknown" and that axis passes through, y still flipped about
-    /// <paramref name="drawH"/>. Pure -- self-checked.
+    /// <c>Window</c> draws in: top-left origin, y down. Three terms -- undo the GUI-scale shrink about the camera
+    /// rect's centre (only outside the engine's own <see cref="GuiScaleEpsilon"/> dead band), rebase and rescale
+    /// onto the draw viewport, then flip y. A non-positive camera extent is "unknown": that axis passes through.
     /// </summary>
     public static void ToDrawSpace(float ex, float ey, float vpX, float vpY, float vpW, float vpH,
                                    float guiScale, float drawW, float drawH, out float x, out float y)
@@ -196,31 +186,17 @@ public static partial class PlateLayout
         Measure(nameW, 1, bandW, portrait, band, bar, lineH, scale);
 
     /// <summary>As above for a name of <paramref name="nameLines"/> lines (<see cref="SplitLines"/>);
-    /// <paramref name="nameW"/> is then the WIDEST line. <paramref name="bandW"/> and
-    /// <paramref name="lineH"/> are measured glyph metrics and are used as given; <paramref name="scale"/>
-    /// scales only the chrome constants.
-    /// <para>The portrait spans <c>min(nameLines, 2)</c> name lines plus whatever the band and bar need,
-    /// keeping its <see cref="PortraitAspect"/> width. The name-line term is what is capped, at
-    /// <see cref="PortraitMaxLines"/>: a header-plus-paragraph sign left uncapped stretched the thumbnail into
-    /// a sliver down the left edge, while capping the WHOLE column instead would have shrunk every creature
-    /// portrait (a creature's one line + band + bar is already taller than two lines). So a one-line name is
-    /// byte-identical to the old rule for creature and placeable alike, a second line grows the portrait, and
-    /// a third does not. The portrait is VERTICALLY CENTRED against the whole content column
-    /// (<see cref="PortraitTop"/>); at or below the cap the two heights are equal and it sits at the pad, so the
-    /// common plate is unchanged.</para></summary>
+    /// <paramref name="nameW"/> is then the WIDEST line. <paramref name="bandW"/> and <paramref name="lineH"/> are
+    /// measured glyph metrics used as given; <paramref name="scale"/> scales only the chrome. The portrait spans at
+    /// most <see cref="PortraitMaxLines"/> name lines plus band and bar, vertically centred on the whole column.</summary>
     public static PlateMetrics Measure(float nameW, int nameLines, float bandW, bool portrait, bool band,
                                        bool bar, float lineH, float scale) =>
         Measure(nameW, nameLines, bandW, portrait, band, bar, lineH, scale, 0, 0, 0f);
 
-    /// <summary>As above with the <c>ObjectTextBubbleOverride</c> bands (CX-179 §8.5) folded in:
-    /// <paramref name="preLines"/> override lines above the name, <paramref name="postLines"/> below the band
-    /// and bar, and <paramref name="extraW"/> the widest of every override line PLUS the spliced line the
-    /// override extends (the caller adds the band or name width to the splice itself).
-    /// <para>With all three at their zero the result is byte-identical to the no-override plate, which is why
-    /// the shorter overload just delegates. <paramref name="nameLines"/> may be 0 only when there ARE override
-    /// lines -- that is replace mode, where the server owns the whole string; otherwise an empty name still
-    /// occupies its line as before. The portrait spans the name lines it always did, and sits at the vertical
-    /// centre of the WHOLE composed column -- pre-lines, name, band, bar and post-lines alike.</para></summary>
+    /// <summary>As above with the <c>ObjectTextBubbleOverride</c> bands folded in: <paramref name="preLines"/>
+    /// override lines above the name, <paramref name="postLines"/> below the band and bar, and
+    /// <paramref name="extraW"/> the widest override line PLUS the spliced line the override extends (the caller
+    /// adds the band or name width to the splice). <paramref name="nameLines"/> is 0 only in replace mode.</summary>
     public static PlateMetrics Measure(float nameW, int nameLines, float bandW, bool portrait, bool band,
                                        bool bar, float lineH, float scale,
                                        int preLines, int postLines, float extraW)
@@ -295,7 +271,7 @@ public static partial class PlateLayout
     }
 
     /// <summary>Runes of the <c>"[speaker]: "</c> prefix the engine glues onto a placeable's or door's chat line
-    /// (object types 7/9/10, <c>HandleServerToPlayerChat</c>'s tail, CX-179), or 0. A card with a name
+    /// (object types 7/9/10, <c>HandleServerToPlayerChat</c>'s tail), or 0. A card with a name
     /// header skips it rather than naming the speaker twice. A prefix with nothing after it is not skipped -- that
     /// would draw an empty line. Pure, cold (once per line, on the drain).</summary>
     public static int SpeakerPrefixLen(System.Collections.Generic.IReadOnlyList<System.Text.Rune> r)
@@ -310,11 +286,10 @@ public static partial class PlateLayout
     /// longer name grows the box downward and the portrait, capped, centres against the taller column.</summary>
     public const int PortraitMaxLines = 2;
 
-    /// <summary>Top edge of the portrait: vertically centred against the content column, never above the pad.
-    /// The clamp is defensive -- the size rule (<see cref="PortraitMaxLines"/> name lines plus the same
-    /// band/bar term the content carries) cannot exceed <paramref name="contentH"/> today, and where the two
-    /// are equal this is exactly <paramref name="pad"/>, which is what keeps the one- and two-line plate
-    /// byte-identical to the top-aligned rule it replaces.</summary>
+    /// <summary>Top edge of the portrait: vertically centred against the content column, never above the pad. The
+    /// clamp is defensive -- the size rule (<see cref="PortraitMaxLines"/> name lines plus the same band/bar term
+    /// the content carries) cannot exceed <paramref name="contentH"/> today, and where the two are equal this is
+    /// exactly <paramref name="pad"/>.</summary>
     public static float PortraitTop(float pad, float contentH, float portraitSize)
     {
         float slack = contentH - portraitSize;
@@ -332,31 +307,17 @@ public static partial class PlateLayout
     }
 
     /// <summary>
-    /// Normalise every line break a builder can express in a name down to one LF, so the plate can lay it out
-    /// as the several lines it was meant to be. Four producers, one product:
-    /// <list type="bullet">
-    /// <item>a real LF, and a CR or CRLF, each become one break;</item>
-    /// <item>the two-character sequence <c>\n</c> becomes one break -- a toolset name field cannot carry a raw
-    /// LF, so this is what a builder actually types. The cost is that a name legitimately containing a
-    /// backslash followed by an <c>n</c> breaks there instead; judged acceptable;</item>
-    /// <item>a run of THREE or more spaces becomes one break -- the padding trick builders already use to fake
-    /// a wrap against the vanilla bubble's box. One or two spaces stay literal;</item>
-    /// <item>spaces adjacent to a break are dropped, so no line starts or ends indented.</item>
-    /// </list>
-    /// Two deliberate consequences past the rule: consecutive breaks collapse to ONE (no blank lines), and
-    /// leading/trailing whitespace is trimmed outright. COLD -- once per name resolve, never per frame -- and
-    /// a name with nothing to rewrite is returned unchanged, allocating nothing.
-    /// <para>ponytail: the plate name only. Bubbles wrap on their own width already
-    /// (<c>PlateTable.EnsureWrap</c>) and would double-break; the upgrade path is to run this over the bubble
-    /// runes before the wrap, once someone wants a builder-authored break there too.</para>
+    /// Normalise every line break a builder can express in a name down to one LF: a real LF/CR/CRLF, the literal
+    /// two-character <c>\n</c> (what a toolset name field can carry), and a run of <see cref="SpacesPerBreak"/>+
+    /// spaces. Spaces beside a break are dropped, consecutive breaks collapse and the ends are trimmed. COLD, and
+    /// an unchanged name allocates nothing. ponytail: plate names only -- bubbles wrap already and would double-break.
     /// </summary>
     public static string BreakName(string s) => BreakName(s, null, out _);
 
-    /// <summary>As <see cref="BreakName(string)"/>, carrying a per-char colour array through the same rewrite
-    /// so the two can never drift out of alignment. <paramref name="colours"/> is indexed by char of
-    /// <paramref name="s"/>; the returned array is indexed by char of the returned string. A whitespace char
-    /// the rewrite INSERTS takes the colour of the char that follows it, which is invisible but keeps the
-    /// index arithmetic honest.</summary>
+    /// <summary>As <see cref="BreakName(string)"/>, carrying a per-char colour array through the same rewrite so
+    /// the two cannot drift out of alignment. <paramref name="colours"/> is indexed by char of
+    /// <paramref name="s"/>, the returned array by char of the returned string. A whitespace char the rewrite
+    /// INSERTS takes the colour of the char that follows it, keeping the index arithmetic honest.</summary>
     public static string BreakName(string s, uint[]? colours, out uint[]? outColours)
     {
         outColours = colours;
@@ -393,23 +354,17 @@ public static partial class PlateLayout
         return sb.ToString();
     }
 
-    /// <summary>The packed RGB that means "no colour tag covered this char" -- white, i.e. take whatever
-    /// colour the caller was going to use anyway.
-    /// <para>An explicit <c>&lt;cÿÿÿ&gt;</c> therefore reads as untagged and a hostile creature whose name a
-    /// builder deliberately whitened still draws in the red reaction tint. A sentinel outside the 24-bit range
-    /// does NOT fix that: <see cref="ColorRunParser"/> hands back the default colour and an explicit white as
-    /// the same <c>(1,1,1)</c> run, so the distinction is already gone before this sees it. The chat
-    /// renderer's own <c>EmitRuns</c> collides identically, and inventing a second convention here would only
-    /// make the two disagree. Fixing it properly means teaching the parser to report tag DEPTH.</para></summary>
+    /// <summary>The packed RGB that means "no colour tag covered this char" -- white, i.e. take whatever colour
+    /// the caller was going to use anyway. An explicit <c>&lt;cÿÿÿ&gt;</c> therefore reads as untagged, and no
+    /// sentinel fixes that: <see cref="ColorRunParser"/> hands back the default colour and an explicit white as the
+    /// same run, so the distinction is gone before this sees it. The fix is teaching the parser tag DEPTH.</summary>
     public const uint Plain = 0xffffffu;  // not-an-offset: a colour
 
     /// <summary>
     /// Strip the Aurora inline colour grammar out of a name and hand back the colour each surviving char was
-    /// under, packed 0xRRGGBB. Null out-array means "every char was plain" -- the overwhelmingly common name,
-    /// which costs one <c>IndexOf</c> and allocates nothing.
-    /// <para>This is what makes a nameplate respect colour codes: without it the tags reach the glyph emit and
-    /// draw as literal <c>&lt;c???&gt;</c> text. The grammar itself is not re-implemented here -- the chat
-    /// box's <see cref="ColorRunParser"/> is the one parser, and this only flattens its runs.</para>
+    /// under, packed 0xRRGGBB. Null out-array means "every char was plain" -- the common name, which costs one
+    /// <c>IndexOf</c> and allocates nothing. Without this the tags reach the glyph emit and draw as literal
+    /// <c>&lt;c???&gt;</c> text. The grammar is not re-implemented: <see cref="ColorRunParser"/> is the one parser.
     /// </summary>
     public static string StripColours(string raw, out uint[]? colours)
     {
@@ -466,10 +421,9 @@ public static partial class PlateLayout
         return false;
     }
 
-    /// <summary>Index the LF-separated lines of a <see cref="BreakName"/>ed string into caller-owned span
-    /// arrays. Pure and allocation-free, so the frame can measure and emit each line without a substring.
-    /// Past <paramref name="max"/> lines the remainder is dropped: the last kept line ends at its own break,
-    /// never mid-word, and the ceiling is the caller's wrap ceiling rather than a second one.</summary>
+    /// <summary>Index the LF-separated lines of a <see cref="BreakName"/>ed string into caller-owned span arrays.
+    /// Pure and allocation-free, so the frame can measure and emit each line without a substring. Past
+    /// <paramref name="max"/> lines the remainder is dropped, the last kept line ending at its own break.</summary>
     /// <returns>the number of lines written; 0 for an empty string.</returns>
     public static int SplitLines(string s, int[] start, int[] len, int max)
     {
@@ -485,18 +439,9 @@ public static partial class PlateLayout
         return n;
     }
 
-    /// <summary>
-    /// Split an <c>ObjectTextBubbleOverride</c> payload into its segments, on a real LF / CR / CRLF and
-    /// <b>nothing else</b>. Deliberately NOT <see cref="BreakName"/>: this is a wire format the server
-    /// composes, not a builder-typed name field, and every one of BreakName's conveniences would corrupt it --
-    /// the trim would eat the leading space that glues "Poisoned" onto the injury line, the collapse would eat
-    /// the leading break that drops "Sneaking" below it, and the 3-space rule would break a status label that
-    /// happens to be padded. Empty segments are preserved for exactly that reason: <c>"\nSneaking"</c> is one
-    /// empty splice segment plus one line, and that empty segment is the statement that nothing joins the
-    /// existing text.
-    /// <para>Only trailing empty segments are dropped -- <c>"abc\n"</c> is one segment, not a segment and a
-    /// blank line. Pure, COLD (once per override change), self-checked.</para>
-    /// </summary>
+    /// <summary>Split an <c>ObjectTextBubbleOverride</c> payload into segments on a real LF / CR / CRLF and
+    /// nothing else -- NOT <see cref="BreakName"/>, whose trim and collapse would corrupt a server-composed wire
+    /// format. Empty segments are preserved (one states that nothing joins the plate's text), bar trailing ones.</summary>
     /// <param name="max">segment ceiling; a longer override keeps the first <paramref name="max"/>.</param>
     public static int SplitOverride(string s, int[] start, int[] len, int max)
     {
@@ -514,17 +459,10 @@ public static partial class PlateLayout
         return n;
     }
 
-    /// <summary>
-    /// The mode-to-placement half of the <c>ObjectTextBubbleOverride</c> rule: given the mode, how many
-    /// segments there are and what the plate has to glue them to, which segment continues an existing line and
-    /// which become lines of their own. Pure and atlas-free so the whole rule is self-checkable; the caller
-    /// does the wrapping and the drawing.
-    /// <para>The engine builds ONE string, <c>name\nband</c>, and joins the override to its head or tail
-    /// (CX-179 §8.5) -- so append's FIRST segment continues the plate's last line and prepend's
-    /// LAST segment runs into its first, while replace makes the segments the whole plate.</para>
-    /// </summary>
-    /// <returns>the line the segment at <paramref name="spliceIdx"/> joins, or <see cref="PlateSplice.None"/>
-    /// when there is nothing to join and every segment stands alone.</returns>
+    /// <summary>The mode-to-placement half of the <c>ObjectTextBubbleOverride</c> rule: which segment continues
+    /// an existing line and which stand alone. The engine builds ONE string, <c>name\nband</c>, and joins the
+    /// override to its head or tail -- so append's FIRST segment continues the last line, prepend's LAST runs
+    /// into the first, and replace makes the segments the whole plate.</summary>
     public static PlateSplice PlaceOverride(int mode, int paraCount, int nameLines, bool band,
                                             out bool showName, out bool showBand, out int spliceIdx,
                                             out int preFrom, out int preTo, out int postFrom, out int postTo)
@@ -582,15 +520,10 @@ public static partial class PlateLayout
         return 1f - (age - holdSec) / fadeSec;
     }
 
-    /// <summary>Where a speech-bubble tail hangs off the bottom of its box. The tip tracks the ANCHOR, not the
-    /// box centre: <see cref="Place"/> clamps the box into the viewport and <see cref="Separate"/> pushes it
-    /// around, so a tail nailed to the box would point at nothing near a screen edge or in a crowd. The base is
-    /// clamped to stay inside the box (inset by <paramref name="inset"/>) and the tip to stay within its span,
-    /// so a box pushed clear of its speaker gets a tail leaning hard sideways rather than a detached one. A box
-    /// narrower than the tail drops the inset, then the tail's own width, rather than inverting.</summary>
-    /// <param name="baseL">left end of the tail's base along the box's bottom edge.</param>
-    /// <param name="baseR">right end of it; equal to <paramref name="baseL"/> when there is no room at all.</param>
-    /// <param name="tipX">where the point sits, <paramref name="tailH"/> px below that edge.</param>
+    /// <summary>Where a speech-bubble tail hangs off the bottom of its box: the tip tracks the ANCHOR, not the box
+    /// centre (<see cref="Place"/> and <see cref="Separate"/> both move the box), the base stays inside the box
+    /// inset by <paramref name="inset"/>, and a box narrower than the tail drops the inset then the width.</summary>
+    /// <param name="baseL">left end of the tail's base along the box's bottom edge; <paramref name="baseR"/> the right.</param>
     public static void TailPoints(float anchorX, float boxX, float boxW, float tailW, float inset,
                                   out float baseL, out float baseR, out float tipX)
     {
@@ -607,24 +540,17 @@ public static partial class PlateLayout
         tipX = anchorX < boxX ? boxX : (anchorX > boxX + boxW ? boxX + boxW : anchorX);
     }
 
-    /// <summary>Our replacement for the engine's <c>BumpAllBubbles</c>, which mode 0 disables: one pass, pushing
-    /// every box that still overlaps an already-placed one above it, then re-clamping into the viewport so a
-    /// pushed plate can never walk off the top of the screen. Boxes are visited in the caller's array order, so
-    /// the result is stable frame to frame. Hot: in-place over the caller's arrays, no allocation.
-    /// <para>ponytail: single pass, vertical only, and the viewport clamp can re-introduce the overlap it just
-    /// resolved in a dense crowd. The upgrade path is the engine's own shape -- iterate to a fixed point, and pad
-    /// horizontally by the portrait width in mode 2.</para></summary>
-    /// <param name="vpH">viewport height; &lt;= 0 means "unknown" and leaves the push unclamped.</param>
+    /// <summary>Our replacement for the engine's <c>BumpAllBubbles</c>, which text-bubble mode 0 disables: one pass
+    /// pushing every box that still overlaps an already-placed one above it, then re-clamping into the viewport
+    /// (<paramref name="vpH"/> &lt;= 0 means unknown, so unclamped). Hot: in place, no allocation. ponytail: one
+    /// pass, vertical only, and the clamp can re-introduce an overlap in a crowd; a fixed point is the upgrade.</summary>
     public static void Separate(float[] x, float[] y, float[] w, float[] h, int count, float gap, float vpH)
         => Separate(x, y, w, h, null, count, gap, vpH);
 
     /// <summary>The ordered form: <paramref name="order"/> names which boxes take part and in what sequence, and
-    /// <paramref name="count"/> is its length, not the box count. The FIRST index visited keeps its placed
-    /// position and every later one is pushed clear ABOVE it, so a recency-ordered list (see
-    /// <see cref="OrderByRecency"/>) stacks the newest message nearest its speaker and the older ones above it.
-    /// A box whose index is absent takes no part at all: it neither pushes nor is pushed, which is how a box in
-    /// its fade-out stops shoving the live ones around. <c>null</c> means "every box, in array order".</summary>
-    /// <param name="vpH">viewport height; &lt;= 0 means "unknown" and leaves the push unclamped.</param>
+    /// <paramref name="count"/> is its length, not the box count. The FIRST index visited keeps its placed position
+    /// and every later one is pushed clear ABOVE it; an absent index takes no part, which is how a fading box stops
+    /// shoving live ones. <c>null</c> means every box in array order; <paramref name="vpH"/> as above.</summary>
     public static void Separate(float[] x, float[] y, float[] w, float[] h, int[]? order, int count,
                                 float gap, float vpH)
     {
@@ -646,10 +572,8 @@ public static partial class PlateLayout
     }
 
     /// <summary>Fill <paramref name="order"/> with the included box indices, newest <paramref name="postedMs"/>
-    /// first, so <see cref="Separate"/> stacks a conversation chronologically instead of in screen order. Ties
-    /// break on the ascending object <paramref name="ids"/>, which are unique, so the sequence is a total order
-    /// and cannot flicker between two frames with the same input. Hot: an insertion sort over a handful of
-    /// boxes, in place, no allocation.</summary>
+    /// first, so <see cref="Separate"/> stacks a conversation chronologically. Ties break on the ascending unique
+    /// object <paramref name="ids"/>, so the sequence is a total order and cannot flicker. Hot, no allocation.</summary>
     /// <returns>how many indices were written -- the <c>count</c> to hand <see cref="Separate"/>.</returns>
     public static int OrderByRecency(int[] order, long[] postedMs, uint[] ids, bool[] include, int count)
     {
@@ -692,7 +616,7 @@ public static partial class PlateLayout
 
     /// <summary>The damage band <paramref name="hp"/> of <paramref name="max"/> falls in: <c>CNWSObject::GetDamageLevel</c>
     /// (Linux nm @0xb6dc70) replayed test for test -- float divide, <c>f &lt; t</c> against the same float thresholds,
-    /// so a zero <paramref name="max"/> lands where the engine's NaN/infinity does (CX-179 §4.5).</summary>
+    /// so a zero <paramref name="max"/> lands where the engine's NaN/infinity does.</summary>
     public static int BandOf(int hp, int max)
     {
         float f = (float)hp / max;
@@ -706,11 +630,10 @@ public static partial class PlateLayout
     /// <summary>The health bar's fill for a band alone: its midpoint, full for uninjured, empty for dead.</summary>
     private static readonly float[] BandFill = { 1f, 0.85f, 0.625f, 0.375f, 0.125f, 0f };
 
-    /// <summary>The health bar's fill, 0..1: <c>(cur + temp) / max</c> while <paramref name="max"/> is set and the pool
-    /// lands in <paramref name="band"/> (only self and party are ever sent HP, and a leaver's goes stale -- RE §4.5),
-    /// else the band's midpoint.
-    /// <para>ponytail: stale HP that still agrees with the band draws a stale fill within it; checking party
-    /// membership (<c>CPanelPartyBar::FindMemberPanel</c>) is the upgrade if that ever reads wrong.</para></summary>
+    /// <summary>The health bar's fill, 0..1: <c>(cur + temp) / max</c> while <paramref name="max"/> is set and the
+    /// pool lands in <paramref name="band"/> (only self and party are ever sent HP, and a leaver's goes stale),
+    /// else the band's midpoint. ponytail: stale HP that still agrees with the band draws a stale fill within it;
+    /// checking party membership (<c>CPanelPartyBar::FindMemberPanel</c>) is the upgrade if that reads wrong.</summary>
     public static float HealthFraction(int cur, int temp, int max, int band)
     {
         int b = band < 0 ? 0 : band >= BandCount ? BandCount - 1 : band;

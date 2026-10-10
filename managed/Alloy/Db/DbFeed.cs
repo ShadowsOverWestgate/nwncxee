@@ -3,17 +3,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: Alloy's front end over <see cref="SceneDb"/> -- the change-driven build of the
-/// renderer's records from dirty parts and the visible set, in place of the engine-scene enrolment.
-/// <para><b>The two calls the seam makes.</b> <see cref="RequestView"/> arrives from a camera's
-/// <c>RenderScene</c> slot, once per view the game asked for, in the order it asked; <see cref="Present"/>
-/// arrives at the point the engine would have called <c>SwapBuffers</c> and runs the frame. Both on the game
-/// thread (ADR 0028 section 5); the draw itself moves to the render thread behind
-/// <c>RenderSnapshot</c>/<c>RenderThread</c>, which seam-scene owns.</para>
-/// <para><b>What a still frame costs.</b> Nothing but the visible-set query. A record is (re)written only when
-/// its part's <see cref="Dirty"/> bits say so, and a part is seated or released only on a
-/// <see cref="Dirty.Created"/>/<see cref="Dirty.Destroyed"/> bit -- so the <c>Restage</c>, <c>Chase</c>,
-/// <c>Ident</c> and <c>Fade</c> work has nothing to do on a scene nobody touched.</para></summary>
+/// <summary>Alloy's front end over <see cref="SceneDb"/>: the change-driven build of the renderer's records
+/// from dirty parts and the visible set, so a still frame costs nothing but the visible-set query.
+/// <see cref="RequestView"/> arrives from a camera's <c>RenderScene</c> slot, once per view, in the order the
+/// game asked; <see cref="Present"/> runs the frame. Both on the GAME thread (ADR 0028 section 5).</summary>
 public static partial class DbFeed
 {
     /// <summary>Views one frame may ask for: the world's, the GUI panels' 3D views, and a probe capture's
@@ -37,7 +30,7 @@ public static partial class DbFeed
 
     private static void Refuse(string what) { if (!_inSelfCheck) _log?.Info(what); }
 
-    /// <summary>The renderer's per-view draw, registered when DB mode arms. A frame with records to draw and
+    /// <summary>The renderer's per-view draw, registered when the renderer arms. A frame with records to draw and
     /// nothing registered is a loud refusal, said once -- never a quiet black screen.</summary>
     internal static Action<DbId, DbId>? Draw;
 
@@ -95,12 +88,9 @@ public static partial class DbFeed
     }
 
     /// <summary>The frame's dirty fold, on the GAME thread: intern any new draw recipes, then rewrite the
-    /// renderer's persistent records for every dirty part and release the destroyed ones. Exactly what
-    /// <see cref="Present"/>'s first half does, without its draw loop.
-    /// <para>Split from the draw because ADR 0028 section 5 puts the two on different threads: the fold reads
-    /// and clears <see cref="DbTable"/>'s dirty lists, which the game thread is about to write again for frame
-    /// N+1, so it cannot move -- while the per-view draws can, and do, off the published snapshot.</para>
-    /// (Folded in from the seam-scene stream's <c>DbFeed.Frame.cs</c>.)</summary>
+    /// renderer's persistent records for every dirty part and release the destroyed ones -- the first half of
+    /// <see cref="Present"/>, without its draw loop. It reads and clears <see cref="DbTable"/>'s dirty lists,
+    /// which the game thread is about to write again for frame N+1, so it cannot move off that thread.</summary>
     internal static void FoldFrame()
     {
         if (!Renderer.On) { _viewN = 0; return; }
@@ -111,10 +101,10 @@ public static partial class DbFeed
         FrameZones.Add(FrameZones.Zone.DbDirty, tDirty);
     }
 
-    /// <summary>CX-188: the fold's three pumps, each bracketed. A still frame writes ~15 records and the fold
-    /// still read 0,7 ms, and a zone that holds the record walk AND three drains cannot say which of them that
-    /// is. Nested in <see cref="FrameZones.Zone.DbDirty"/> and not subtracted from it, so the period line
-    /// carries both the fold's total and the names inside it.</summary>
+    /// <summary>The fold's three pumps, each bracketed: a still frame writes ~15 records yet the fold reads
+    /// 0,7 ms, and one zone holding the record walk AND three drains cannot say which of them that is. Nested
+    /// in <see cref="FrameZones.Zone.DbDirty"/> and not subtracted from it, so the period line carries both
+    /// the fold's total and the names inside it.</summary>
     private static void Pumps()
     {
         // The arena's own pump belongs to the FRAME, not to the world colour pass: a GUI-only frame (the main
@@ -200,11 +190,10 @@ public static partial class DbFeed
         return sb.ToString();
     }
 
-    /// <summary>The feed's period line: what the change-driven build actually did.</summary>
-    /// <summary>The module edge in DB mode: every resref-keyed cache lets go of the module that ended, so the next
-    /// one (a server's NWSync content after a singleplayer module) reads its own models, textures, materials and
-    /// <c>.txi</c>s rather than the stock ones still resident. Mode 0's flush (<c>OwnedTextures.ModuleUnloaded</c>)
-    /// reaches none of these. Game thread.</summary>
+    /// <summary>The module edge: every resref-keyed cache lets go of the module that ended, so the next one
+    /// (a server's NWSync content after a singleplayer module) reads its own models, textures, materials and
+    /// <c>.txi</c>s rather than the stock ones still resident. <c>OwnedTextures.ModuleUnloaded</c> reaches
+    /// none of these. Game thread.</summary>
     internal static void ModuleEdge(ExtenderLog? log)
     {
         var (mEvicted, mHeld) = CX.Alloy.Mdl.ModelCache.ModuleEdge();
@@ -216,6 +205,7 @@ public static partial class DbFeed
                 + $"textures {tRetired} retired, {tHeld} still held (dropped from lookup); materials and txi forgotten");
     }
 
+    /// <summary>The feed's period line: what the change-driven build actually did.</summary>
     internal static string Stats()
         => $"dbfeed: frames {_frames} rec-writes {_lastRecWrites} visible {LastVisible} retry {Retrying} "
          + $"recipes {DrawRecipe.Count} (diffuse {DrawRecipe.DiffuseCensus().resolved}/{DrawRecipe.DiffuseCensus().named} resolved, {DrawRecipe.DiffuseCensus().standIn} stand-in) grid {DbGrid.Filed}/{DbGrid.Movers}/{DbGrid.Unboxed} {DrawRecipe.WaterNote()}"

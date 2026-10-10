@@ -5,21 +5,10 @@ using System.Threading;
 
 namespace CX.Framework;
 
-/// <summary>#238 (AC1): where the frame actually goes, on the CPU, end to end. The perf tickets before this
-/// one could only report the pieces they happened to bracket -- ~13ms of a measured 150ms frame -- and every
-/// technique choice downstream of that was a guess about the other 90%. This is the instrument that names it:
-/// a fixed set of accumulators, one <c>Stopwatch</c> read per bracket, and a residual that is the frame time
-/// minus everything claimed.
-/// <para><b>Top-level vs nested.</b> <see cref="Zone.Nested"/> splits the enum. Zones below it are mutually
-/// exclusive spans of the frame and are what the residual subtracts; zones above it are breakdowns INSIDE one
-/// of those and are reported for shape only. A bracket that contains another passes the child's ticks as
-/// <c>minus</c> so the parent reports its own work -- which is not cosmetic: <c>DrawOwned</c> runs inside the
-/// #132 anchor inside <see cref="Zone.Shim"/>, so the shim's published "6ms/frame" was the whole Alloy CPU
-/// frame plus the walk.</para>
-/// <para><b>Averages hide the thing we are hunting.</b> A single 150ms frame in 900 moves an average by
-/// 0.16ms. So the period line also reports the WORST frame's own breakdown, snapshotted when it happens --
-/// that is the spike, named rather than inferred.</para>
-/// <para>Hot: <see cref="Add"/> is two array writes and no allocation; the only string is the period line.</para></summary>
+/// <summary>Where the frame goes on the CPU, end to end: a fixed set of accumulators, one <c>Stopwatch</c> read per
+/// bracket, and a residual of frame time minus everything claimed. <see cref="Zone.Nested"/> splits the enum --
+/// before it, mutually exclusive spans the residual subtracts; after it, breakdowns INSIDE one of those, each parent
+/// passing the child's ticks as <c>minus</c>. The period line also names the WORST frame. Hot: no allocation.</summary>
 public static class FrameZones
 {
     /// <summary>The bracket set. Order matters: everything before <see cref="Nested"/> is a top-level,
@@ -40,27 +29,15 @@ public static class FrameZones
         /// <summary>The present itself. Large here means GPU- or vsync-bound, which is a different problem
         /// from every other zone on this list.</summary>
         Present,
-        /// <summary>#336 step 5: the ENGINE's frame, attributed. The four top-level steps of
-        /// <c>CClientExoAppInternal::MainLoop</c> @0x658250 that are not the 3D render: the network receive
-        /// (<c>CNetLayer::ProcessReceivedFrames</c>, message handling included), the resource manager
-        /// (<c>CExoResMan::Update</c>: loads, unloads, texture builds), the client AI update
-        /// (<c>CClientAIMaster::UpdateState</c>: every creature/placeable/VFX <c>AIUpdate</c>, animation), and
-        /// the 2D GUI (<c>CGuiMan::UpdateAndRender</c>). What <c>other</c> still holds after these is input,
-        /// sound, the camera, and whatever the loop does between them. The scene render runs FROM the AI
-        /// update, so <c>Ai</c> is reported minus every renderer bracket it contains.</summary>
+        /// <summary>The ENGINE's frame, attributed: the four top-level steps of
+        /// <c>CClientExoAppInternal::MainLoop</c> @0x658250 that are not the 3D render -- network receive,
+        /// resource manager, client AI update, 2D GUI. What <c>other</c> still holds is input, sound and the
+        /// camera. The scene render runs FROM the AI update, so <c>Ai</c> is minus every renderer bracket in it.</summary>
         Net, Res, Ai, Gui,
-        /// <summary>DB mode's frame boundary (<c>SeamDraw.OnBoundary</c>) minus every TOP-LEVEL bracket it
-        /// contains -- the subtraction is <see cref="TopLevelTicks"/> over THIS ROW, so it is all of them, and
-        /// the three the boundary actually enters on the game thread are <see cref="Shadow"/> and
-        /// <see cref="Alloy"/> through the world view's pass chain (single-threaded arm only -- on the render
-        /// thread they land in that row instead) and <see cref="Ui"/> through the window roll-call, which runs
-        /// in both arms of the boundary: before the publish when the render thread is live, after the draw
-        /// when it is not. Everything else the boundary does is INSIDE this number: the snapshot publish
-        /// (<see cref="Publish"/>), the fold it drives (<see cref="DbFold"/> = <see cref="Settle"/> +
-        /// <see cref="HitFold"/> + <see cref="DbDirty"/> + the trigger enrolment + the wind fold), the GUI
-        /// panel views (<see cref="DbGuiDraw"/>), the captured-layer flush (<see cref="GuiFlush"/>) and the
-        /// roll-call's own head and tail (<see cref="UiEdge"/> -- nested, so NOT subtracted). Those are the
-        /// breakdown; the summary here used to claim they were subtracted and they never were.</summary>
+        /// <summary>The frame boundary (<c>SeamDraw.OnBoundary</c>) minus every TOP-LEVEL bracket it contains (the
+        /// subtraction is <see cref="TopLevelTicks"/> over THIS row, so it is all of them). On the game thread it
+        /// enters <see cref="Shadow"/> and <see cref="Alloy"/> through the world view's pass chain (single-threaded
+        /// arm only) and <see cref="Ui"/> through the roll-call. Everything else it does is INSIDE this number.</summary>
         Seam,
 
         /// <summary>Split marker, not a bracket.</summary>
@@ -68,24 +45,20 @@ public static class FrameZones
 
         /// <summary>Nested in <see cref="Alloy"/>: revalidate + route + stage every owned part.</summary>
         Build,
-        /// <summary>#322: nested in <see cref="Build"/>: the routing walk (identity, live alpha, tile fade,
+        /// <summary>Nested in <see cref="Build"/>: the routing walk (identity, live alpha, tile fade,
         /// blended sort) -- the half an incremental build keeps O(world).</summary>
         Scan,
-        /// <summary>#322: nested in <see cref="Build"/>: the staging walk (records, textures, draw args,
-        /// batch cuts) -- the half #322 wants proportional to the changed set. This split IS the ticket's
-        /// step 1: it attributes the Build monolith before any phase boundary is drawn.</summary>
+        /// <summary>Nested in <see cref="Build"/>: the staging walk (records, textures, draw args, batch cuts)
+        /// -- the half that should stay proportional to the changed set.</summary>
         Restage,
-        /// <summary>#324: inside <see cref="Restage"/> (NOT subtracted from it): the two spans of the staging
-        /// walk that hold its engine-pointer derefs -- dissolve, the texture re-fetches, the
-        /// VDO item range, the node matrix, the colour triples, the water body -- together with the owned
-        /// bookkeeping interleaved with them. An UPPER BOUND on the unmovable half, so Restage minus Chase is
-        /// a lower bound on what a GPU pass could take. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> parts
-        /// and extrapolated; parts that skip out mid-span are not sampled. An estimate, not a bracket sum.</summary>
+        /// <summary>Inside <see cref="Restage"/> (NOT subtracted): the two spans of the staging walk holding its
+        /// engine-pointer derefs, plus the owned bookkeeping interleaved with them. An UPPER BOUND on the unmovable
+        /// half, so Restage minus Chase is a lower bound on what a GPU pass could take. SAMPLED
+        /// 1-in-<c>AlloyRenderer.ChaseEvery</c> parts and extrapolated: an estimate, not a bracket sum.</summary>
         Chase,
-        /// <summary>#336: inside <see cref="Scan"/> (NOT subtracted from it): the route walk's O(world)
-        /// remainder -- the vacated-slot and frustum tests on every slot the gate REJECTS, i.e. the cost of
-        /// visiting the off-screen world at all. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> slots and
-        /// extrapolated. The step-4 visible-set list is built only if this reads above ~0,3ms.</summary>
+        /// <summary>Inside <see cref="Scan"/> (NOT subtracted): the route walk's O(world) remainder -- the
+        /// vacated-slot and frustum tests on every slot the gate REJECTS, i.e. the cost of visiting the off-screen
+        /// world at all. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> slots and extrapolated.</summary>
         Route,
         /// <summary>Inside <see cref="Scan"/> (NOT subtracted), on the slots the gate ACCEPTS: the identity
         /// and LOD chase (Ident) and the tile-fade, alpha and dissolve chase (Fade). SAMPLED
@@ -100,30 +73,30 @@ public static class FrameZones
         /// <summary>Inside <see cref="Prepass"/> and <see cref="Passes"/> (NOT subtracted): the grass pass CPU
         /// -- the bin-bucket walk and instance staging in Prepare, and both draws.</summary>
         Grass,
-        /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
+        /// <summary>Nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
         Lwalk,
-        /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
+        /// <summary>Nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
         /// mover scans and the view bakes. Net of the <see cref="Pose"/> the bake runs inside itself (SL3);
         /// every other zone nested in it is reported without being subtracted.</summary>
         Bake,
-        /// <summary>#322: nested in <see cref="Alloy"/>: the light walk upload + cluster build.</summary>
+        /// <summary>Nested in <see cref="Alloy"/>: the light walk upload + cluster build.</summary>
         Lights,
-        /// <summary>#322: nested in <see cref="Alloy"/>: the colour-pass loop's own CPU work, minus the
+        /// <summary>Nested in <see cref="Alloy"/>: the colour-pass loop's own CPU work, minus the
         /// nested Issue/Cull/Post/Probe brackets inside it -- prepass, hi-Z, grass, water, beams,
         /// particles, state churn. Added because the Alloy zone measured ~6ms MORE than its children
         /// claimed, and an unclaimed tower cannot be cut.</summary>
         Passes,
-        /// <summary>#322: nested in <see cref="Alloy"/>: the post chain -- Begin (target setup) plus
+        /// <summary>Nested in <see cref="Alloy"/>: the post chain -- Begin (target setup) plus
         /// bloom/composite/highlight at the PostProcess slot.</summary>
         Post,
-        /// <summary>#322: nested in <see cref="Passes"/>: the depth prepass submission loop + the hi-Z
+        /// <summary>Nested in <see cref="Passes"/>: the depth prepass submission loop + the hi-Z
         /// pyramid build.</summary>
         Prepass,
-        /// <summary>#322: nested in <see cref="Passes"/>: the full-screen copies -- the water snapshot and
+        /// <summary>Nested in <see cref="Passes"/>: the full-screen copies -- the water snapshot and
         /// the soft-particle depth take. Small numbers here are honest; a large one is a GPU sync stall
         /// wearing a memcpy's name.</summary>
         Blit,
-        /// <summary>#322: nested in <see cref="Passes"/>: the particle pass CPU (build + upload + submit),
+        /// <summary>Nested in <see cref="Passes"/>: the particle pass CPU (build + upload + submit),
         /// minus its Blit child.</summary>
         Parts,
         /// <summary>Nested in <see cref="Alloy"/>: the wholesale per-draw SSBO / handle / bone uploads.</summary>
@@ -145,32 +118,30 @@ public static class FrameZones
         Prep,
         /// <summary>Nested in <see cref="Alloy"/>: GPU frame start, cycle textures, the LOD/chart arena pumps.</summary>
         Pump,
-        /// <summary>#243: nested in <see cref="Alloy"/>: staging the cull's source list and the two GPU
-        /// dispatches over it. CPU-side only -- what the dispatches themselves cost is GPU time and shows up
-        /// in <see cref="Present"/> or in nothing at all.</summary>
+        /// <summary>Nested in <see cref="Alloy"/>: staging the cull's source list and the two GPU dispatches over
+        /// it. CPU-side only -- what the dispatches cost is GPU time, and shows up in <see cref="Present"/> or
+        /// nowhere at all.</summary>
         Cull,
-        /// <summary>Nested in <see cref="Ai"/> (reported for shape, not subtracted): the engine texture
-        /// upload funnel -- the engine's own build plus Alloy's owned copy and BCn transcode. First-sight
-        /// work that lands inside the engine's step, which is why Ai read high on hitch frames.
-        /// <para>CX-54 step 0: this is the UPLOAD term of the read / decode / upload split -- the two others
-        /// are <see cref="TexRead"/> and <see cref="TexDecode"/>, and no second bracket spans the same
-        /// call.</para></summary>
+        /// <summary>Nested in <see cref="Ai"/> (reported for shape, not subtracted): the engine texture upload
+        /// funnel -- the engine's own build plus Alloy's owned copy and BCn transcode, first-sight work that lands
+        /// inside the engine's step. The UPLOAD term of the read / decode / upload split, whose other two are
+        /// <see cref="TexRead"/> and <see cref="TexDecode"/>; no second bracket spans the same call.</summary>
         Tex,
         /// <summary>Nested in <see cref="Ai"/>: <c>CExoResMan::Demand</c>, the engine's on-demand resource
         /// load (models, textures, animations on first sight). Outermost call only.</summary>
         Demand,
-        /// <summary>CX-52 step 0: <see cref="Demand"/> split by the outermost resource's restype -- texture
+        /// <summary><see cref="Demand"/> split by the outermost resource's restype -- texture
         /// read vs model parse. <c>DemOther</c> is every restype not named.</summary>
         DemDds, DemTga, DemPlt, DemMdl, DemOther,
-        /// <summary>CX-52 step 0: <c>AurGetImageWrapper</c>, one texture's read + decode. Minus the texture
+        /// <summary><c>AurGetImageWrapper</c>, one texture's read + decode. Minus the texture
         /// demands above it is the decode alone.</summary>
         Image,
-        /// <summary>CX-54 step 0: a texture build's READ -- the bytes off disk, hak or NWSync with nothing
+        /// <summary>A texture build's READ -- the bytes off disk, hak or NWSync with nothing
         /// decoded. Two brackets, neither inside the other: <c>CExoResMan::Demand</c> on a DDS/TGA/PLT
         /// resource minus the <see cref="TexDecode"/> it contains (a TGA is decoded inside its own demand),
         /// and the engine's compressed-image getter under <see cref="Alloy.DdsReader"/>.</summary>
         TexRead,
-        /// <summary>CX-54 step 0: a texture build's DECODE -- <c>CResTGA::OnResourceServiced</c>, the PLT
+        /// <summary>A texture build's DECODE -- <c>CResTGA::OnResourceServiced</c>, the PLT
         /// composite, the DDS re-parse and pad, and the forced-uncompressed BCn unpack. Alloy's and the
         /// engine's alike, whichever ran.</summary>
         TexDecode,
@@ -184,9 +155,9 @@ public static class FrameZones
         Bcn,
         /// <summary>Inside <see cref="Bcn"/>: the compressed uploads alone.</summary>
         BcnUp,
-        /// <summary>#386: the prefetch drip's engine builds. On the Enroll slot inside Ai, subtracted from both.</summary>
+        /// <summary>The prefetch drip's engine builds. On the Enroll slot inside Ai, subtracted from both.</summary>
         Prebuild,
-        /// <summary>#674: the lightmap bake's frame step (adopt, pack, the light steps, the readback), inside
+        /// <summary>The lightmap bake's frame step (adopt, pack, the light steps, the readback), inside
         /// <see cref="Passes"/> and subtracted from it.</summary>
         Lightmap,
         /// <summary>Nested in <see cref="Enroll"/>: the scene walk's per-frame tick (<c>SceneWalk.Tick</c>), the
@@ -196,85 +167,75 @@ public static class FrameZones
         /// <summary>Nested in <see cref="Passes"/>: the stream ring's region fence (<c>GpuRing.Acquire</c>) --
         /// the CPU waiting for the GPU to drain the frame before last. Large here means GPU-bound.</summary>
         Wait,
-        /// <summary>CX-118: hit testing against CX's scene -- every <c>HitTest.Cast</c> the frame ran, the
-        /// hover pick included. Nested in <see cref="Ai"/> (the game's input and AI step issues the picks) and
-        /// NOT subtracted from it, so the number reads as what picking cost this frame on its own. The
-        /// engine's own bill for the same work is invisible to every bracket here, which is why the
-        /// comparison against vanilla is a live A/B on <c>counthitcheckscenebspnode</c> and not a zone
-        /// difference.</summary>
+        /// <summary>Hit testing against CX's scene -- every <c>HitTest.Cast</c> the frame ran, hover pick
+        /// included. Nested in <see cref="Ai"/> (which issues the picks) and NOT subtracted, so it reads as what
+        /// picking cost on its own. The engine's bill for the same work is invisible to every bracket here, so a
+        /// vanilla comparison is a live A/B on <c>counthitcheckscenebspnode</c>, not a zone difference.</summary>
         Pick,
-        /// <summary>CX-118: filling the engine's <c>gobbucket</c> in <c>ScenePrep</c>. Nested in
-        /// <see cref="Shim"/> and not subtracted: Alloy reads nothing out of that list any more and fills it
-        /// ONLY because <c>Scene::HitCheckGob</c> @0x45f860 takes the bucket branch unconditionally on a world
-        /// scene, so this is the bill the CX hit test deletes. <c>/alloy gobbucket 0</c> is the A/B. Named for the engine global, not to be read as a sibling of <see cref="Build"/>'s bucket work.</summary>
+        /// <summary>Filling the engine's <c>gobbucket</c> in <c>ScenePrep</c>, nested in <see cref="Shim"/> and not
+        /// subtracted. Alloy reads nothing out of that list and fills it ONLY because <c>Scene::HitCheckGob</c>
+        /// @0x45f860 takes the bucket branch unconditionally on a world scene, so this is the bill the CX hit test
+        /// deletes; <c>/alloy gobbucket 0</c> is the A/B. Named for the engine global.</summary>
         GobBucket,
-        /// <summary>CX-120: nested in <see cref="DbFold"/> (so in <see cref="Seam"/>) -- <c>DbFeed.FoldFrame</c>:
-        /// the three pumps plus the fold of the scene database's dirty lists into the renderer's records
-        /// (<c>DbFeed.TakeFrame</c>). The record fold itself reads about 0 in a still scene, which is the
-        /// change-driven build's whole claim -- so a non-zero number here with nothing moving is the PUMPS,
-        /// which is what <see cref="ArenaPump"/>, <see cref="ChartDrip"/> and <see cref="RecipePump"/> name.
-        /// (The one other caller, <c>DbFeed.Present</c>, brackets it the same way; nothing calls that.)</summary>
+        /// <summary>Nested in <see cref="DbFold"/> (so in <see cref="Seam"/>) -- <c>DbFeed.FoldFrame</c>: the three
+        /// pumps plus the fold of the scene database's dirty lists into the renderer's records. The record fold
+        /// reads about 0 in a still scene, so a non-zero number with nothing moving is the PUMPS, which
+        /// <see cref="ArenaPump"/>, <see cref="ChartDrip"/> and <see cref="RecipePump"/> name.</summary>
         DbDirty,
-        /// <summary>CX-188: inside <see cref="DbDirty"/> (NOT subtracted): <c>MeshArena.Pump</c> -- collecting
-        /// whatever the mesh workers finished.</summary>
+        /// <summary>Inside <see cref="DbDirty"/> (NOT subtracted): <c>MeshArena.Pump</c> -- collecting whatever
+        /// the mesh workers finished.</summary>
         ArenaPump,
-        /// <summary>CX-188: inside <see cref="DbDirty"/> (NOT subtracted): <c>MeshChart.DripDb</c>, the chart
-        /// offer drip.</summary>
+        /// <summary>Inside <see cref="DbDirty"/> (NOT subtracted): <c>MeshChart.DripDb</c>, the chart offer drip.</summary>
         ChartDrip,
-        /// <summary>CX-188: inside <see cref="DbDirty"/> (NOT subtracted): <c>DrawRecipe.Pump</c> plus
+        /// <summary>Inside <see cref="DbDirty"/> (NOT subtracted): <c>DrawRecipe.Pump</c> plus
         /// <c>DrawRecipe.Reclassify</c> -- the recipe intern drain and the coverage re-ask.</summary>
         RecipePump,
-        /// <summary>CX-188: nested in <see cref="Seam"/> -- <c>RenderSnapshot.Publish</c> net of the
+        /// <summary>Nested in <see cref="Seam"/> -- <c>RenderSnapshot.Publish</c> net of the
         /// <see cref="DbFold"/> it invokes. What is left is the dirty-count copy, the four <c>TakeDirty</c>
         /// calls and the handshake wait for a frame the renderer still holds.</summary>
         Publish,
-        /// <summary>CX-188: nested in <see cref="Publish"/> and subtracted from it -- the whole fold the
+        /// <summary>Nested in <see cref="Publish"/> and subtracted from it -- the whole fold the
         /// publisher drives on the game thread: <see cref="Settle"/>, <c>DbFeed.FoldFrame</c>
         /// (<see cref="DbDirty"/>), the trigger-highlight enrolment and the engine reads hoisted into the
         /// fold (<c>SceneFeed.FoldWind</c>). Its own number, minus those children, is those last two.</summary>
         DbFold,
-        /// <summary>CX-188: nested in <see cref="DbFold"/> -- <c>DbAnim.Settle</c>, the boundary's last
+        /// <summary>Nested in <see cref="DbFold"/> -- <c>DbAnim.Settle</c>, the boundary's last
         /// compose, net of the <see cref="HitFold"/> it runs at its end.</summary>
         Settle,
-        /// <summary>CX-188: nested in <see cref="Settle"/> and subtracted from it -- <c>HitFeed.Fold</c> at the
+        /// <summary>Nested in <see cref="Settle"/> and subtracted from it -- <c>HitFeed.Fold</c> at the
         /// FRAME BOUNDARY (the hit bounds and the hit index re-derived from the frame's change set).</summary>
         HitFold,
-        /// <summary>CX-188: nested in <see cref="Ai"/> (NOT subtracted) -- the OTHER <c>HitFeed.Fold</c> site,
+        /// <summary>Nested in <see cref="Ai"/> (NOT subtracted) -- the OTHER <c>HitFeed.Fold</c> site,
         /// the once-per-frame fold at the end of <c>DbAnim.Animate</c>. Separate from <see cref="HitFold"/>
         /// because the two sit in different zones and only one of them is the boundary's.</summary>
         HitFoldAi,
-        /// <summary>CX-188: nested in <see cref="Seam"/> -- <c>DbGui.Draw</c> summed over the frame's GUI panel
+        /// <summary>Nested in <see cref="Seam"/> -- <c>DbGui.Draw</c> summed over the frame's GUI panel
         /// views (the member walk, the streaming prescan and the quad issue).</summary>
         DbGuiDraw,
-        /// <summary>CX-188: nested in <see cref="Seam"/> -- <c>GuiCapture.Lead</c> + <c>GuiPass.FlushNow</c>:
+        /// <summary>Nested in <see cref="Seam"/> -- <c>GuiCapture.Lead</c> + <c>GuiPass.FlushNow</c>:
         /// issuing the frame's captured GUI layers after the last view.</summary>
         GuiFlush,
-        /// <summary>CX-188: nested in <see cref="Alloy"/> (NOT subtracted) -- <c>DbKeyhole.Write</c>, the
+        /// <summary>Nested in <see cref="Alloy"/> (NOT subtracted) -- <c>DbKeyhole.Write</c>, the
         /// dissolve column over the pass's draw order.</summary>
         Keyhole,
-        /// <summary>CX-188: nested in <see cref="Ui"/>'s caller and NOT in <see cref="Ui"/> itself -- the head
-        /// and tail of <c>UiHostService.DrawWindows</c> that the Ui bracket excludes: the session gate, the
-        /// UI-scale sync and font re-bake, the viewport query, and the engine state hand-back.</summary>
+        /// <summary>Nested in <see cref="Ui"/>'s caller and NOT in <see cref="Ui"/> itself -- the head and tail of
+        /// <c>UiHostService.DrawWindows</c> the Ui bracket excludes: the session gate, the UI-scale sync and font
+        /// re-bake, the viewport query, and the engine state hand-back.</summary>
         UiEdge,
-        /// <summary>CX-188: nested in <see cref="Alloy"/> (NOT subtracted) -- <c>EmitterSim.StepDb</c>, the
-        /// whole owned particle walk: the registry walk, the cull, the per-emitter step, the draw sort and the
-        /// enrolment. With nothing moving it was 28,9% INCLUSIVE of the main thread's on-CPU samples
-        /// (<c>perf-0927</c>: 12 s, still camera, ~3,5 ms of a 17,5 ms frame) and no zone named it, so the
-        /// period line read it as part of the Alloy tower.</summary>
+        /// <summary>Nested in <see cref="Alloy"/> (NOT subtracted) -- <c>EmitterSim.StepDb</c>, the whole owned
+        /// particle walk: the registry walk, the cull, the per-emitter step, the draw sort and the enrolment. Worth
+        /// its own zone because a still scene once spent ~3,5 ms of a 17,5 ms frame here, inside the Alloy tower.</summary>
         Emit,
-        /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- one view's visible-set query over
-        /// the database index (<c>DbFeed.Visible</c>). The one cost a still frame still pays.</summary>
+        /// <summary>Nested in <see cref="Alloy"/> -- one view's visible-set query over the database index
+        /// (<c>DbFeed.Visible</c>). The one cost a still frame still pays.</summary>
         DbVis,
-        /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- the draw order and the area index
-        /// rebuilt after a slot-set edge (the DB equivalent of an enrolment). Reads 0 on a frame in which
-        /// nothing was created or destroyed.</summary>
+        /// <summary>Nested in <see cref="Alloy"/> -- the draw order and the area index rebuilt after a slot-set
+        /// edge. Reads 0 on a frame in which nothing was created or destroyed.</summary>
         DbOrder,
-        /// <summary>CX-188: nested in <see cref="Ai"/>, DB mode only -- <c>DbAnim.Animate</c> summed over the
-        /// frame's scene animates and its out-of-band ones (the member walk, the queue advance, the pose, the
-        /// dangly solve, the part walk and the compose), net of the <see cref="HitFoldAi"/> it runs at its end.
-        /// This is the
-        /// <c>Scene::Animate</c> slot's whole cost, which <see cref="Ai"/> otherwise reports mixed in with the
-        /// SP server's own AI step.</summary>
+        /// <summary>Nested in <see cref="Ai"/> -- <c>DbAnim.Animate</c> summed over the frame's scene animates and
+        /// its out-of-band ones (member walk, queue advance, pose, dangly solve, part walk, compose), net of the
+        /// <see cref="HitFoldAi"/> it runs at its end. The <c>Scene::Animate</c> slot's whole cost, which
+        /// <see cref="Ai"/> otherwise reports mixed in with the SP server's own AI step.</summary>
         Anim,
 
         Count,
@@ -282,20 +243,10 @@ public static class FrameZones
 
     private const int N = (int)Zone.Count;
 
-    /// <summary>CX-188: accumulator ROWS, one per thread that brackets independently -- the game thread and,
-    /// with <c>alloy.renderthread=1</c>, Alloy's render thread. Every array below is row-major
-    /// (<c>row * N + zone</c>), and <see cref="Add"/> credits the CALLING thread's row.
-    /// <para>Two threads over one set of accumulators is not merely imprecise, it inverts the instrument: the
-    /// residual is <c>frame time - every top-level zone</c>, so a render thread drawing 7 ms CONCURRENTLY with
-    /// a 10 ms simulation would make <c>other</c> read negative and the period line unreadable. With rows, row
-    /// 0 is still a partition of the game thread's frame and keeps its residual; row 1 is the render thread's
-    /// own wall, reported beside it rather than subtracted from it.</para>
-    /// <para>The fold in <see cref="EndFrame"/> reads both rows from the game thread. That is race-free
-    /// because of the frame protocol, not by luck: <c>SeamDraw</c> drains the render thread (the published
-    /// frame is released) BEFORE the present, and <see cref="EndFrame"/> runs at the present, so the render
-    /// thread is parked in <c>RenderSnapshot.Take</c> with nothing to accumulate. A protocol change that lets
-    /// the renderer run across the present would make row 1 lose at most one frame of ticks to the next
-    /// period -- never a torn value: each cell is one aligned <c>long</c>.</para></summary>
+    /// <summary>Accumulator ROWS, one per thread that brackets independently -- the game thread and, with
+    /// <c>alloy.renderthread=1</c>, Alloy's render thread; every array is row-major (<c>row * N + zone</c>) and
+    /// <see cref="Add"/> credits the CALLING thread. One shared set would make the residual read negative, so row 0
+    /// keeps it and row 1 is the render thread's own wall. Each cell is one aligned <c>long</c>, never torn.</summary>
     public const int Rows = 2;
     /// <summary>The game thread's row -- the default for every thread, so a thread that never claims a row of
     /// its own is attributed here and nothing goes missing.</summary>
@@ -322,13 +273,10 @@ public static class FrameZones
     private static long _dtSum, _dtWorst, _dtWorstDrew;
     private static int _frames;
 
-    /// <summary>The HITCH LEDGER. The worst-frame row is one sample and every period's is an engine load
-    /// stall; the stutter a player feels while turning or walking is the band under it -- frames past the
-    /// 60Hz budget but short of a load stall, rendered. This sums those frames' zones separately, so the
-    /// hitch row minus the average row names what a hitch spends on. Beside it, per-frame EVENT counts --
-    /// the first-sight and re-bake work that is bursty by nature -- averaged over all frames and over hitch
-    /// frames alone: an event elevated in the hitch column is the structural suspect, an even one is not.
-    /// CPU-side only: a GPU hitch shows here as Present, and gpu-span max is its only other witness.</summary>
+    /// <summary>The HITCH LEDGER: frames past the 60Hz budget but short of a load stall -- the stutter a player
+    /// feels while turning or walking -- summed separately, so the hitch row minus the average row names what a
+    /// hitch spends on. Beside it, per-frame EVENT counts averaged over all frames and over hitch frames alone: an
+    /// event elevated in the hitch column is the structural suspect. CPU-side only; a GPU hitch reads as Present.</summary>
     public enum Ev
     {
         /// <summary>Casters admitted for the first time (record landed, or back from off-list).</summary>
@@ -357,7 +305,7 @@ public static class FrameZones
         TexUpload,
         /// <summary>Outermost engine resource demands (<see cref="Zone.Demand"/> is their time).</summary>
         Demands,
-        /// <summary>CX-52 step 0: of <see cref="Demands"/>, the DDS / TGA / PLT / MDL ones.</summary>
+        /// <summary>Of <see cref="Demands"/>, the DDS / TGA / PLT / MDL ones.</summary>
         DdsDemands, TgaDemands, PltDemands, MdlDemands,
         /// <summary>Textures transcoded by the drip (<see cref="Zone.Bcn"/> is their time).</summary>
         Transcode,
@@ -365,7 +313,7 @@ public static class FrameZones
         TexWarm,
         /// <summary>ADR 0023: cached textures evicted for the budget.</summary>
         TexEvict,
-        /// <summary>#386: textures built ahead of first sight by the prefetch drip.</summary>
+        /// <summary>Textures built ahead of first sight by the prefetch drip.</summary>
         Prefetch,
         /// <summary>Casters whose dynamic-set membership flipped (each one invalidates the static cube it stands in).</summary>
         DynFlip,
@@ -413,9 +361,6 @@ public static class FrameZones
 
     public static long Now => Stopwatch.GetTimestamp();
 
-    /// <summary>Close a bracket opened at <paramref name="t0"/>, optionally minus ticks a nested bracket
-    /// already claimed. Never accumulates negative: a child measured across a boundary this parent did not
-    /// span would otherwise credit the parent time it did not spend.</summary>
     /// <summary>Every top-level zone's ticks this frame ON THIS THREAD, for a bracket that must subtract the
     /// ones it contains.</summary>
     public static long TopLevelTicks()
@@ -426,15 +371,18 @@ public static class FrameZones
         return s;
     }
 
+    /// <summary>Close a bracket opened at <paramref name="t0"/>, optionally minus ticks a nested bracket already
+    /// claimed. Never accumulates negative: a child measured across a boundary this parent did not span would
+    /// otherwise credit the parent time it did not spend.</summary>
     public static void Add(Zone z, long t0, long minus = 0)
     {
         long dt = Stopwatch.GetTimestamp() - t0 - minus;
         if (dt > 0) _frame[_row * N + (int)z] += dt;
     }
 
-    /// <summary>#324: close a bracket taken on 1-in-<paramref name="every"/> iterations of a walk, credited
-    /// times <paramref name="every"/>. Timestamping every part of a 14k walk would cost more than the half
-    /// being measured; the sample is the instrument.</summary>
+    /// <summary>Close a bracket taken on 1-in-<paramref name="every"/> iterations of a walk, credited times
+    /// <paramref name="every"/>. Timestamping every part of a 14k walk would cost more than the half being
+    /// measured, so the sample is the instrument.</summary>
     public static void AddSampled(Zone z, long t0, int every)
     {
         long dt = Stopwatch.GetTimestamp() - t0;
@@ -459,12 +407,10 @@ public static class FrameZones
         return false;
     }
 
-    /// <summary>The SCHEDULER column: what the main thread got from the kernel this frame. A hitch row where
-    /// every zone -- engine and Alloy alike -- runs 2-3x at once is not a slow zone but a slow thread, and only
-    /// this separates the three ways that happens: cpu ≈ wall with no switches = the core itself was slow (an
-    /// SMT sibling spinning, frequency, cache); cpu &lt;&lt; wall with involuntary switches = preempted by
-    /// another thread; cpu &lt;&lt; wall with voluntary switches = blocked in a syscall (the GL driver, a
-    /// futex). One <c>getrusage(RUSAGE_THREAD)</c> per frame, no allocation.</summary>
+    /// <summary>The SCHEDULER column: what the main thread got from the kernel this frame, which separates a slow
+    /// thread from a slow zone. cpu ≈ wall with no switches = the core itself was slow (SMT sibling, frequency,
+    /// cache); cpu &lt;&lt; wall with involuntary switches = preempted; cpu &lt;&lt; wall with voluntary switches =
+    /// blocked in a syscall. One <c>getrusage(RUSAGE_THREAD)</c> per frame, no allocation.</summary>
     [DllImport("libc.so.6", EntryPoint = "getrusage")] private static extern unsafe int GetRUsage(int who, byte* ru);
     private const int RusageThread = 1;
     /// <summary>x86_64 glibc <c>struct rusage</c>: utime/stime timevals at 0/16, minflt 64, majflt 72, nvcsw 128, nivcsw 136.</summary>
@@ -481,7 +427,7 @@ public static class FrameZones
 
     private static unsafe void ReadSched()
     {
-        if (OperatingSystem.IsWindows()) return;   // #48: the SCHEDULER column is Linux-only (glibc + /proc)
+        if (OperatingSystem.IsWindows()) return;   // the SCHEDULER column is Linux-only (glibc + /proc)
         byte* ru = stackalloc byte[160];
         if (GetRUsage(RusageThread, ru) != 0) return;
         long* q = (long*)ru;
@@ -589,10 +535,9 @@ public static class FrameZones
         return sb.ToString();
     }
     /// <summary>Burn CPU on THIS thread until its own kernel tick counter has advanced by
-    /// <paramref name="ticks"/>, or <paramref name="capMs"/> of wall has gone by. For the self-check only: a
-    /// fixed WALL spin is not enough to put this thread in the table, because the counter has 10ms granularity
-    /// and a contended box hands a 20ms window less than one whole tick -- which read as an empty table and
-    /// failed a check about nothing.</summary>
+    /// <paramref name="ticks"/>, or <paramref name="capMs"/> of wall has gone by. For the self-check only: the
+    /// counter has 10ms granularity, so a fixed WALL spin can leave a contended box with less than one whole
+    /// tick -- an empty table and a check that failed about nothing.</summary>
     private static void BurnCpuTicks(long ticks, int capMs)
     {
         long t0 = OwnTicks();
@@ -628,11 +573,9 @@ public static class FrameZones
     }
 
     /// <summary>The BLAME column: per hitch frame, the top-level zone with the largest excess over the previous
-    /// period's mean frame -- or <c>diffuse</c> when no zone holds half the excess, which is the slow-thread
-    /// signature the hitch row's average cannot show (it blurs twenty different spikes into a uniform one).
-    /// <para>Row 0 only, deliberately: blame answers "where did the GAME thread's frame go", and that is the
-    /// thread whose wall the frame time measures. A render thread's spike reaches the frame through a publish
-    /// wait, which is row 0's <c>Seam</c>, and the render row on the period line is where it is read.</para></summary>
+    /// period's mean frame -- or <c>diffuse</c> when no zone holds half the excess, the slow-thread signature the
+    /// hitch row's average blurs away. Row 0 only, deliberately: blame answers "where did the GAME thread's frame
+    /// go", and a render thread's spike reaches that frame through the publish wait, i.e. row 0's <c>Seam</c>.</summary>
     private static readonly long[] _mean = new long[N];
     private static readonly int[] _blame = new int[(int)Zone.Nested + 1];
     private static void Blame()
@@ -710,10 +653,10 @@ public static class FrameZones
         return sb.ToString();
     }
 
-    /// <summary>#324: the Enroll ticks of every CADENCE frame this period -- a frame the enrolment walk ran
-    /// on, marked by <see cref="MarkEnrollFrame"/>. The p99 over that population is the metric move #5 (a
-    /// fixed enrolment slot budget) is judged by; over all frames it would only be the walk's mean. The
-    /// walk runs every 12-20 frames, so a 900-frame period never fills the array.</summary>
+    /// <summary>The Enroll ticks of every CADENCE frame this period -- a frame the enrolment walk ran on, marked
+    /// by <see cref="MarkEnrollFrame"/>. A p99 over that population is what an enrolment slot budget is judged
+    /// by; over all frames it would only be the walk's mean. The walk runs every 12-20 frames, so a 900-frame
+    /// period never fills the array.</summary>
     private static readonly long[] _enrollTicks = new long[1024];
     private static int _enrollN;
     private static bool _enrollMarked;
@@ -733,15 +676,10 @@ public static class FrameZones
         return $" || Enroll walks {n}: p99 {s[(int)(n * 0.99)] * k:F1}ms p50 {s[n / 2] * k:F1}ms";
     }
 
-    /// <summary>The period line, and the reset with it. Three rows: the average frame's split, the worst
-    /// frame's, and the worst frame that actually rendered. <c>other</c> is the residual -- frame time minus
-    /// every top-level zone -- and a large one is itself the finding (engine simulation, input, 2D UI: work
-    /// no Alloy bracket can see). The third row is dropped when it IS the second one, which is the ordinary
-    /// case; it appearing at all means the worst frame of the period never reached the scene render.
-    /// <para>With <c>alloy.renderthread=1</c> a fourth clause appears: the RENDER thread's own row, which is
-    /// not a partition of the frame and so carries no residual. The pair to read is the game row's wall
-    /// against it -- a frame should cost <c>max</c> of the two, and a render row larger than the game row with
-    /// a large <c>Seam</c> beside it is the renderer being the bottleneck.</para></summary>
+    /// <summary>The period line, and the reset with it: the average frame's split, the worst frame's, and the worst
+    /// frame that actually rendered (dropped when it IS the worst frame, so its presence means the worst frame never
+    /// reached the scene render). <c>other</c> is the residual, and a large one is itself the finding. With a render
+    /// thread a fourth clause appears, its own row -- no residual, and a frame should cost <c>max</c> of the two.</summary>
     public static string Period()
     {
         int frames = Math.Max(_frames, 1);
@@ -800,11 +738,10 @@ public static class FrameZones
         return sb.ToString();
     }
 
-    /// <summary>Every accumulator back to boot state -- both zone rows, the period, the worst-frame latches,
-    /// the hitch ledger and its ring, the blame baseline, the event counters, the GPU-span pairing, the
-    /// scheduler deltas and the enrolment population. For the self-checks, which synthesise frames: one place
-    /// to restore from, because a restore spelled as a list of fields is a list that falls out of step with
-    /// the fields.</summary>
+    /// <summary>Every accumulator back to boot state -- both zone rows, the period, the worst-frame latches, the
+    /// hitch ledger and its ring, the blame baseline, the event counters, the GPU-span pairing, the scheduler
+    /// deltas and the enrolment population. For the self-checks, which synthesise frames, and in one place so it
+    /// cannot fall out of step with the fields.</summary>
     private static void ResetAll()
     {
         Array.Clear(_frame); Array.Clear(_sum); Array.Clear(_worst); Array.Clear(_worstDrew);
@@ -819,13 +756,10 @@ public static class FrameZones
         _hitchMs = 16.7f;
     }
 
-    /// <summary>Off-device: CX-188's per-thread rows, on a REAL second thread (a row claimed on the calling
-    /// thread would prove nothing about thread-statics). What must hold: the second thread's bracket lands in
-    /// row 1 and NOT in row 0, the game row's residual is untouched by it, a parent on one thread does not
-    /// subtract a child opened on the other, and the period line grows a render clause only when row 1 ran.
-    /// <para>This is the check the two-thread frame rests on: if rows leaked, <c>other</c> would go negative
-    /// on every frame the render thread drew and the whole instrument would be unreadable exactly when it is
-    /// needed most.</para></summary>
+    /// <summary>Off-device: the per-thread rows, on a REAL second thread (a row claimed on the calling thread
+    /// would prove nothing about thread-statics). What must hold: the second thread's bracket lands in row 1 and
+    /// NOT row 0, the game row's residual is untouched, a parent on one thread does not subtract a child opened on
+    /// the other, and the period line grows a render clause only when row 1 ran.</summary>
     private static void RowSelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "FrameZones.RowSelfCheck");
@@ -894,14 +828,14 @@ public static class FrameZones
         Add(Zone.Shim, t0);
         ok &= _frame[(int)Zone.Shim] >= f;
         if (!ok) log.Info("FrameZones.SelfCheck: FAILED -- a parent bracket did not subtract its child");
-        // #324: a sampled bracket is credited `every` times over, so the split reads as a whole-walk estimate.
+        // a sampled bracket is credited `every` times over, so the split reads as a whole-walk estimate.
         AddSampled(Zone.Chase, t0, 16);
         bool s = _frame[(int)Zone.Chase] >= f * 16 && _frame[(int)Zone.Chase] < f * 17;
         if (!s) log.Info("FrameZones.SelfCheck: FAILED -- the sampled bracket was not extrapolated");
 
         EndFrame(f);                      // a 1000ms frame that rendered -- the worst so far, on both latches
         _frame[(int)Zone.Enroll] = f;
-        MarkEnrollFrame();                // #324: the one cadence frame -- the p99 population is this alone
+        MarkEnrollFrame();                // the one cadence frame -- the p99 population is this alone
         EndFrame(f / 2);                  // ...and a faster one, which must not displace it
         bool w = _worst[(int)Zone.Alloy] == 100 && _worst[(int)Zone.Enroll] == 0;
         if (!w) log.Info("FrameZones.SelfCheck: FAILED -- the worst frame is not the one that was kept");
@@ -933,7 +867,7 @@ public static class FrameZones
         if (!r) log.Info("FrameZones.SelfCheck: FAILED -- the period line or its reset drifted");
         // the scheduler column: getrusage must resolve and this thread must have run, and the hitch frame above
         // must have been blamed on the one zone it spent (Alloy) rather than read as diffuse. The scheduler,
-        // thread and box columns are Linux-only (glibc + /proc); Windows reads them as n/a (#48).
+        // thread and box columns are Linux-only (glibc + /proc); Windows reads them as n/a.
         bool sc = line.Contains("sched all|hitch: cpu") && line.Contains("blame: Alloy 1")
                   && (OperatingSystem.IsWindows() || _scNow[(int)Sc.Cpu] > 0);
         if (!sc) log.Info($"FrameZones.SelfCheck: FAILED -- sched/blame columns ({line.Substring(Math.Max(0, line.IndexOf("|| blame")))})");

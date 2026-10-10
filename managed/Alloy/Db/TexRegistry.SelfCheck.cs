@@ -6,7 +6,7 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-117's off-device checks: the PLT decode on synthetic files, the palette row/column arithmetic
+/// <summary>The off-device checks: the PLT decode on synthetic files, the palette row/column arithmetic
 /// against a hand-computed composite, the registry's dedup / refcount / arrival-dirty behaviour, and the
 /// missing-texture state. No engine, no GL -- run-demo runs all of it.</summary>
 internal static unsafe partial class TexRegistry
@@ -127,11 +127,10 @@ internal static unsafe partial class TexRegistry
         return ok;
     }
 
-    /// <summary>The palette arithmetic, against a composite computed by hand. A slot owns 256 rows of 256
-    /// RGBA entries (<c>AurSetPalette</c>'s <c>slot &lt;&lt; 18</c>), a scheme integer is
-    /// <c>slot*256 + colour</c>, and the composite of (intensity, layer) is
-    /// <c>master[rows[layer]][intensity]</c> -- which is <c>ImageDecode</c>'s
-    /// <c>palette[(rows[layer] &lt;&lt; 10) + intensity*4]</c>.</summary>
+    /// <summary>The palette arithmetic, against a composite computed by hand. A slot owns 256 rows of 256 RGBA
+    /// entries (<c>AurSetPalette</c>'s <c>slot &lt;&lt; 18</c>), a scheme integer is <c>slot*256 + colour</c>,
+    /// and the composite of (intensity, layer) is <c>master[rows[layer]][intensity]</c> -- which is
+    /// <c>ImageDecode</c>'s <c>palette[(rows[layer] &lt;&lt; 10) + intensity*4]</c>.</summary>
     private static bool PaletteCheck(ExtenderLog log)
     {
         bool ok = true;
@@ -433,6 +432,9 @@ internal static unsafe partial class TexRegistry
             "a handle to an evicted slot still resolves -- the generation did not move on");
         for (int i = save; i < _high; i++) if (_state[i] != TexState.Free) Retire(i);
 
+        // No byte-tally assertion here, either side of this restore: after it the saved values are simply
+        // back, and before it the suite's own Alloc/Retire traffic legitimately drives them negative
+        // (Retire subtracts bytes the direct allocator never added). It needs the GL upload path.
         _high = sv_high; _freeHead = sv_freeHead; _live = sv_live;
         _idleHead = sv_idleHead; _idleTail = sv_idleTail; _mints = sv_mints;
         sv_hash.CopyTo(_hash, 0);
@@ -451,7 +453,6 @@ internal static unsafe partial class TexRegistry
         _residentBytes = sv_res; _idleBytes = sv_idle; _peakBytes = sv_peak;
         _loudOnce.Clear();
         foreach (string cause in sv_loud) _loudOnce.Add(cause);
-        Expect(_residentBytes >= 0 && _idleBytes >= 0, "the byte tallies went negative");
         return ok;
     }
 

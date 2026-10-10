@@ -7,29 +7,23 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118's off-device checks: the hit test's gates, its ordering, its <c>CHitInfo</c> fill, the
-/// spatial index's change-driven maintenance, and the pick cost over a synthetic area. Engine-free and
-/// GL-free, so <c>run-demo.sh</c> runs all of it in the stub host.</summary>
+/// <summary>The off-device checks: the hit test's gates, its ordering, its <c>CHitInfo</c> fill, the spatial
+/// index's change-driven maintenance, and the pick cost over a synthetic area. Engine-free and GL-free, so
+/// <c>run-demo.sh</c> runs all of it in the stub host.</summary>
 public static unsafe partial class HitTestCheck
 {
     /// <summary>Objects in the micro-benchmark's synthetic area, and rays cast at it. A few thousand objects
-    /// is the heaviest SoW area's order (ADR 0028 sizes the tables at ~3k gobs).</summary>
+    /// is the heaviest measured area's order (ADR 0028 sizes the tables at ~3k gobs).</summary>
     internal const int BenchObjects = 3000, BenchRays = 2000;
 
     /// <summary>Microseconds per cast the benchmark measured, for the live comparison against the engine's
     /// own (<c>HitProbe</c>). Zero until <see cref="Run"/> has run.</summary>
     public static double BenchUsPerPick { get; private set; }
 
-    /// <summary>Refuse once the SEAM is running. The fixture allocates records in the real tables, so the
-    /// danger is a live session: 3000 synthetic objects filed in the index beside the world's, the mesh trees
-    /// dropped, the frame's dirty marks swallowed. A scene record is the discriminator -- the seam creates one
-    /// per <c>NewCAurScene</c> and the game has none until it starts. It is NOT gated on
-    /// <see cref="Renderer.On"/>: DB mode is the mode this suite exists for, and gating on it meant the whole
-    /// suite refused in exactly the configuration it checks.
-    /// <para>It deliberately does NOT require the tables to be empty: other streams' self-checks run first
-    /// (alphabetically) and leave records behind, and demanding emptiness meant this whole suite silently
-    /// stopped running at all. What makes that safe is <see cref="Fixture.Tear"/>: it frees exactly the
-    /// records it made, unfiles exactly those, and leaves every other stream's dirty marks alone.</para></summary>
+    /// <summary>Refuse once the SEAM is running. The fixture allocates records in the real tables, so a live
+    /// session is the danger; a scene record is the discriminator, since the seam creates one per
+    /// <c>NewCAurScene</c> and the game has none until it starts. It deliberately does NOT require the tables
+    /// to be empty -- <see cref="Fixture.Tear"/> frees exactly the records it made and nothing else.</summary>
     private static bool Empty(ExtenderLog log, string what)
     {
         if (SceneDb.Scenes.Live == 0) return true;
@@ -112,11 +106,9 @@ public static unsafe partial class HitTestCheck
         return ok;
     }
 
-    /// <summary>A GUI panel's pick, end to end: an ORTHO camera, three control quads laid out at known
-    /// pixels, and a pick at each one's own pixel. This is the check that was missing when the main menu's
-    /// buttons stopped being clickable in DB mode -- <c>HitCheckScreen</c> took only the perspective arm, so
-    /// <c>MouseDir</c>'s <c>tan(0)</c> collapsed every pixel onto the camera's axis and every pick either
-    /// missed or answered the same control.</summary>
+    /// <summary>A GUI panel's pick, end to end: an ORTHO camera, three control quads laid out at known pixels,
+    /// and a pick at each one's own pixel. Without the ortho arm, <c>MouseDir</c>'s <c>tan(0)</c> collapses
+    /// every pixel onto the camera's axis and every pick misses or answers the same control.</summary>
     private static bool GuiPick(ExtenderLog log)
     {
         bool ok = true;
@@ -167,10 +159,8 @@ public static unsafe partial class HitTestCheck
 
     /// <summary>A GUI list ROW: a part-less text gob whose only bound is the quad
     /// <c>StringGob::HitCheck</c> @0x492920 tests. Both halves are the check -- the pick must MISS while the
-    /// document has no box (the engine answers nothing there either), and must hit the row once the game sets
-    /// one, with nothing between the two but the document change. That is the shape of the bug: the game sets
-    /// a row's box after the row exists, so a row filed at Created alone was unclickable for its whole life
-    /// and every click fell through to the list frame behind it.</summary>
+    /// document has no box (as the engine answers) and must hit once the game sets one, with nothing between
+    /// but the document change, because the game sets a row's box only after the row exists.</summary>
     private static bool TextRow(ExtenderLog log, Fixture.GuiWorld w, float vw, float vh)
     {
         bool ok = true;
@@ -214,11 +204,9 @@ public static unsafe partial class HitTestCheck
     }
 
     /// <summary>The spatial index: filing, the segment query, the change-driven re-file (and the same-cell
-    /// case that must NOT re-file), and the unfile.
-    /// <para>It allocates its three objects through the table rather than writing fixed slots, and counts
-    /// only its OWN ids among a query's candidates: other streams' self-checks run first and leave records
-    /// behind, and a check that assumed slots 1..3 were free or that a query returns nothing else would be
-    /// reading their state as its own.</para></summary>
+    /// case that must NOT re-file), and the unfile. It allocates its three objects through the table and
+    /// counts only its OWN ids among a query's candidates, because other streams' self-checks run first and
+    /// leave records behind.</summary>
     private static bool Grid(ExtenderLog log)
     {
         bool ok = true;
@@ -287,14 +275,9 @@ public static unsafe partial class HitTestCheck
     }
 
     /// <summary>The RECYCLED slot: one dirty entry carrying both a destroy and a create must leave the NEW
-    /// tenant in the index.
-    /// <para>A free and an alloc between two <c>TakeDirty</c> points OR into one dirty entry
-    /// (<c>DbTable.Mark</c> ORs and the list holds one entry per slot), and an area change does exactly that
-    /// to every tile -- the old area's are freed and the new area's are allocated into the same slots inside
-    /// one frame. <c>HitFeed.Fold</c> took the destroy and skipped the rest, which unfiled the new area's
-    /// FLOOR; a static never moves again, so nothing ever marked it for a re-file and
-    /// <c>CNWCCreature::ComputeZValue</c> kept its Z=9 sentinel for the area's whole life
-    /// (CX-185).</para></summary>
+    /// tenant in the index. A free and an alloc between two <c>TakeDirty</c> points OR into one entry, and an
+    /// area change does exactly that to every tile -- taking the destroy and skipping the rest unfiles the new
+    /// area's FLOOR, which never moves again, so nothing ever marks it for a re-file.</summary>
     private static bool Recycle(ExtenderLog log)
     {
         bool ok = true;
@@ -341,14 +324,10 @@ public static unsafe partial class HitTestCheck
         return ok;
     }
 
-    /// <summary>CX-188: the RE-MARK -- a second mark on a record that is already on the dirty list, carrying a
-    /// bit it already had and driving no compose. Nothing the fold's stamp used to compare could see it: the
-    /// dirty bits do not change when an already-set bit is re-OR'd, the list does not grow (one entry per
-    /// slot per take), and the compose count stands still. That blind spot is why the frame boundary folded
-    /// with <c>full: true</c> -- 798 <see cref="HitBounds.Refresh"/> calls a frame in a still scene to catch
-    /// a case that happens a handful of times a session (a text box's width and height set in one breath).
-    /// <para>The stamp is <see cref="DbTable.MarkClock"/> now, so this must refresh and the full fold is gone.
-    /// If this check ever fails, a re-marked record keeps a stale hit box: it is clicked where it WAS.</para></summary>
+    /// <summary>The RE-MARK: a second mark on a record already on the dirty list, carrying a bit it already
+    /// had and driving no compose. Nothing the fold compares could see it -- the bits do not change, the list
+    /// does not grow, the compose count stands still -- so the stamp is <see cref="DbTable.MarkClock"/>. If
+    /// this check fails, a re-marked record keeps a stale hit box: it is clicked where it WAS.</summary>
     private static bool ReMark(ExtenderLog log)
     {
         bool ok = true;
@@ -616,28 +595,33 @@ public static unsafe partial class HitTestCheck
     /// left in part space).</summary>
     private static bool FillCheck(ExtenderLog log, Fixture.World world)
     {
+        const byte Pattern = 0xCD;                                  // not-an-offset: the fill byte
+        const int Pattern32 = unchecked((int)0xCDCDCDCD);           // not-an-offset: the fill byte, widened
+        const long Pattern64 = unchecked((long)0xCDCDCDCDCDCDCDCD); // not-an-offset: the fill byte, widened
+
         bool ok = true;
         var q = HitQuery.Ray(world.Scene, new Vector3(70, -50, 0.5f), new Vector3(70, 50, 0.5f), statics: true);
         q.SurfaceMask = HitQuery.All;
         if (!HitTest.Cast(q, out HitResult r)) return Fail(log, "the fill check's cast missed");
 
         byte* info = stackalloc byte[EngineLayout.SizeOfHitInfo];
-        for (int i = 0; i < EngineLayout.SizeOfHitInfo; i++) info[i] = 0xCD;
+        for (int i = 0; i < EngineLayout.SizeOfHitInfo; i++) info[i] = Pattern;
         // The SafePointer pair is the ONE part of the record a fill is allowed to assume is initialised: the
         // engine's operator= reads the old pointer and unregisters it, so a record that has never been Reset
         // hands it garbage to dereference. Every real caller's record has been through Reset; this one has
         // to be, or the check itself is the crash. (LIVE-FOUND: the 0xCD fill below used to reach
         // SafePointer<CAurObject>::operator= and segfault the client during service start.)
-        *(nint*)(info + EngineLayout.HitInfoGob) = 0;
-        *(int*)(info + EngineLayout.HitInfoSafeIndex) = -1;
+        var h = new CHitInfo((nint)info);
+        h.Gob = 0;
+        h.SafeIndex = -1;
         HitTest.Fill(r, info);
 
-        if (*(int*)(info + EngineLayout.HitInfoKind) != (int)r.Kind) ok = Fail(log, "CHitInfo kind");
-        if (Read(info + EngineLayout.HitInfoPoint) != r.Point) ok = Fail(log, "CHitInfo point");
-        if (Read(info + EngineLayout.HitInfoLocalPoint) != r.LocalPoint) ok = Fail(log, "CHitInfo local point");
-        if (Read(info + EngineLayout.HitInfoNormal) != r.Normal) ok = Fail(log, "CHitInfo normal");
-        if (*(int*)(info + EngineLayout.HitInfoFace) != r.Face) ok = Fail(log, "CHitInfo face");
-        long surf = *(long*)(info + EngineLayout.HitInfoSurface);
+        if (h.Kind != (int)r.Kind) ok = Fail(log, "CHitInfo kind");
+        if (h.Point != r.Point) ok = Fail(log, "CHitInfo point");
+        if (h.LocalPoint != r.LocalPoint) ok = Fail(log, "CHitInfo local point");
+        if (h.Normal != r.Normal) ok = Fail(log, "CHitInfo normal");
+        if (h.Face != r.Face) ok = Fail(log, "CHitInfo face");
+        long surf = h.Surface;
         long wantSurf = r.Surface >= 0 ? 1L << r.Surface : 0L;
         if (surf != wantSurf) ok = Fail(log, $"CHitInfo surface 0x{surf:x}, want 0x{wantSurf:x}");
         // The object pointer goes in through the engine's SafePointer::operator= and NEVER by hand: the pair
@@ -650,20 +634,19 @@ public static unsafe partial class HitTestCheck
             if (unassigned == 0) ok = Fail(log, "an unresolvable SafePointer assignment was not counted");
             // Left exactly as the caller had it: null pointer, -1 index. Never a non-null pointer beside a
             // -1 index, which is the pair ClearOutput and ~CHitInfo index array[-1] with.
-            if (*(nint*)(info + EngineLayout.HitInfoGob) != 0
-                || *(int*)(info + EngineLayout.HitInfoSafeIndex) != -1)
+            if (h.Gob != 0 || h.SafeIndex != -1)
                 ok = Fail(log, "an unresolvable assignment still wrote the SafePointer pair");
         }
-        else if (*(nint*)(info + EngineLayout.HitInfoGob) != 0)
+        else if (h.Gob != 0)
             // A STATIC hit (this cast's) leaves the object null, exactly as Scene::HitCheck does -- and the
             // engine's own operator= is what put it there, so the back-index is its, not ours.
             ok = Fail(log, "a static hit reported an object in CHitInfo+0x48");
-        if (*(long*)(info + EngineLayout.HitInfoTrigger) != r.Trigger) ok = Fail(log, "CHitInfo trigger payload");
-        // The input fields are the caller's: a fill must not touch them (the engine's does not).
-        if (info[EngineLayout.HitInfoMode] != 0xCD || info[EngineLayout.HitInfoBoxOnly] != 0xCD
-            || info[EngineLayout.HitInfoSurfaceMask] != 0xCD || info[EngineLayout.HitInfoDoorAlpha] != 0xCD
-            || info[EngineLayout.HitInfoRejectInside] != 0xCD || info[EngineLayout.HitInfoSkipCharacters] != 0xCD
-            || info[EngineLayout.HitInfoIgnoreList] != 0xCD || info[EngineLayout.HitInfoIgnoreCount] != 0xCD)
+        if (h.Trigger != r.Trigger) ok = Fail(log, "CHitInfo trigger payload");
+        // The input fields are the caller's: a fill must not touch them (the engine's does not), so each one
+        // still reads back as the whole-record fill pattern.
+        if (h.Mode != Pattern32 || h.BoxOnly != Pattern32 || h.RejectInside != Pattern32
+            || h.IgnoreCount != Pattern32 || h.SurfaceMask != Pattern64 || h.IgnoreList != Pattern64
+            || h.DoorAlpha != Pattern || h.SkipCharacters != Pattern)
             ok = Fail(log, "the fill overwrote an INPUT field of CHitInfo");
         // The offsets themselves: identical on both builds, and the record is 0x80 bytes.
         if (EngineLayout.HitInfoSurfaceMask != 0x08 || EngineLayout.HitInfoBoxOnly != 0x20
@@ -675,8 +658,6 @@ public static unsafe partial class HitTestCheck
             ok = Fail(log, "a CHitInfo offset row does not match the disassembly");
         return ok;
     }
-
-    private static Vector3 Read(byte* p) => new(*(float*)p, *(float*)(p + 4), *(float*)(p + 8));
 
     /// <summary>The micro-benchmark the ticket asks for: N rays against a synthetic area of a few thousand
     /// objects, with the grid's work and the brute-force cost of the same answer beside it. Reported, not

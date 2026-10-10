@@ -2,13 +2,10 @@ using CX.Framework;
 
 namespace CX.Services.Chat.Core;
 
-/// <summary>The <c>chat</c> group (spec §4.2): the Restart master (<see cref="Enabled"/>, read through <c>Boot</c>
-/// -- off, <c>ChatService.Initialize</c> installs nothing and the stock chat window runs), the User rows
-/// (<see cref="TellOpen"/>, a <see cref="TellAutoOpen"/> stored as its int, then the input line's visible
-/// behaviours), the Advanced input-line toys, the Chat-only markup colours, and the Hidden per-window state (<see cref="Windows"/>:
-/// every <c>w&lt;N&gt;.*</c> key <see cref="ChatConfig"/> writes and reads, edited on each window's own gear,
-/// outside <c>/chat reset</c>). Touched from <c>ChatService.Initialize</c> so the group declares whether or not
-/// the chatbox comes up.</summary>
+/// <summary>The <c>chat</c> group: the Restart master (<see cref="Enabled"/>, read through <c>Boot</c> -- off,
+/// <c>ChatService.Initialize</c> installs nothing and the stock chat window runs), the User rows, the Advanced
+/// input-line toys, the Chat-only markup colours, and the Hidden per-window state (<see cref="Windows"/>: every
+/// <c>w&lt;N&gt;.*</c> key <see cref="ChatConfig"/> writes, edited on a window's gear, outside <c>/chat reset</c>).</summary>
 internal static class ChatKnobs
 {
     internal static readonly KnobGroup G;

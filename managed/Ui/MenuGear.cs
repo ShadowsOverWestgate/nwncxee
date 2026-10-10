@@ -4,12 +4,10 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>
-/// The settings gear (#593, spec §3 Doors 2): a glyph-atlas sprite -- DejaVu's ⚙ from an icon-only face -- 64 px
-/// tall at GUI scale 1, inset 24 px from the lower-left corner, both scaling with the game's UI scale; it brightens
-/// and turns while hovered, and a press opens the settings panel. Drawn at the main menu and under the in-game
-/// Options panel (<c>GameGate.OptionsOpen</c>), same place and behaviour on both. Pure: layout, hover animation and the vertex emit
-/// live here with no GL and no engine reads, so the self-check runs them headless; <see cref="UiHostService"/> owns
-/// the window, the face request and the draw.
+/// The settings gear: a glyph-atlas sprite -- DejaVu's ⚙ from an icon-only face -- in the lower-left corner,
+/// scaling with the game's UI scale; it brightens and turns while hovered, and a press opens the settings panel.
+/// Drawn the same way at the main menu and under the in-game Options panel (<c>GameGate.OptionsOpen</c>). Pure:
+/// layout, hover and the vertex emit, no GL or engine reads; <see cref="UiHostService"/> owns its window and draw.
 /// </summary>
 public sealed class MenuGear
 {

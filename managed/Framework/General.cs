@@ -3,12 +3,10 @@ using System;
 namespace CX.Framework;
 
 /// <summary>
-/// The General category (spec §4.1): the <c>general</c> group -- the command gate, the live log toggle and the
-/// three boot forensics re-keyed from their flat names -- and the <c>about</c> group: what this build is, the
-/// releases link, and the row that copies the whole knob surface for a bug report. Declares on
-/// first touch, which is <see cref="HookService"/>'s constructor reading <see cref="HookDebug"/> right after
-/// <see cref="Settings.Load"/>, so it is the first group in the walk. Also owns the <c>/settings</c> door: the
-/// one command <see cref="Commands"/> never gates, a stub that logs until the panel (#588) lands.
+/// The General category: the <c>general</c> group (command gate, live log toggle, boot forensics) and the
+/// <c>about</c> group (what this build is, the releases link, the row that copies the knob surface for a bug
+/// report). Declared on first touch -- <see cref="HookService"/>'s constructor reads <see cref="HookDebug"/> right
+/// after <see cref="Settings.Load"/> -- so it is the first group in the walk.
 /// </summary>
 public static class General
 {
@@ -20,12 +18,10 @@ public static class General
     public static readonly Knob<bool> Logs;
     public static readonly Knob<bool> HookDebug;
     public static readonly Knob<int> PresentProbe, Pin;
-    /// <summary>Seconds after the first present at which this run halves the window's width; twice that is
-    /// where it puts the width back. 0 = off. A DEBUG trigger for the
-    /// engine's own re-layout path (<c>SDL_SetWindowSize</c> -&gt;
-    /// <c>SDL_WINDOWEVENT_SIZE_CHANGED</c> -&gt; <c>WinMessageHandler</c> @0x42f960 -&gt;
-    /// <c>CGuiMan::SetGuiSize</c> @0x57efc0): a GUI that mishandles a resize can only be SEEN through that
-    /// path, and the live harness runs inside a headless compositor with no window edge to drag.</summary>
+    /// <summary>Seconds after the first present at which this run halves the window's width; twice that is where it
+    /// puts the width back, and 0 = off. A DEBUG trigger for the engine's own re-layout path
+    /// (<c>SDL_SetWindowSize</c> -&gt; <c>SDL_WINDOWEVENT_SIZE_CHANGED</c> -&gt; <c>CGuiMan::SetGuiSize</c>), because
+    /// the live harness runs in a headless compositor with no window edge to drag.</summary>
     public static readonly Knob<int> ResizeAt;
 
     public static readonly KnobGroup About;
@@ -61,7 +57,7 @@ public static class General
         CommandRegistry.Global.Register("/settings", "open the CX settings panel", OpenSettings, exempt: true);
     }
 
-    /// <summary>The door (#588): registered here, exempt, before any service, so it always dispatches.</summary>
+    /// <summary>The door: registered here, exempt, before any service, so it always dispatches.</summary>
     private static string? OpenSettings(string args) { CX.Ui.KnobPanelService.Open(); return null; }
 
     /// <summary>The About row that makes a bug report one paste: the <c>/knobs</c> surface on the clipboard. The

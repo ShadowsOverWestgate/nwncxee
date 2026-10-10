@@ -11,10 +11,7 @@ public sealed partial class KnobPanel
     /// <summary>Off-device proof: the tree (categories, submenus, rows without ChatOnly/Hidden, section headers),
     /// each control's set through the registry, the per-motion slider apply, the text edit, Escape, the three
     /// independent scrolls, geometry that fits 1280×720 and 1920×1080 with no clipped label; then the semantics --
-    /// the boxed master, parent-off greying and strip with the action and link rows live, the Advanced
-    /// disclosure and its marker + tooltip, Reset to defaults and the dots, the restart badge, the status line,
-    /// the link copy, the two-click confirm, the swatch channels -- and a zero-alloc draw with all of them on; then the
-    /// list control on a group of its own.</summary>
+    /// boxed master, greying, Advanced, Reset, badges, link copy, confirm, swatch channels, lists -- and a zero-alloc draw.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
@@ -174,7 +171,7 @@ public sealed partial class KnobPanel
             Press(p.Drop.X + 5f, p.Drop.ItemTop(3) + 2f);
             check.Expect(!p.Drop.Open && shadow.V == 4, $"picking the last choice sets its value ({shadow.V})");
             check.Expect(!p.Drop.Searching, "four choices: no search row");
-            // #681: a long list opens searchable; typed text filters it and Enter picks the one match.
+            // a long list opens searchable; typed text filters it and Enter picks the one match.
             Row manyRow = R(many); PressBox(manyRow);
             check.Expect(p.Drop.Open && p.Drop.Searching && p.Editing, "ten choices open with the search row, and the panel wants text");
             p.EditInsert("JU");
@@ -417,7 +414,7 @@ public sealed partial class KnobPanel
         }
         finally { Clock = realClock; Tooltip.Clock = realTipClock; CopyText = realCopy; }
 
-        // Consumer mode (CX-696): two columns, a modal panel with a header button, rows from a Source; every
+        // Consumer mode: two columns, a modal panel with a header button, rows from a Source; every
         // edit reaches the consumer through its callbacks and never touches the registry.
         {
             var pressed = new List<Row>();
@@ -451,7 +448,9 @@ public sealed partial class KnobPanel
 
             p.OpenAt(1280f, 800f, 20f, body, small);
             check.Expect(p.Open && p.Rows.Count == 6 && layouts == 1 && p.SubCol.W == 0f && p.Cats.W + p.List.W == p.W, "OpenAt lays out through the Source into two columns");
-            check.Expect(MathF.Abs(p.W - MathF.Round(1280f * 0.52f)) < 0.01f, "the consumer's size fractions size the panel");
+            // 0.52 of 1280 and 0.66 of 800, rounded to whole pixels: 666 x 528, written out rather than
+            // recomputed through the rounding the layout under test applies.
+            check.Expect(p.W == 666f && p.H == 528f, $"the consumer's size fractions size the panel ({p.W}x{p.H})");
             check.Expect(toggle.Help.Length >= 2 && toggle.H > slider.H && slider.H == p.RowPlainH && slider.Value == "0", "help wraps and grows its row; a plain row is compact; the slider's value text is laid out");
             check.Expect(p.MouseUp(), "a modal panel owns the press that opened it");
             Press(p.List.X + 5f, p.RowTop(toggle) + 2f);

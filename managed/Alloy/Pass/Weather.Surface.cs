@@ -6,13 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#618/#619: the world's response -- wet, snowed and puddled surfaces in the lit stage. Exposure is
-/// the rain occlusion map (#617) sampled per fragment; HOW MUCH is three CPU integrators, uniforms the lit
-/// program reads: wetness and snow accumulate density x time while the weather runs and decay after the stop
-/// edge, puddles fill once wetness passes a threshold and drain slower than the sheen dries. No per-texel
-/// storage anywhere. Puddle placement is the AO the lit stage already receives (ADR 0021) gated on a flat
-/// up-facing geometric normal and broken by world-space noise, plus a ring test on the rain view's depth
-/// where geometry really is lower (<c>CxWeatherHollow</c>).</summary>
+/// <summary>The world's response -- wet, snowed and puddled surfaces in the lit stage. Exposure is the rain
+/// occlusion map sampled per fragment; HOW MUCH is three CPU integrators, uniforms the lit program reads, with
+/// no per-texel storage. Puddle placement is the AO the lit stage already receives (ADR 0021), gated on a flat
+/// up-facing normal, broken by world-space noise and ringed where the rain view's depth really is lower.</summary>
 internal static unsafe partial class Weather
 {
     /// <summary>The cover view's depth range is <c>2 x radius + margin</c> with margin = radius (CasterPass.Cover).</summary>
@@ -202,11 +199,10 @@ internal static unsafe partial class Weather
 
     private static string SurfaceStats() => $" wet {_wet:F2} snow {_snow:F2} puddle {_puddle:F2}{TrackStats()}";
 
-    /// <summary>CX-102: the ripple library is world-sized and the pixel footprint only fades it. The two
-    /// halves of that are a text check on the library and a real arithmetic one on its constants -- the 2x2
-    /// cell neighbourhood <see cref="RippleLib"/> walks is exact ONLY while the crest reach stays under half
-    /// a cell, and a ring quietly appearing from a cell nobody sampled is a hole in the field with no log
-    /// line behind it.</summary>
+    /// <summary>The ripple library is world-sized and the pixel footprint only fades it: a text check on the
+    /// library plus a real arithmetic one on its constants -- the 2x2 cell neighbourhood <see cref="RippleLib"/>
+    /// walks is exact ONLY while the crest reach stays under half a cell, and a ring appearing from a cell
+    /// nobody sampled is a hole in the field with no log line behind it.</summary>
     private static void RippleSelfCheck(Checker check)
     {
         string r = RippleLib;
@@ -233,8 +229,8 @@ internal static unsafe partial class Weather
     }
 
     /// <summary>The world-space ripple library: rings of a fixed physical size, spawned per world cell, and
-    /// the footprint fade that takes them out once a crest is thinner than a pixel or two (CX-102). The
-    /// water stage includes it too, so the sea and the puddles ring alike.</summary>
+    /// the footprint fade that takes them out once a crest is thinner than a pixel or two. The water stage
+    /// includes it too, so the sea and the puddles ring alike.</summary>
     internal static string RippleLib => ShaderSource.Get("cx_wx_impact.glsl");
 
     /// <summary>The lit main's splice, between material synthesis and the lighting: exposure, then the three
@@ -242,12 +238,10 @@ internal static unsafe partial class Weather
     /// (<c>td_ground_fs</c>) stands it down on <c>CX_ALLOY</c>. <c>/weather viz 2</c> paints exposure.</summary>
     internal static string LitSplice => ShaderSource.Get("cx_wx_litsplice.glsl");
 
-    /// <summary>The wet reflection, after the material's own probe term, in the ENGINE's form: the probe sample
-    /// tints the light already arriving, behind a Schlick Fresnel. Added radiance was tried first and gave the
-    /// probe's one capture point away -- a fire's reflection smeared past the range the light itself reaches,
-    /// and a whole scene mirrored from the wrong place. Tinting cannot exceed the light that is there, so the
-    /// sheen ends where the lamp's range ends, with its shadow. The sample is kept blurry (roughness floor)
-    /// because one cube cannot mirror a plaza sharply from every point on it.</summary>
+    /// <summary>The wet reflection, after the material's own probe term, in the ENGINE's form: the probe
+    /// sample TINTS the light already arriving, behind a Schlick Fresnel. Added radiance gave the probe's one
+    /// capture point away -- a fire's reflection smeared past the range the light itself reaches -- while a
+    /// tint cannot exceed the light that is there. Kept blurry: one cube cannot mirror a plaza sharply.</summary>
     internal static string LitSpliceProbe => ShaderSource.Get("cx_wx_litprobe.glsl");
 
     internal static void SelfCheck(ExtenderLog log)

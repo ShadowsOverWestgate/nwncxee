@@ -6,19 +6,10 @@ using CX.Framework;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Footsteps on contact, a <see cref="PoseService"/> module. The engine's walk/run footsteps are the model's
-/// <c>snd_Footstep</c> animation events (bound in <c>CNWCCreature::LoadModel</c>): wherever the author keyed
-/// them, per cycle, whichever foot. Here a footstep is played when a foot lands: its model-space ankle drops to
-/// within <see cref="Down"/> of that foot's own stance height after rising <see cref="Up"/> above it. Each foot
-/// keeps its own stance: a cycle that plants one foot a few centimetres higher than the other must not land it
-/// late (one shared stance height made an uneven, galloping rhythm, live). The sound is the engine's own
-/// <c>PlayFootstep</c> (surface, water splash, creak).
-/// <para>The engine's own calls are skipped only for a creature this module is stepping: a humanoid the pose
-/// layer tracks, locomoting, within <c>anim.distance</c>. Everything else (a creature out of range or without leg
-/// bones, the idle shuffle, a fire-and-forget step) keeps the authored events.</para>
-/// <para>Every step that goes ahead is handed to <see cref="CX.Alloy.Weather.Footstep"/> first: a print in lying
-/// snow, a splash on rain-wet ground, and on wet ground open to the rain the creature's puddle sound in place of
-/// the engine's dry one.</para>
+/// Footsteps on contact, a <see cref="PoseService"/> module. The engine keys its footsteps to the model's
+/// <c>snd_Footstep</c> animation events (bound in <c>CNWCCreature::LoadModel</c>), wherever the author put them; here
+/// a step plays through the engine's own <c>PlayFootstep</c> when a foot lands, and an authored event is skipped only
+/// for a creature this module steps. Each step is offered to <see cref="CX.Alloy.Weather.Footstep"/> first.
 /// </summary>
 internal static unsafe class Footfall
 {

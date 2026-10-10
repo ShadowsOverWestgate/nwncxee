@@ -6,18 +6,16 @@ using CX.Framework;
 
 namespace CX.Services.Sound;
 
-/// <summary>CX-57: the area's static geometry as Steam Audio's scene -- what occlusion, transmission, reflections
-/// and pathing trace against. The geometry is Alloy's own (<see cref="AlloyRenderer.GatherStatic"/>), so with
-/// Alloy off there is none and those four stand down, said once per area (CX-45).</summary>
-/// <remarks>An area change clears the scene at once (the last area's walls must not muffle this one); the new
-/// one is sent when the static set has held still for <see cref="SettleSeconds"/>, and again if it grows
-/// afterwards (late placeables). Render thread, like the Alloy tables it reads; the gather is cold.</remarks>
+/// <summary>The area's static geometry as Steam Audio's scene -- what occlusion, transmission, reflections and pathing
+/// trace against; it is Alloy's own (<see cref="AlloyRenderer.GatherStatic"/>), so with Alloy off those four stand down.</summary>
+/// <remarks>An area change clears the scene at once (the last area's walls must not muffle this one); the new one is
+/// sent once the static set has held still for <see cref="SettleSeconds"/>, and again if it grows. Render thread.</remarks>
 internal static unsafe class SoundScene
 {
     /// <summary>The static set must hold this long before it is taken as the area's.</summary>
     private const double SettleSeconds = 1.0;
     /// <summary>A settled set that later grows is re-sent at most this often, and only when it grew by
-    /// <see cref="ResendGrowth"/>: a 438k-triangle area took 0.2-0.8 s to gather on the render thread (CX-57 live).</summary>
+    /// <see cref="ResendGrowth"/>: a 438k-triangle area takes 0.2-0.8 s to gather on the render thread.</summary>
     private const double ResendSeconds = 10.0;
     private const float ResendGrowth = 1.1f;
     /// <summary>Triangles under this many square metres are dropped: prop detail no sound wave notices, and most of

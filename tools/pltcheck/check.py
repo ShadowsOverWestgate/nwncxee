@@ -31,7 +31,9 @@ Exit 0 clean, 1 if anything disagrees. Needs the installed game and numpy.
 import argparse, os, struct, sys, collections
 import numpy as np
 
-DEFAULT_DATA = "~/gry/steam/Neverwinter Nights/data"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import paths  # noqa: E402
+DEFAULT_DATA = os.path.join(paths.get("NWN_DIR") or "", "data")
 PLT_RESTYPE, TGA_RESTYPE = 6, 3
 HEADER = 24
 MAGIC = 0x20544C50          # 'PLT '

@@ -9,21 +9,10 @@ using CX.Services.Camera;
 
 namespace CX.Alloy;
 
-/// <summary>#537: occlusion fade instead of the camera pull-in. The engine's answer to a wall between the
-/// camera and the player is <c>UpdateNormalCameraCollision</c> zooming in; this keeps the distance and
-/// screen-doors the occluders instead. Per frame, a fan of <see cref="OccRays"/> parallel segments from the
-/// camera focus to the camera position is marched through <c>Scene::HitCheck</c> (the same engine test the
-/// pull-in uses, <see cref="OccHitsPerRay"/> hits each, so at most 15 calls), and every hit is remembered
-/// as a point plus the gob it landed on. The route walk then tags a tile part whose enrolment box holds a
-/// hit point, or a gob part whose gob was hit, with a fade that eases its alpha toward <c>walls.floor</c>;
-/// only placeables are faded (tiles, doors and creatures draw whole -- a tile hit still stops the ray fan).
-/// The faded alpha sends the part into the blended (OIT) run, as a fading tile's does, so it is truly
-/// translucent rather than screen-doored; its class is untouched, so the caster pass sees it whole.
-/// Creatures are never faded; the player's own gob is on the hit record's ignore list.
-/// <para>The engine's pull-in is switched off by <see cref="CameraFlagDisableCollision"/> in
-/// <see cref="ModuleCameraFlags"/> -- the same client field the server's <c>SetCameraFlags</c> lands in.
-/// Only the bit this session set is ever cleared, and a value that already holds is not rewritten.</para>
-/// <para>The knobs are the <see cref="Walls"/> group (spec §4.4), read live; the fade rate stays a const.</para></summary>
+/// <summary>Occlusion fade instead of the camera pull-in (<c>UpdateNormalCameraCollision</c>): a fan of <see cref="OccRays"/> segments from the
+/// camera focus to the camera is marched through <c>Scene::HitCheck</c> each frame, <see cref="OccHitsPerRay"/> hits each, and the route walk
+/// fades the PLACEABLE parts behind a hit toward <c>walls.floor</c> -- into the blended (OIT) run, class untouched so the caster pass sees them
+/// whole. The pull-in is off via <see cref="CameraFlagDisableCollision"/>; only the bit this session set is cleared.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     private const int OccRays = 5, OccHitsPerRay = 3, OccMaxHits = OccRays * OccHitsPerRay;
@@ -44,7 +33,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>This frame's hits: the placeable each ray landed on, as its database handle.</summary>
     private static readonly uint[] _occHitObj = new uint[OccMaxHits];
     private static int _occHitN;
-    // BW7: the per-slot fade and its hold are RouteGate's rows -- the route memo reads both per candidate.
+    // The per-slot fade and its hold are RouteGate's rows -- the route memo reads both per candidate.
     private static long _occFrames, _occCalls, _occTagged;
 
     private static void OccludeInit(ExtenderLog log)

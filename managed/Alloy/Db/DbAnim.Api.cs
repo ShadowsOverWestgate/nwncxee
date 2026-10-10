@@ -3,14 +3,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-anim: <b>the API the Aurora seam calls.</b> Every member here mirrors one
-/// <c>CAurObject</c> / <c>CAurScene</c> slot (or one non-virtual interface member) that moves records on the
-/// game thread, so a slot implementation in <c>Seam/ObjectSlots*.cs</c> is a handle resolve plus one call into
-/// this file. Signatures follow the engine's own (tools/seam/aurora-seam-vtables.tsv): the same arguments in
-/// the same order, with a <see cref="DbId"/> where the engine passes <c>this</c> and a <see cref="ModelDef"/>
-/// where it passes a <c>Model*</c>.
-/// <para>Contract: game thread only, every entry allocation-free on the steady path, and every setter marks
-/// its record dirty itself -- a caller never has to. See <c>Db/DbAnim.README.md</c>.</para></summary>
+/// <summary>The API the Aurora seam calls. Every member mirrors one <c>CAurObject</c>/<c>CAurScene</c> slot
+/// that moves records on the game thread, so a slot implementation in <c>Seam/ObjectSlots*.cs</c> is a handle
+/// resolve plus one call here. Signatures follow the engine's (tools/seam/aurora-seam-vtables.tsv), with a
+/// <see cref="DbId"/> for <c>this</c>. Game thread only, allocation-free, every setter marks its own record.</summary>
 public static unsafe partial class DbAnim
 {
     // ---- CAurObject slot 7: PlayAnimation(char const*, float, int, float) ----
@@ -23,11 +19,9 @@ public static unsafe partial class DbAnim
         => PlayAnimationCore(obj, anim, speed, flags, fadeTime);
 
     /// <summary><c>Gob::GetAnimation</c> (slot 8): the RUN playing <paramref name="anim"/>, or null. The two
-    /// out-params are the engine's, <b>in its order</b>: <paramref name="time"/> is the run's current time and
-    /// -1 when nothing is playing it, <paramref name="length"/> is the animation's length and -1 when the name
-    /// does not resolve at all. The handle is an opaque non-null token -- a zeroed native block that must never
-    /// be dereferenced as an engine <c>Animation*</c>; it exists because the slot returns <c>void*</c> and the
-    /// game tests it for null to mean "that animation is playing".</summary>
+    /// out-params are the engine's, <b>in its order</b>: <paramref name="time"/> is -1 when nothing is playing
+    /// it, <paramref name="length"/> -1 when the name does not resolve at all. The handle is an opaque
+    /// non-null token -- a zeroed native block, never to be dereferenced as an engine <c>Animation*</c>.</summary>
     public static nint GetAnimation(DbId obj, string? anim, out float time, out float length)
         => GetAnimationCore(obj, anim, out time, out length);
 
@@ -80,12 +74,10 @@ public static unsafe partial class DbAnim
 
     // ---- the event path (Gob-only slots 11 / 83 / 84) ----
 
-    /// <summary><c>Gob::RegisterCallBack</c> @0x497db0 (slot 11). <b>seam-obj's slot 11 owns the live list</b>
+    /// <summary><c>Gob::RegisterCallBack</c> @0x497db0 (slot 11). seam-obj's slot 11 owns the LIVE list
     /// (<c>CallbackList</c>, the engine's own array at the shell's +0x460); this entry is the off-device one
-    /// the self-checks use, and an object with a facade never reaches it. <paramref name="fn"/> is a
-    /// <c>void (*)(CAurObject*, char const*, void*)</c>; the returned <c>CallBack*</c> is a real 0x30-byte
-    /// native block laid out as the engine's (name at +0, fn at +0x20, data at +0x28), so a holder that reads
-    /// it reads what it expects. Null when the object cannot take another.</summary>
+    /// the self-checks use. <paramref name="fn"/> is a <c>void (*)(CAurObject*, char const*, void*)</c>, and
+    /// the returned <c>CallBack*</c> is a real 0x30-byte block laid out as the engine's. Null when full.</summary>
     public static nint RegisterCallBack(DbId obj, nint fn, byte* name, nint data)
         => CbRegister(obj, fn, name, data);
 

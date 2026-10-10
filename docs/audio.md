@@ -38,13 +38,13 @@ swap -- goes through the handoff in `refl_quiesce`/`refl_thaw`: the freeze and t
 under the same lock the render snapshots its slots with, the swap then waits out the frame that may already be
 inside `iplReflectionEffectApply`, and the reflection effects and the mixer are reset before reflections resume.
 Without it the render went on convolving the released IRs until the new area published new ones -- the
-intermittent libphonon SIGSEGV on area transitions (CX-57, 2026-10-06). It was never a DB-mode bug: the area
-edge sends its empty scene in mode 0 too.
+intermittent libphonon SIGSEGV on area transitions (CX-57, 2026-10-06). It is not a renderer bug: the area
+edge sends its empty scene whoever drew the frame.
 
 Everything 2D the engine plays -- interface, music, ambience streams, dialog, movies -- stays OpenAL's,
 except a **placed non-Positional loop** (group 2, `Looping_AreaWide_Ambients`): the engine never range-culls a
 2D source, so such a loop plays area-wide at one volume. `sound.placeloops` renders it at its object with the
-builder's min/max distances instead (the anti-scry case in the CX-57 comments). It is **off by default**: SoW's rain is exactly such a
+builder's min/max distances instead (the anti-scry case in the CX-57 comments). It is **off by default**: area-wide rain is commonly exactly such a
 loop on purpose (non-positional, volume 127, the toolset's default 1/10 m), and on it faded out 10 m from the
 object -- nothing in the data tells the two apart.
 

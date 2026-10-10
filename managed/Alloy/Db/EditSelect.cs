@@ -9,20 +9,16 @@ using CX.Ui;
 
 namespace CX.Alloy.Db;
 
-/// <summary>Wires <see cref="EditSelect"/>'s hooks: DB mode only, because the selection lives on CX's own text
-/// document and the highlight is drawn by <see cref="TextQuads"/>.</summary>
+/// <summary>Wires <see cref="EditSelect"/>'s hooks: the selection lives on CX's own text document and the
+/// highlight is drawn by <see cref="TextQuads"/>.</summary>
 public sealed class EditSelectService : IExtenderService
 {
     public void Initialize(ExtenderLog log, HookService hooks) => EditSelect.Install(log, hooks);
 }
 
-/// <summary>Modern editing in the engine's own edit boxes (<c>CGuiEdit</c> and every subclass), <c>ui.textedit</c>:
-/// a selection (mouse drag, double-click word, shift-click, Shift+arrows, Ctrl+A), Ctrl+C/X, typing or pasting
-/// over it, and Ctrl+arrow/Backspace/Delete by word. Paste itself is vanilla's (<c>HandleWMKeyDownMessage</c>).
-/// <para>The selection is CX state on the edit's <see cref="TextDoc"/> (<see cref="TextDoc.SelAnchor"/>); the caret
-/// stays the engine's. Text is only ever REMOVED here, and through the focused object's own key handler one
-/// backspace at a time, so a subclass's length cap, formatting and change handling all run as for typed keys.
-/// Every hook is input-side and cold.</para>
+/// <summary>Modern editing in the engine's own edit boxes (<c>CGuiEdit</c> and subclasses), <c>ui.textedit</c>: selection, Ctrl+C/X, typing over
+/// it, word-wise Ctrl+arrow/Backspace/Delete. The selection is CX state on the edit's <see cref="TextDoc"/>, the caret the engine's; text is only
+/// ever REMOVED, through the focused object's key handler one backspace at a time, so a subclass's length cap and formatting still run.
 /// ponytail: no undo (vanilla has none either); add an EditBuffer-style snapshot ring if players ask.</summary>
 internal static unsafe class EditSelect
 {

@@ -2,7 +2,7 @@ using CX.Framework;
 
 namespace CX.Services.Camera;
 
-/// <summary>The five camera groups of spec §4.4 in panel order. <see cref="Declare"/> touches each class so
+/// <summary>The six camera groups, in panel order. <see cref="Declare"/> touches each class so
 /// the groups declare on the main thread at Initialize, in this order, whether or not a camera service arms
 /// (a group that stands down still declares).</summary>
 internal static class CameraKnobs
@@ -69,10 +69,9 @@ internal static class CameraKnobs
 }
 
 /// <summary>One engine camera mode's group: <c>chase</c> / <c>topdown</c> / <c>driving</c>, identical rows with
-/// per-mode values, each with its own master. Off is the stock camera for that mode (#584): the ninth
-/// <c>CameraService.Gate</c> value, read per Control (feel, recenter and the drive stand aside, the view angle
-/// goes back to the first one read), so it needs no <c>changed:</c>. Read hot by <see cref="CameraService"/> and
-/// <see cref="CameraDriveService"/> through <see cref="CameraModes.ByMode"/>.</summary>
+/// per-mode values, each with its own master. Off is the stock camera for that mode -- the ninth
+/// <c>CameraService.Gate</c> value, read per Control (feel, recenter and the drive stand aside, the view angle goes
+/// back to the first one read), so it needs no <c>changed:</c>. Read hot through <see cref="CameraModes.ByMode"/>.</summary>
 public sealed class CameraModeKnobs
 {
     public readonly KnobGroup G;
@@ -80,9 +79,9 @@ public sealed class CameraModeKnobs
     /// <summary><see cref="Smooth"/> is <see cref="LagPos"/>, the one panel row for the feel; a set carries the rotation
     /// and zoom lag along. The mode's User rows are exactly <see cref="KnobGroup.MaxUserRows"/>: a new one must replace one.</summary>
     public readonly Knob<float> Fov, Smooth, LagPos, LagRot, LagZoom, PitchCurve, PitchRef, OffsetX, OffsetY;
-    /// <summary>The Movement tuning (#540 drive, #541 recenter), per mode since every mode has its own toggles.</summary>
+    /// <summary>The Movement tuning for the drive and the recenter, per mode: every mode has its own toggles.</summary>
     public readonly Knob<float> Rate, DeadZone, Idle, Grace, IdleRate, Hz, Turn, KeyTurn;
-    /// <summary>Mouse-look (#539) and the action camera, per mode; read through the <see cref="MouseLook"/> facade.</summary>
+    /// <summary>Mouse-look and the action camera, per mode; read through the <see cref="MouseLook"/> facade.</summary>
     public readonly Knob<bool> Look, Right, Invert, Action, AltToggle, HeadTrack, Assist, AutoTarget, Feedback;
     public readonly Knob<float> Sens, HeadYaw, HeadPitch;
     public readonly Knob<int> Threshold, AssistPx;
@@ -207,8 +206,8 @@ internal static class CameraModes
     }
 }
 
-/// <summary>The <c>walls</c> group: the occlusion fade (#537, read by <c>AlloyRenderer.Occlude</c>) and the offset
-/// camera's spring arm (#538, read by <see cref="CameraService"/>). The fade rate stays a const; the spring arm's
+/// <summary>The <c>walls</c> group: the occlusion fade (read by <c>AlloyRenderer.Occlude</c>) and the offset
+/// camera's spring arm (read by <see cref="CameraService"/>). The fade rate stays a const; the spring arm's
 /// own rates are nobody's dial but the one who tuned them, so they are ChatOnly (ADR 0030).</summary>
 internal static class Walls
 {
@@ -234,7 +233,7 @@ internal static class Walls
     }
 }
 
-/// <summary>The <c>free</c> group (#543): the enter button first, then the feel. <see cref="Fov"/> keeps the spec's
+/// <summary>The <c>free</c> group: the enter button first, then the feel. <see cref="Fov"/> keeps the spec's
 /// one magic zero -- 0 = the field of view of the mode the camera left -- so its floor is 0 and a value under
 /// <see cref="CameraKnobs.FovMin"/> snaps up to it.</summary>
 internal static class FreeCam
@@ -270,8 +269,8 @@ internal static class FreeCam
     }
 }
 
-/// <summary>The mouse-look rows of the LIVE camera mode (#539, per mode since the movement rework), so every
-/// reader keeps its <c>MouseLook.X.V</c> shape. Off-device -- no module, no mode -- the chase rows answer; every
+/// <summary>The mouse-look rows of the LIVE camera mode, so every reader keeps its <c>MouseLook.X.V</c> shape.
+/// Off-device -- no module, no mode -- the chase rows answer; every
 /// action-camera gate also requires a mode, so that fallback only ever shapes the menu's plain drag capture.</summary>
 internal static class MouseLook
 {
@@ -293,15 +292,15 @@ internal static class MouseLook
     internal static Knob<string> ActionKey => M.ActionKey;
 }
 
-/// <summary>The <c>tabtarget</c> group (CX-636): one master, the cast mode, the two keys and the candidate
+/// <summary>The <c>tabtarget</c> group: one master, the cast mode, the two keys and the candidate
 /// filter. Off by default -- installing CX changes nothing until the player opts in. Every knob is read live by
 /// <see cref="TabTargetService"/>; the master's off edge drops the lock (<see cref="TabTargetService.MasterChanged"/>).</summary>
 internal static class TabTarget
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled, Objects;
-    /// <summary>Stored as the <see cref="TabTargetCore.CastMode"/> ordinal: 0 Normal, 1 Quick, 2 Quick with preview.</summary>
-    /// <summary><see cref="Camera"/>: 0 nothing, 1 turn to the target once, 2 lock on until the lock key.</summary>
+    /// <summary><see cref="Cast"/> is the <see cref="TabTargetCore.CastMode"/> ordinal (0 Normal, 1 Quick, 2 Quick
+    /// with preview); <see cref="Camera"/> is 0 nothing, 1 turn to the target once, 2 lock on until the lock key.</summary>
     internal static readonly Knob<int> Cast, Filter, Camera;
     internal static readonly Knob<float> Range, Tilt;
     internal static readonly Knob<string> CycleKey, ClearKey, LockKey;

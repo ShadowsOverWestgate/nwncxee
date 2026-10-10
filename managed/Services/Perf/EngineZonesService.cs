@@ -5,11 +5,10 @@ using CX.Framework;
 
 namespace CX.Services.Perf;
 
-/// <summary>#336 step 5: split the [zones] line's <c>other</c> column. Four timing hooks on the engine main
-/// loop's non-render steps (see <see cref="FrameZones.Zone.Net"/>); each calls the original through its
-/// trampoline between two timestamps and returns whatever it returned. The handlers forward the argument
-/// register untouched -- one integer or float each, no by-value structs (the mangled names say so) -- and
-/// return <c>long</c> so a void, int or pointer result rides through rax intact. Hot, allocation-free.</summary>
+/// <summary>Splits the [zones] line's <c>other</c> column: four timing hooks on the engine main loop's non-render
+/// steps (see <see cref="FrameZones.Zone.Net"/>), each calling the original through its trampoline between two
+/// timestamps. The handlers forward the argument register untouched -- one integer or float each, no by-value structs
+/// (the mangled names say so) -- and return <c>long</c>, so a void, int or pointer result rides rax intact. Hot, no allocation.</summary>
 public sealed unsafe class EngineZonesService : IExtenderService
 {
     private static NetProcessReceivedFramesFn _net;
@@ -34,7 +33,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
         int skip = Alloy.Renderer.SkipBuckets.Boot;
         _skipBuckets = skip == 1 || skip == 3;
         _bucketsCadence = skip == 2;
-        // CX-104: 3 skips the BSP walk as well. Everything it produced for the FRAME is Alloy's (the tile
+        // 3 skips the BSP walk as well. Everything it produced for the FRAME is Alloy's (the tile
         // fade ramp, the grass bins, the emitter/trigger/beam lists, the visible-gob list, ProcessGob and the
         // LOD call), and everything it produced for the rest of the CLIENT is CX.Alloy.ScenePrep's (the
         // in-view byte, gobbucket, the three LightManager steps). ScenePrep.Needed is the per-frame veto:
@@ -75,39 +74,31 @@ public sealed unsafe class EngineZonesService : IExtenderService
         return r;
     }
 
-    /// <summary>EXPERIMENT (CX-141 §5 step 1): <c>alloy.skipbuckets=1</c> in
-    /// cx.cfg skips the world scene's draw-bucket build while Alloy draws the frame. Expected to freeze
-    /// every gob part's transform (the build is the sole writer of the model matrix Alloy draws with), which
-    /// is the measurement: Ai drops by the Buckets figure, and what breaks names the load-bearing half.
-    /// Never on a GUI panel's scene and never while the engine renders (vanilla=1).</summary>
+    /// <summary>EXPERIMENT: <c>alloy.skipbuckets=1</c> in cx.cfg skips the world scene's draw-bucket build while Alloy
+    /// draws the frame. It freezes every gob part's transform (the build is the sole writer of the model matrix Alloy
+    /// draws with), which is the measurement: Ai drops by the Buckets figure, and what breaks names the load-bearing
+    /// half. Never on a GUI panel's scene and never while the engine renders (<c>alloy.enabled=0</c>).</summary>
     private static bool _skipBuckets;
     private static long _bucketsSkipped;
-    /// <summary>CX-104: <c>alloy.skipbuckets=3</c> -- the whole BSP walk stands down on an Alloy world frame.
-    /// What it produced is Alloy's: the tile fade ramp (<c>TileFadeRamp</c>), the grass bins, the emitter,
-    /// trigger and beam lists, the visible-gob list (<c>AlloyRenderer.VisibleGobs</c>), the per-gob LOD call
-    /// and <c>Gob::ProcessGob</c> (both driven from <c>GobXform.Tick</c> under this same knob). Its remaining
-    /// side effects with no owner are the BSP RE-FILING of moved parts and gobs (<c>SceneBSPUpdatePart</c> /
-    /// <c>SceneBSPUpdateGob</c>, which hit testing walks), the camera fade planes and
-    /// <c>Gob::IsInViewVolume</c>'s <c>gob+0x1b</c>.</summary>
+    /// <summary><c>alloy.skipbuckets=3</c> -- the whole BSP walk stands down on an Alloy world frame. What it produced
+    /// is Alloy's: the tile fade ramp, the grass bins, the emitter, trigger and beam lists, the visible-gob list, the
+    /// per-gob LOD call and <c>Gob::ProcessGob</c>. Its side effects left with no owner are the BSP RE-FILING of moved
+    /// parts and gobs (<c>SceneBSPUpdatePart</c>/<c>Gob</c>, which hit testing walks), the fade planes and <c>gob+0x1b</c>.</summary>
     private static bool _skipBsp;
     private static long _bspSkipped;
-    /// <summary><c>alloy.skipbuckets=2</c>: the six flat loops over the BSP walk's tile-part lists (matrix rewrite
-    /// of STATIC parts plus the filing of buckets nothing reads) run every <see cref="BucketsEvery"/>th frame;
-    /// the gob loop (ProcessGob, the attached-hierarchy sync, the part-tree matrix walk creatures and
-    /// placeables live by) and the beam loop run every frame. Done by zeroing the lists' counts ahead of
-    /// the call on the other frames; the visit callback refills them next frame. A freshly spawned tile's
-    /// parts carry no matrix until the next full frame. ponytail: a fixed cadence, no knob.</summary>
+    /// <summary><c>alloy.skipbuckets=2</c>: the six flat loops over the BSP walk's tile-part lists (matrix rewrite of
+    /// STATIC parts plus the filing of buckets nothing reads) run every <see cref="BucketsEvery"/>th frame, the gob and
+    /// beam loops every frame, done by zeroing the lists' counts ahead of the call; a freshly spawned tile's parts
+    /// carry no matrix until the next full frame. ponytail: a fixed cadence, no knob.</summary>
     private static bool _bucketsCadence;
     private const int BucketsEvery = 8;
     private static int _bucketsFrame;
     private static byte* _meshBuckets, _fadeBuckets, _capBuckets, _staticShadowBucket, _meshShadowBucket;
 
-    /// <summary>meshbuckets and fadebuckets are <c>List&lt;Bucket&gt;</c> objects in .bss -- CExoArrayList
-    /// {items at +0, count at +8, alloc at +0xc} -- whose 16-byte {items, count} pairs live on the HEAP,
-    /// indexed by texture id (ClearBuckets @0x47f4e0, CheckBucketArraySize @0x47f420, alloc &gt;= 5000). The
-    /// first cut of this treated the .bss symbol as the inline pair array and zeroed past the object into
-    /// AurGetCompressedImage's function pointer (two crashes, 2026-09-06). Every count on the heap pairs is
-    /// cleared, as the engine's own clear does; the three single lists carry their count at +8 in .bss.</summary>
+    /// <summary>meshbuckets and fadebuckets are <c>List&lt;Bucket&gt;</c> objects in .bss -- CExoArrayList {items at
+    /// +0, count at +8, alloc at +0xc} -- whose 16-byte {items, count} pairs live on the HEAP, indexed by texture id
+    /// (ClearBuckets @0x47f4e0, CheckBucketArraySize @0x47f420, alloc &gt;= 5000), NOT inline in .bss. Every count on
+    /// the heap pairs is cleared, as the engine's own clear does; the three single lists carry their count at +8.</summary>
     private static void ThinTileLists()
     {
         if (_meshBuckets == null) return;
@@ -143,22 +134,16 @@ public sealed unsafe class EngineZonesService : IExtenderService
     /// <summary>Outermost demands since boot: ticks in all, in models, in restypes step 0 does not name, and calls.
     /// Never reset (a load-screen present clears the frame zones mid-<c>LoadArea</c>), so a caller samples deltas.</summary>
     public static long DemandTicks, DemandMdlTicks, DemandOtherTicks, DemandCalls;
-    /// <summary>CX-55 step 0: ticks in texture demands at ANY depth, decode included, never reset. The
+    /// <summary>Ticks in texture demands at ANY depth, decode included, never reset. The
     /// <see cref="FrameZones.Zone.TexRead"/> zone is the same bracket minus the decode and is cleared every
     /// frame; a model's parse subtracts this instead, because the texture demands nested in it are the
     /// engine's work under our bracket and not the model parse we are sizing.</summary>
     public static long DemandTexTicks;
 
-    /// <summary>The on-demand resource load, wherever the engine asks for it (a model on first sight, a
-    /// texture, an animation). Demands nest -- a model demands its textures -- so only the outermost call
-    /// is bracketed and counted. Nested zone: reported for shape inside Ai, not subtracted.
-    /// <para>CX-54 step 0: a texture's demand is bracketed at ANY depth as the read half of the build's
-    /// read / decode / upload split (texture demands never nest in each other, and the one the tile loop
-    /// makes sits under a model's), minus the decode inside it -- a TGA is decoded by
-    /// <c>CResTGA::OnResourceServiced</c> within its own demand. Every demand, at any depth, has its
-    /// container filed by <see cref="CX.Alloy.ResSources"/>. The restype is read BEFORE the call, which is the same answer:
-    /// neither <c>Demand</c> (Linux @0x53ae70 / Windows RVA 0x18ef90) nor the four <c>ServiceFrom*</c> it
-    /// dispatches to writes the <c>CRes</c>'s key-entry pointer at <c>+0x28</c>.</para></summary>
+    /// <summary>The on-demand resource load, wherever the engine asks for it (a model on first sight, a texture, an
+    /// animation). Demands nest -- a model demands its textures -- so only the outermost call is bracketed and counted,
+    /// while a texture's demand is bracketed at ANY depth, minus the decode inside it. The restype is read BEFORE the
+    /// call, the same answer: neither <c>Demand</c> nor the four <c>ServiceFrom*</c> writes the <c>CRes</c>'s <c>+0x28</c>.</summary>
     [UnmanagedCallersOnly]
     private static long OnDemand(IntPtr self, IntPtr res)
     {
@@ -210,7 +195,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
     private const int ImagePriority = 100;
     private static int _imageDepth;
 
-    /// <summary>CX-52 step 0: one texture's read + decode, outermost call only.</summary>
+    /// <summary>One texture's read + decode, outermost call only.</summary>
     [UnmanagedCallersOnly]
     private static IntPtr OnImage(IntPtr name, int* w, int* h, int* bpp, int* size, int* container, int* format, float* alpha, int allow)
     {

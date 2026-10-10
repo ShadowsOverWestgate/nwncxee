@@ -7,8 +7,8 @@ namespace CX.Alloy;
 /// FORMAT (<see cref="MeshArena.Vao"/>).</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>#213's acceptance signal: the classes that have bound an arena VAO since the last period line,
-    /// one bit per <see cref="AlloyClass"/>.</summary>
+    /// <summary>The classes that have bound an arena VAO since the last period line, one bit per
+    /// <see cref="AlloyClass"/>.</summary>
     private static int _ownedClsMask;
 
     /// <summary>Which classes drew from Alloy's buffers this period, cleared as it is read.</summary>
@@ -23,10 +23,10 @@ public sealed unsafe partial class AlloyRenderer
         return s;
     }
 
-    /// <summary>CX-704: the per-batch cull + VAO bind every issue loop shares. Cull reproduces the engine's
-    /// per-material decision (#292): sub-list 1 of Scene::RenderDrawBucket @0x46d060 draws under
-    /// Disable(CULL_FACE), everything else under the Enable + CullFace(BACK) it leaves behind. The VAO is tracked
-    /// by GL NAME (#212) -- the SAME name across depth and colour passes keeps #119's invariant-gl_Position match trivial.</summary>
+    /// <summary>The per-batch cull + VAO bind every issue loop shares. Cull reproduces the engine's per-material
+    /// decision: sub-list 1 of <c>Scene::RenderDrawBucket</c> @0x46d060 draws under Disable(CULL_FACE),
+    /// everything else under the Enable + CullFace(BACK) it leaves behind. The VAO is tracked by GL NAME, the
+    /// same name across depth and colour passes, which keeps their invariant <c>gl_Position</c> match trivial.</summary>
     internal static void BindBatchState(int g, ref int boundCull, ref uint boundVao)
         => BindBatchState(_gNoCull[g], VaoName(_gVao[g], _gCls[g]), ref boundCull, ref boundVao);
 

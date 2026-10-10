@@ -7,13 +7,10 @@ using CX.Alloy.Db;
 namespace CX.Services.Perf;
 
 /// <summary>
-/// The streaming bar: a thin bar at the top centre while an area is still arriving after its load screen, the way
-/// WoW shows assets landing while you already play. "Arriving" is three backlogs that drain to zero once an area
-/// has settled -- textures in flight (<see cref="TexRegistry.InFlight"/>), parts waiting on geometry
-/// (<see cref="DbFeed.Retrying"/>) and light charts being built (<see cref="MeshChart.InFlight"/>) -- and the bar
-/// fills as their sum falls from its peak. <c>ui.streaming</c> is the master.
-/// <para>Hot path (every in-game frame) allocates nothing: the caption is written into a char buffer and the batch
-/// keeps its capacity across rebakes.</para>
+/// The streaming bar (<c>ui.streaming</c>): a thin bar at the top centre while an area is still arriving after its load
+/// screen. "Arriving" is three backlogs that drain to zero once an area has settled -- textures in flight
+/// (<see cref="TexRegistry.InFlight"/>), parts waiting on geometry (<see cref="DbFeed.Retrying"/>) and light charts
+/// being built (<see cref="MeshChart.InFlight"/>) -- and the bar fills as their sum falls from its peak. No allocation.
 /// </summary>
 public sealed class StreamingBarService : IExtenderService
 {

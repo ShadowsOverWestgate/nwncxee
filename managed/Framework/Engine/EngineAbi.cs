@@ -13,7 +13,7 @@ public readonly unsafe struct EngineList(IntPtr ptr)
     /// <summary>No list.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.ListItems"/>
-    public IntPtr Items => *(IntPtr*)(Ptr + EngineLayout.ListItems);
+    public IntPtr Items { get => *(IntPtr*)(Ptr + EngineLayout.ListItems); set => *(IntPtr*)(Ptr + EngineLayout.ListItems) = value; }
     /// <inheritdoc cref="EngineLayout.ListItemCount"/>
     public int Count { get => *(int*)(Ptr + EngineLayout.ListItemCount); set => *(int*)(Ptr + EngineLayout.ListItemCount) = value; }
     /// <summary>Element <paramref name="i"/> of a list of pointers; no bounds check.</summary>

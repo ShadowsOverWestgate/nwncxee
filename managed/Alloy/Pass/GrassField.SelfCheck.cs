@@ -9,12 +9,10 @@ namespace CX.Alloy;
 
 internal static unsafe partial class GrassField
 {
-    /// <summary>Off-device (run-demo.sh). Three things that are decisions rather than transcriptions, and each
-    /// fails silently on a GPU: the scatter must be DETERMINISTIC (a rebuild that reshuffles the meadow reads
-    /// as grass twitching at every area reload) and must scale with the density dial; the frustum test must
-    /// actually reject (a cull that accepts everything is invisible except in the frame time it was built to
-    /// save); and the box distance must be the NEAREST point, or a patch the camera stands inside is culled
-    /// by its own centre.</summary>
+    /// <summary>Off-device. Three decisions that each fail silently on a GPU: the scatter must be
+    /// DETERMINISTIC (a rebuild that reshuffles the meadow reads as grass twitching at every area reload) and
+    /// must scale with the density dial; the frustum test must actually reject; and the box distance must be
+    /// the NEAREST point, or a patch the camera stands inside is culled by its own centre.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
@@ -36,8 +34,11 @@ internal static unsafe partial class GrassField
         for (int i = 0; i < 4096; i++) { float r = Rnd(ref st); lo = MathF.Min(lo, r); hi = MathF.Max(hi, r); }
         check.Expect(lo >= 0f && hi < 1f && lo < 0.01f && hi > 0.99f, "the stream covers [0,1) without leaving it");
 
-        // density scales the engine's authored per-face counts rather than replacing them
-        check.Expect((int)(7 * 2f) == 14 && (int)(7 * 0.5f) == 3, "the density dial multiplies the tileset's own count");
+        // density scales the engine's authored per-face counts rather than replacing them, and a face that
+        // asks for a meadow of its own is capped instead of scattering a million quads off one triangle
+        check.Expect(BladesForFace(7, 2f) == 14 && BladesForFace(7, 0.5f) == 3,
+          "the density dial multiplies the tileset's own count, truncating");
+        check.Expect(BladesForFace(1_000_000, 1f) == 4096, "a runaway face count is capped at 4096 blades");
 
         // #355: the ladder is continuous at its knee, falls as 1/d^2, and never drops below its floor
         check.Expect(Keep(Grass.Lod.V) == 1f && Keep(Grass.Lod.V * 0.5f) == 1f, "inside the full-density radius every blade draws");

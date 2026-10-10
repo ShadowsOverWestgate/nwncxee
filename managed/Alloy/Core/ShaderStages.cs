@@ -6,17 +6,16 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>The overridable stage set: which resrefs exist and the warning header a dumped copy carries.
-/// Every program build reads <see cref="Source"/> rather than composing its own text (ADR 0012), and #707
-/// moved the composition itself into the GLSL: a stage is the embedded <c>&lt;resref&gt;.glsl</c>, whose
-/// <c>#include</c> lines name the libraries it is built from, so <c>check-shaders.py</c> compiles the same
-/// files the extender does.</summary>
+/// Every program build reads <see cref="Source"/> rather than composing its own text (ADR 0012), and the
+/// composition lives in the GLSL: a stage is the embedded <c>&lt;resref&gt;.glsl</c>, whose <c>#include</c>
+/// lines name its libraries, so <c>check-shaders.py</c> compiles the same files the extender does.</summary>
 internal static class ShaderStages
 {
     /// <summary>The dump folder, inside the client's own user directory (next to nwn.ini).</summary>
     internal static string DumpDir => Native.ConfigPath("cx_shader_dump");
 
     internal const string Banner = """
-        // Dumped from sow-client-extender's embedded default by /alloy shaderdump -- the stage THIS build
+        // Dumped from NWNCX:EE's embedded default by /alloy shaderdump -- the stage THIS build
         // compiles, so it is current by construction. Drop it in a hak or override as <resref>.shd to
         // replace that stage (a hak reaches every player); the extender falls back to the embedded default if
         // it fails to build. Re-dump and diff after each extender update: that diff is your drift.
@@ -28,7 +27,7 @@ internal static class ShaderStages
         """;
 
     internal const string LibBanner = """
-        // Dumped from sow-client-extender's embedded default by /alloy shaderdump: a LIBRARY, spliced into
+        // Dumped from NWNCX:EE's embedded default by /alloy shaderdump: a LIBRARY, spliced into
         // every stage that #includes it. Drop it in a hak or override as <resref>.shd to replace it in all of
         // them at once; a program it breaks rebuilds from the embedded libraries. Its own #include lines are
         // expanded on load, and the sizing tokens too. Re-dump and diff after each extender update.
@@ -43,7 +42,7 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>#355: the grass vertex stage is invariant over ITSELF, not over the world's clip expression:
+    /// <summary>The grass vertex stage is invariant over ITSELF, not over the world's clip expression:
     /// its depth prepass and its colour pass are two programs compiled from this one text, and the colour
     /// pass tests LEQUAL against the prepass's depth. It displaces, so it neither computes nor promises the
     /// <see cref="Invariant"/> expression.</summary>
@@ -82,12 +81,8 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All thirty-nine: four owned,
-    /// two water, the sky stage Alloy compiles the content's own sky into (CX-88), two grass cards and two procedural grass blades (CX-24), the cluster build, the deferred point-light pass and its per-pixel shadow pass (CX-188), two caster, four post-chain stages and the post stack's gamma
-    /// stage (#375), the taa stage (#389), the cel stage, the sharpen and vibrance stages (CX-93), the hosted post chain (#352), the halo pair and the weather stages -- the shared drop vertex stage with its rain and snow
-    /// fragment pair, and the splash pass's own vertex/fragment pair (CX-102). #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
-    /// custom sea; <see cref="SelfCheck"/> asserts the count, so this prose and that assert have to move
-    /// together.</summary>
+    /// <summary>Every overridable resref with the header its dumped copy carries. <see cref="SelfCheck"/>
+    /// asserts the count, so a stage added or dropped here fails the suite until the number moves with it.</summary>
     internal static readonly (string Ref, string Header)[] All =
     {
         (AlloyRenderer.ShdFullbrightVs, Banner + Invariant + Record),
@@ -137,6 +132,16 @@ internal static class ShaderStages
     /// per program build, one per dumped file.</summary>
     internal static string Source(string resref) => ShaderSource.Get(resref + ".glsl");
 
+    /// <summary><paramref name="src"/> with <c>#define <paramref name="define"/></c> spliced immediately after
+    /// its <c>#version</c> line -- the one place GLSL takes it, and the same splice
+    /// <c>check-shaders.py</c> makes, so a variant the gate compiles is the text the extender builds.</summary>
+    internal static string WithDefine(string src, string define)
+    {
+        int v = src.IndexOf("#version", StringComparison.Ordinal);
+        int e = v < 0 ? -1 : src.IndexOf('\n', v);
+        return e < 0 ? src : src[..(e + 1)] + $"#define {define}\n" + src[(e + 1)..];
+    }
+
     /// <summary>Write every overridable stage into <paramref name="dir"/> as an editable
     /// <c>&lt;resref&gt;.shd</c>, plus the bindless variant of the lit stage for reference. Returns the file
     /// count, or -1 if the folder could not be written (message logged).</summary>
@@ -178,11 +183,10 @@ internal static class ShaderStages
         if (Renderer.DumpShaders.Boot) Dump(DumpDir, log);
     }
 
-    /// <summary>#160: the <c>alloy.shaderdump</c> button -- write every overridable stage to
+    /// <summary>The <c>alloy.shaderdump</c> button -- write every overridable stage to
     /// <c>&lt;user directory&gt;/cx_shader_dump/</c> as an editable .shd, plus the bindless variant of the lit
-    /// stage. Dumping what is compiled in is what makes the starting point current by construction (ADR 0012);
-    /// the sizing tokens stay unexpanded, because the extender expands them on load for an override exactly
-    /// as for the embedded default.</summary>
+    /// stage. Dumping what is compiled in keeps the starting point current by construction (ADR 0012); the
+    /// sizing tokens stay unexpanded, because the extender expands them on load for an override too.</summary>
     internal static void DumpToLog()
     {
         ExtenderLog? log = KnobGroup.Log;

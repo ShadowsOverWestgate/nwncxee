@@ -1,7 +1,7 @@
 # NWNCX:EE (CX)
 
 NWNCX:EE -- **CX** for short -- is an optional, drop-in extender for the NWN:EE client,
-with feature logic in **C#**. Repo: `sow-client-extender`.
+with feature logic in **C#**.
 Attach it for extra features; run the stock client and you play vanilla. New
 client->server packets the server doesn't recognize are ignored, so an
 un-extended client loses nothing.

@@ -9,53 +9,28 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// Volumetric light beams, enumerated by Alloy off the engine's bucket 15 and drawn at the Alloy graph slot
-/// (ADR 0011 M3, #130, #261). Vanilla draws them from <c>Scene::RenderBeams</c> @0x46aba0 (Scene vt+0x1d8),
-/// step 27 of <c>Scene::RenderSinglePass</c>, immediately after the additive bucket. The population is
-/// <c>DrawBucketManager::GetFirstItem(Scene+0x208, 0xf, 0)</c> -- bucket <b>15</b>, which
-/// <c>Scene::RenderDrawBucket</c> never touches -- and what is in it are <c>PartBeam</c>s: static geometry
-/// built once per area by <c>BSPCreateStaticProjections</c> @0x47e890 (the same bake that makes
-/// <c>PartShadow</c>, chosen by the model's own flag at <c>Model+0x114</c>), so a beam is a resident VDO and
-/// not a per-frame simulation.
-/// <para><b>The source data is ours.</b> <see cref="Enroll"/> reads the bucket arrays directly, once a frame
-/// in engine context, exactly as <c>RenderBeams</c> does -- item, then vtable slot 0x90
-/// (<c>Part::AsPartBeam</c>), then the VDO at <c>PartBeam+0xa0</c>. No hook on <c>Scene::RenderBeams</c> or
-/// <c>PartBeam::Draw</c>, no capture window and no colour mask: the table is rebuilt from the engine's own
-/// live classification every frame, so nothing can go stale.</para>
-/// <para><b>The model matrix is the IDENTITY, not a read.</b> <c>RenderBeams</c> pushes nothing onto the
-/// matrix stack (verified in the disassembly), <c>Scene::RenderDrawBucket</c> @0x46d0b0 brackets every
-/// per-part <c>SetModelMatrix</c> with <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>, and RSP's own
-/// push/identity/pop pair sits AFTER the beam call (@0x471985, against @0x46f13b) -- so a beam draws on
-/// whatever base the frame left in the model stack, and CX-109 established that that base is the identity
-/// (<see cref="AlloyCamera.ModelBase"/>, <c>CX-109</c> §2). Beam volumes are baked in
-/// world space by <c>BSPCreateStaticProjections</c>, which is why the identity is also the only base that
-/// makes sense for them.</para>
+/// Volumetric light beams, enumerated off the engine's bucket 15 and drawn at the Alloy graph slot (ADR 0011).
+/// The population is <c>DrawBucketManager::GetFirstItem(Scene+0x208, 0xf, 0)</c> -- bucket <b>15</b>, which
+/// <c>Scene::RenderDrawBucket</c> never touches -- read directly once a frame in engine context, so the table
+/// cannot go stale. The model matrix is the IDENTITY: beam volumes are baked in world space.
 /// </summary>
 internal static unsafe partial class Beams
 {
     /// <summary>The Aurora primitive id <c>PartBeam::Draw</c> hard-codes.</summary>
     private const int BeamPrim = 4;
     /// <summary><c>projectionWorldZClip</c>: the world z every back-facing beam vertex is extruded down to.
-    /// <para><c>RenderBeams</c> @0x46add0 is <c>movss xmm0,[0x12f04a4]; mov edi,1; call SetShaderParamf</c> --
-    /// the <c>edi</c> is the shader-constant INDEX and the value is the .rodata float, <b>-20.0</b>. Read the
-    /// call as one-argument (Ghidra's decompiler drops the float) and it looks like a literal 1.0, which
-    /// truncates every shaft ~21/|dir.z| units short and leaves it hanging in mid-air. The index-1 constant
-    /// reaches <c>projectionWorldZClip</c> through <c>GLRender::SetUniforms</c> @0x4ce7ed
-    /// (<c>GetShaderParamf(1)</c> -&gt; the location <c>ConnectShaderData</c> caches at PROG_FIXED+0x1d38),
-    /// the same way the index-0 vec4 reaches <c>projectionSource</c>.</para></summary>
+    /// <c>RenderBeams</c> @0x46add0 passes the shader-constant INDEX in <c>edi</c> with the value in xmm0, so
+    /// a decompiler that drops the float argument reads it as a literal 1.0 -- which truncates every shaft
+    /// ~21/|dir.z| units short and leaves it hanging in mid-air. The .rodata float is -20.0.</summary>
     private const float WorldZClip = -20f;
     /// <summary>The beam tint. <c>RenderBeams</c> builds <c>globalColor</c> as
     /// <c>Homogenize(DAT_01aab9e8, projectionalpha)</c>, and <c>DAT_01aab9e8</c> is written once by a static
     /// initialiser (<c>_INIT_14</c> @0x51739a) to {1,1,1} and by nothing else. The alpha is read live off
     /// <c>projectionalpha</c>, which IS a console variable.</summary>
     private const float TintRgb = 1f;
-    /// <summary>Fallback alpha when <c>projectionalpha</c> does not resolve.
-    /// <para>MEASURED, and it was wrong: this read 0.2, which is four times what the engine writes. The only
-    /// writers are <c>CNWCArea</c>'s four time-of-day setters -- <c>SetAsDay</c> and <c>SetAsDusk</c> store
-    /// <c>0x3d4ccccd</c> (0.05) and <c>SetAsDawn</c>/<c>SetAsNight</c> store 0 -- so a session whose symbol
-    /// did not resolve drew every shaft four stops proud of vanilla's, and drew them at night as well.
-    /// 0.05 is the daylight value; the dark half of the day is the engine's own and is not a fallback's to
-    /// guess at.</para></summary>
+    /// <summary>Fallback alpha when <c>projectionalpha</c> does not resolve: the engine's daylight value.
+    /// <c>CNWCArea</c>'s <c>SetAsDay</c>/<c>SetAsDusk</c> store 0.05 and <c>SetAsDawn</c>/<c>SetAsNight</c>
+    /// store 0, so a larger fallback draws every shaft proud of vanilla's -- and draws them at night.</summary>
     private const float DefaultAlpha = 0.05f;
     private const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
     /// <summary>The engine attribute locations a beam VDO carries, from <c>GLRender::ConnectShaderData</c>'s
@@ -79,7 +54,7 @@ internal static unsafe partial class Beams
     {
         public IntPtr Vdo;
         public int Item, Vao;
-        /// <summary>CX-120 (DB mode): the database part this beam is, and its mesh-arena range. Both -1 on the
+        /// <summary>The database part this beam is, and its mesh-arena range. Both -1 on the
         /// engine path, where the geometry is a baked projection VDO instead.</summary>
         public int Part, Range;
     }
@@ -120,11 +95,10 @@ internal static unsafe partial class Beams
         log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/effects beams toggles)");
     }
 
-    /// <summary>CX-120: the same direction out of the database. <see cref="FrameInputs.SunDir"/> is already the
-    /// direction the light TRAVELS (DbLights negates the area diffuse's <c>+0xac</c> for exactly this), and
-    /// <c>HasSun</c> carries the same two tests the engine's <c>GetShadowLights(1)</c> filter applied: the
-    /// light reaches past <see cref="EngineLayout.DirectionalRange"/> and it points downward. An interior has
-    /// no sun and draws no shafts, which is vanilla's behaviour there.</summary>
+    /// <summary>The same direction out of the database. <see cref="FrameInputs.SunDir"/> is already the
+    /// direction the light TRAVELS, and <c>HasSun</c> carries the same two tests the engine's
+    /// <c>GetShadowLights(1)</c> filter applied: the light reaches past
+    /// <see cref="EngineLayout.DirectionalRange"/> and it points downward. An interior draws no shafts.</summary>
     private static bool DirectionDb(out Vector3 dir)
     {
         dir = default;
@@ -148,11 +122,10 @@ internal static unsafe partial class Beams
         return true;
     }
 
-    /// <summary>ADR 0011 (#130): the Alloy beam pass, right after the additive class and before the probe
-    /// capture -- vanilla's own position (step 27, straight after bucket 4). Additive
-    /// <c>(SRC_ALPHA, ONE)</c>, depth test on, depth mask off, exactly as <c>RenderBeams</c> sets it.
-    /// <para>Leaves GL_BLEND off and the depth mask on, which is the state
-    /// <see cref="AlloyRenderer"/>'s additive arm hands over and the probe capture after it needs.</para></summary>
+    /// <summary>The Alloy beam pass, right after the additive class and before the probe capture -- vanilla's
+    /// own position (step 27, straight after bucket 4). Additive <c>(SRC_ALPHA, ONE)</c>, depth test on, depth
+    /// mask off, exactly as <c>RenderBeams</c> sets it. Leaves GL_BLEND off and the depth mask on, which is
+    /// the state the additive arm hands over and the probe capture after it needs.</summary>
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj)
     {
         if (Disabled || _off || _count == 0 || Gl.DrawElementsBaseVertex == null) return;
@@ -174,11 +147,10 @@ internal static unsafe partial class Beams
         _drawn += staged;
     }
 
-    /// <summary>Every captured identity is void: the parts belong to a Scene whose unload freed them.</summary>
     /// <summary>Context loss: drop every GL name (they mean nothing once the context is gone) and the
     /// captured world with them. <see cref="EnsureProgram"/> short-circuits on a non-zero <c>_prog</c> and
-    /// the draw binds <c>_vVao</c> directly, so leaving these set is what made the next context draw through
-    /// a dead program and a dead VAO (#175 follow-up).</summary>
+    /// the draw binds <c>_vVao</c> directly, so leaving these set makes the next context draw through a dead
+    /// program and a dead VAO.</summary>
     internal static void ContextLost()
     {
         _progDb = 0; _dbFailed = false;
@@ -186,6 +158,7 @@ internal static unsafe partial class Beams
         Forget();
     }
 
+    /// <summary>Every captured identity is void: the parts belong to a Scene whose unload freed them.</summary>
     internal static void Forget()
     {
         _count = 0;
@@ -206,8 +179,8 @@ internal static unsafe partial class Beams
 
     /// <summary>Off-device: the two pieces of this file that are decisions rather than replays -- the light
     /// scan's predicate (miss it and the shafts point somewhere the volumes were never baked for) and the
-    /// extrusion offset the vertex stage computes (which the shader cannot be asked about at run-demo time).
-    /// </summary>
+    /// vertex stage's extrusion. Oracle for the second: the embedded GLSL text of both beam vertex stages,
+    /// read through <see cref="ShaderSource"/>.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
@@ -248,23 +221,22 @@ internal static unsafe partial class Beams
         check.Expect(!DirectionOf(new PartLight((IntPtr)b), out _), "a zero direction is refused rather than normalised into a NaN");
         check.Expect(!DirectionOf(new PartLight(IntPtr.Zero), out _), "no area directional draws no beams -- which is every interior");
 
-        // The vertex stage's extrusion, mirrored: a frontal vertex sits at the minimum offset, a back-facing
-        // one extrudes until world z reaches the clip plane, and the minimum always wins as a floor. Getting
-        // the max() backwards inverts the shaft above the clip height, which is most of an outdoor scene.
-        const float MinOffset = 0.1f;
-        static float Off(float frontal, float zClip, float wz, float dirZ)
-            => frontal > 0f ? MinOffset : MathF.Max(MinOffset, (zClip - wz) / dirZ);
-        check.Expect(Off(1f, WorldZClip, 50f, -1f) == MinOffset, "a frontal vertex extrudes by the minimum offset only");
-        check.Expect(Off(0f, WorldZClip, 11f, -1f) == 31f, "a back-facing vertex extrudes down to the world z clip");
-        check.Expect(Off(0f, WorldZClip, -19.95f, -1f) == MinOffset,
-          "...and never less than the minimum, however close it starts");
-        // The clip plane is BELOW the world floor, and that is the whole of it: a positive one truncates
-        // every shaft in mid-air, which is exactly what reading SetShaderParamf as one-argument produces.
-        check.Expect(WorldZClip < 0f && Off(0f, WorldZClip, 0f, -1f) > 1f,
-          "the clip plane is under the floor, so a shaft at ground level still has length");
-
-        check.Expect(BeamPrim == 4 && WorldZClip == -20f && EngineLayout.DirectionalRange == 1000f,
-          "the three literals RenderBeams pushes: prim 4, projectionWorldZClip -20.0, range threshold 1000");
+        // The vertex stage's extrusion, read out of the shader text: the frontal cap sits at the minimum
+        // offset and a back-facing vertex extrudes until world z reaches the clip plane, with the minimum
+        // as a floor. Getting the max() backwards inverts the shaft above the clip height, which is most of
+        // an outdoor scene; losing the floor collapses the frontal cap onto the geometry it came from.
+        foreach (string stage in new[] { "cx_beam_v.glsl", "cx_beamdb_v.glsl" })
+        {
+            string src = ShaderSource.Get(stage);
+            check.Expect(src.Contains("const float CX_BEAM_MIN_OFFSET = 0.1;"),
+              $"{stage} keeps the engine's fMinOffset of 0.1");
+            check.Expect(src.Contains("float off = CX_BEAM_MIN_OFFSET;"),
+              $"{stage} starts the frontal cap at the minimum offset");
+            check.Expect(src.Contains("off = max(CX_BEAM_MIN_OFFSET, (uZClip - wp.z) / dir.z);"),
+              $"{stage} extrudes a back-facing vertex down to uZClip, with the minimum as a max() floor");
+            check.Expect(src.Contains("vp += off * (mat3(uView) * dir);"),
+              $"{stage} displaces along the view-space extrusion direction");
+        }
 
         log.Info(check.Ok ? "Beams.SelfCheck: passed" : "Beams.SelfCheck: FAILED");
     }
@@ -273,16 +245,12 @@ internal static unsafe partial class Beams
 
     /// <summary>The vertex stage, ported from the client's own <c>vs_beamvol.shd</c>. Only the DIRECTIONAL
     /// branch survives: <c>RenderBeams</c> pushes <c>projectionSource.w = -1</c> unconditionally, so the
-    /// point-light path (extrude by radius minus distance) is dead code at this call site.
-    /// <para>Two deliberate departures from the stock stage. The fog term is dropped -- the Alloy pass fogs
-    /// through <c>AlloyRenderer</c>'s own block and an additive shaft is the one class where losing it is
-    /// invisible (ponytail: add the term if a foggy exterior ever shows a shaft standing too proud). And the
-    /// stage does NOT carry #119's invariant clip expression, because beams are additive, never enter the
-    /// depth prepass, and write no depth -- there is no LEQUAL match to preserve.</para></summary>
+    /// point-light path is dead code at this call site. The fog term is dropped (ponytail: add it if a foggy
+    /// exterior shows a shaft standing proud), and the stage carries no invariant clip expression.</summary>
     private static string BeamVs => ShaderSource.Get("cx_beam_v.glsl");
 
     /// <summary>The fragment stage: a flat tint, exactly as <c>fs_beamvol.shd</c> is once its fog term goes.
-    /// No encode -- #132 made the Alloy colour target LINEAR and the one whole-frame encode happens at the
-    /// resolve; <c>uColor</c> is handed over already linearised.</summary>
+    /// No encode -- the Alloy colour target is LINEAR and the one whole-frame encode happens at the resolve;
+    /// <c>uColor</c> is handed over already linearised.</summary>
     private static string BeamFs => ShaderSource.Get("cx_beam_f.glsl");
 }

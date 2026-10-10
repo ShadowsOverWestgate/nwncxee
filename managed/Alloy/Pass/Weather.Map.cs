@@ -6,23 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>R2: the area wetness map -- one world-XY texture per area, fitted to the area's own tile grid
-/// (<see cref="FrameInputs.AreaExtent"/>), updated entirely on the GPU and read per fragment by the lit
-/// splice and the grass blade. It replaces the three CPU scalars as the SOURCE of wetness wherever it has
-/// reached; the scalars stay as the fallback for ground the cover view has not seen yet, and snow keeps
-/// them outright (#619's look is not this ticket's to move).
-/// <para>Two compute passes, both alloc-free and neither reading anything back:</para>
-/// <list type="bullet">
-/// <item><b>scatter</b> (<c>cx_wx_scat_c</c>), once per cover BAKE over the map rect the cover view covers:
-/// latches the top-down first static hit's world Z and the metres it stands above its basin's low point.
-/// That is the depression field -- a real height field out of the depth view, not a noise field.</item>
-/// <item><b>integrate</b> (<c>cx_wx_int_c</c>), once per cadence over the whole map: soak, dry, fill and
-/// drain per texel at the rates the existing knobs name. The whole map, so ground the player walked away
-/// from dries while they are elsewhere.</item>
-/// </list>
-/// <para>A latched texel IS a first hit, so it is open to the sky by construction and carries no exposure
-/// term; a fragment standing under one is sheltered by it, which is the consumers' one-fetch shelter test
-/// (<c>CxWetShelter</c>). The map is cleared on the area edge and stands down in an interior.</para></summary>
+/// <summary>The area wetness map -- one world-XY texture per area, fitted to the area's own tile grid, updated
+/// entirely on the GPU and read per fragment by the lit splice and the grass blade. Two compute passes:
+/// <c>scatter</c>, per cover BAKE, latches the top-down first static hit's world Z and its height above the
+/// basin's low point (a real depression field), and <c>integrate</c>, per cadence, soaks, dries and drains.</summary>
 internal static unsafe partial class Weather
 {
     /// <summary>Texels a side, ceiling. RGBA32F: the height channel is a world Z and the relief is compared

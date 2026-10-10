@@ -2,7 +2,7 @@
 """Faithful port of AurTextureCalculateHashID @0x4857b0 (nwmain-linux). Red if any two distinct
 texture resrefs share a hash: Alloy's texcache keys on the hash alone, the engine strcasecmp's after it.
 Usage: aurhash-collisions.py nwn_base.key nwn_retail.key ~/.local/share/"Neverwinter Nights"/hak/*.hak [names.txt]
-Result 2026-09-13: 2,202 colliding values over base+SoW haks, 1,719 over the Arelith nwsync manifest."""
+Result 2026-09-13: 2,202 colliding values over base+one persistent world's haks, 1,719 over another's nwsync manifest."""
 import sys, struct, glob, os, collections
 M32 = 0xFFFFFFFF
 P = 0x7fa35f15

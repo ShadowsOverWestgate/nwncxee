@@ -3,7 +3,7 @@ namespace CX.Ui;
 /// <summary>
 /// One baked <b>face</b> -- a (typeface, pixel height) pair: its glyph table, line height, ascent and
 /// advances. Several faces share one <see cref="AtlasSheet"/> bitmap, so every face's UVs address the
-/// same GL texture (#469). Face objects are epoch-scoped: a sheet re-bake produces new ones, so callers
+/// same GL texture. Face objects are epoch-scoped: a sheet re-bake produces new ones, so callers
 /// re-fetch through <c>TextRig</c> when <c>TextRig.AtlasEpoch</c> changes rather than caching a reference.
 /// </summary>
 public sealed class GlyphAtlas

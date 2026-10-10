@@ -3,13 +3,10 @@ using CX.Ui;
 
 namespace CX.Services.CombatText;
 
-/// <summary>The <c>combattext</c> group (spec §4.2) and the storage <see cref="CombatTextService"/> and
-/// <see cref="FloatyTable"/> read: the master (off = the hook forwards and the stock floating text draws),
-/// three User rows, the Advanced banner and <see cref="Text"/> rows, and the Chat-only pixel spacings. Vanilla's own two knobs (<c>ui.floating-text-feedback</c> and the
-/// damage-totals option) are NOT duplicated: the engine still composes the strings, so consolidation and the
-/// damage-type colours follow the stock settings by construction. <see cref="Text"/> is the numbers' own size /
-/// typeface / outline (the outline the old toggle's key). Touched from
-/// <c>CombatTextService.Initialize</c> so the group declares whether or not the hook arms.</summary>
+/// <summary>The <c>combattext</c> group, read by <see cref="CombatTextService"/> and <see cref="FloatyTable"/>:
+/// the master (off = the hook forwards and the stock floating text draws), the User rows, the Advanced banner
+/// and <see cref="Text"/> rows (the numbers' own size / typeface / outline), and the pixel spacings. Vanilla's
+/// two floating-text knobs are not duplicated -- the engine composes the strings, so stock settings apply.</summary>
 internal static class CombatTextKnobs
 {
     internal static readonly KnobGroup G;

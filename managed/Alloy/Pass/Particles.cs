@@ -10,39 +10,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// Particles (ADR 0011 M3, #131). The vertex build, which is the only part of an emitter that was ever a
-/// draw. Since CX-86 the particles it reads are <see cref="EmitterSim"/>'s, whose pool records are laid out
-/// as engine <c>Particle</c>s so this file cannot tell the difference -- which is what makes
-/// <c>emitsim.enabled=0</c> an A/B of the simulation alone. Vanilla builds them in
-/// <c>PartEmitter::RenderEmitter</c> @0x4ad4c0: 0x24 dwords a particle into ONE shared
-/// <c>VertexStreamDataObject</c>, a full-range <c>glBufferSubData</c> and one <c>glDrawArrays</c> per emitter,
-/// so nothing survives the call to bind and this is a REBUILD, not a replay -- every input the build reads is
-/// a live <c>Particle</c> struct plus a handful of emitter fields, all state the engine maintains.
-/// <para><b>Why it is worth taking.</b> Vanilla depth-sorts emitters individually, so every visible one costs
-/// a program bind, texture binds, an upload and a draw. Punch-through (writes depth, discards) and additive
-/// commute, so those batch by texture across the whole screen -- twenty torches become one draw. Only the
-/// alpha-blended remainder keeps the engine's order, merging adjacent runs.</para>
-/// <para><b>Suppression is per emitter, not per pass.</b> The engine's routine IS the cost, so it is not
-/// colour-masked the way <see cref="Beams"/> and <see cref="SkyBox"/> mask theirs. An emitter the Alloy pass
-/// issued this pass is marked and the hook declines its original; an emitter we cannot build (custom material
-/// shader, no texture, table full) is not marked and, under the shim's vertex funnels, is NOT DRAWN --
-/// <c>suppressed</c> on the [particles] line counts them. No all-owned-or-none rule (#264, #285).</para>
-/// <para><b>Simulation runs before the anchor, and it is ours.</b> <c>Scene::DoEmitterBucket</c> @0x476f00
-/// was the only caller of <c>PartEmitter::AnimateParticles</c> @0x4ac660 and RSP ran it at step 28, after
-/// the frame anchor; #261 moved the walk ahead of the anchor and CX-86 replaced it with
-/// <see cref="EmitterSim.Step"/>, which is also where the population, the sort and
-/// <see cref="Enroll"/> now come from. ADR 0018's CX-86 amendment moved that boundary.</para>
-/// <para><b>The feed</b> is a persistent RECORD buffer updated by delta. One 96-byte record a particle
-/// (<see cref="RecFloats"/>) lives in a block owned by its emitter's table slot; the build writes a CPU shadow,
-/// hashes the block, and sends it only when the simulation moved it. The six vertices a particle expand from
-/// <c>gl_VertexID</c> in the vertex stage. The CPU stages one SPAN a placed emitter (record base, particles,
-/// index offset) and one descriptor a draw group, and <see cref="ParticleCs"/> writes the draw-order index
-/// list in one dispatch of one workgroup per group, depth-sorting the ALPHA-BLENDED groups back to front
-/// (#261, #288).</para>
-/// <para><b>Blend classes stay separable structurally:</b> a draw group is single-class by construction
-/// (<see cref="Group"/>), one workgroup owns one group, and groups occupy disjoint index ranges issued in
-/// group order, so no dispatch can move a particle out of its class. Punch-through and additive are not
-/// sorted at all, deliberately. <c>/particles sort 0</c> puts the index build back on the CPU, unsorted.</para>
+/// Particles (ADR 0011): the vertex build, which is the only part of an emitter that was ever a draw -- a
+/// REBUILD, not a replay, since vanilla's own build survives nothing past its draw. Punch-through and
+/// additive commute, so those batch by texture across the whole screen while the alpha-blended remainder
+/// keeps the engine's order. Suppression is per EMITTER, because the engine's routine IS the cost.
 /// </summary>
 internal static unsafe partial class Particles
 {
@@ -52,9 +23,8 @@ internal static unsafe partial class Particles
 
     /// <summary>A list longer than this is a bad pointer, not a .mtr.</summary>
     private const int MaxParams = 64;
-    /// <summary>#148: the .mtr parameter an effect declares to say how bright it really is. Named the way
-    /// sow-topdata already names its own (<c>noirExempt</c> on <c>fsparticle</c>), and absent means 1.0.
-    /// </summary>
+    /// <summary>The .mtr parameter an effect declares to say how bright it really is. Named the way
+    /// a content repo already names its own (<c>noirExempt</c> on <c>fsparticle</c>); absent means 1.0.</summary>
     private const string EmissiveParam = "fEmissive";
     /// <summary>Refuse an absurd declaration rather than hand the bloom a value that blows the whole frame
     /// out. Ten is already four stops over white.</summary>
@@ -84,14 +54,10 @@ internal static unsafe partial class Particles
     /// under <c>Disable(1)</c> and get -1, the engine's own "no discard" sentinel.</summary>
     private const float PunchDiscard = 0.2f, NoDiscard = -1f;
 
-    /// <summary>#148: the engine's own <c>particleSoftness</c>, from the disassembly at 0x4ae641 (the
-    /// decompiler renders it as a bare <c>SetShaderParamf(0)</c> -- the float is invisible there, the same
-    /// trap as everywhere else in this function). It is <c>5.0</c> when <c>0.2 * S &gt; 0.2</c> and
-    /// <c>1 / (0.2 * S)</c> otherwise, over the largest half-extent S the emitter can reach; the two
-    /// branches meet at S = 1, so the whole of it is <c>5 / min(S, 1)</c>.
-    /// <para>Read it as a RECIPROCAL FADE DISTANCE: the fade spans <c>1 / softness</c> world units, so it is
-    /// capped at 0.2u for anything smaller than a unit across and grows with the quad after that. A big
-    /// smoke card dissolves over a fifth of its own width; a spark does not soften at all.</para></summary>
+    /// <summary>The engine's own <c>particleSoftness</c>, from the disassembly at 0x4ae641 (the decompiler
+    /// renders it as a bare <c>SetShaderParamf(0)</c> -- the float is invisible there). It is <c>5.0</c> when
+    /// <c>0.2 * S &gt; 0.2</c> and <c>1 / (0.2 * S)</c> otherwise over the largest half-extent S the emitter
+    /// reaches, so the whole of it is <c>5 / min(S, 1)</c> -- a RECIPROCAL fade distance.</summary>
     private const float SoftScale = 5f;
     /// <summary>Softness is suppressed outright on splat emitters and on render types 1 and 2 -- the engine
     /// does the same, and the reason is geometric: those quads are pinned to a plane rather than facing the
@@ -99,60 +65,43 @@ internal static unsafe partial class Particles
     /// </summary>
     private static bool SoftSuppressed(bool splat, int type) => splat || type == 1 || type == 2;
 
-    /// <summary>Blend classes, in the order the Alloy pass draws them -- which is NOT the engine's. Vanilla
-    /// sorts every emitter into ONE back-to-front order regardless of blend mode; this splits that order in
-    /// three. There are two departures in that, and they are not the same size.
-    /// <para><b>Punch-through first is free.</b> It writes depth and discards rather than blending, so where
-    /// it draws at all it is opaque -- a punch emitter behind a blended one produces the same pixel either
-    /// way. Moving it ahead is strictly better, because the blended classes then get to depth-test against
-    /// it, which vanilla's single order cannot offer.</para>
-    /// <para><b>Additive last is a real change, and it is visible.</b> Addition commutes with ITSELF, which
-    /// is what makes the additive class internally re-orderable and therefore batchable across the screen.
-    /// It does not commute with alpha-over. Vanilla draws an additive flame standing BEHIND an alpha smoke
-    /// plume first, so the smoke then attenuates it; here the smoke composites first and the flame is added
-    /// at full strength over the top, so it reads through the smoke. Every additive-behind-blended pair --
-    /// a glow behind a dust cloud, a spell effect behind a fog emitter -- brightens by that difference.
-    /// #126 sanctions picking an order rather than reproducing one, so this is a decision, not a defect; but
-    /// it is the thing to look for in a comparison shot, and <c>particles.batch=0</c> turns it off (see
-    /// <see cref="Batch"/>) so the two can be held side by side.</para></summary>
+    /// <summary>The softness the stage pushes for one emitter: the collapsed <c>5 / min(S, 1)</c>, or 0 where
+    /// it is suppressed or the emitter reaches no size at all. The one definition, so the SelfCheck can call
+    /// it rather than restate it.</summary>
+    internal static float SoftnessFor(bool splat, int type, float sMax)
+        => SoftSuppressed(splat, type) || sMax <= 0f ? 0f : SoftScale / MathF.Min(sMax, 1f);
+
+    /// <summary>Blend classes, in the order the Alloy pass draws them -- which is NOT the engine's single
+    /// back-to-front order. Punch-through first is free: it writes depth and discards, so the blended classes
+    /// get to depth-test against it. Additive last IS a real change -- addition does not commute with
+    /// alpha-over, so a glow behind a dust cloud brightens; <c>particles.batch=0</c> is the A/B.</summary>
     private const int ClsPunch = 0, ClsBlend = 1, ClsAdd = 2, ClsCount = 3;
 
-    /// <summary>Vertex layout. The first 24 bytes are the engine's own -- colour as 4 normalised bytes, then
-    /// position, then UV, matching the <c>0x805</c> attribute token <c>RenderEmitter</c> asks the stream
-    /// object for -- so the build stays a port rather than a re-derivation. #148 appends two fields the
-    /// engine has no equivalent for.
-    /// <para>Both of them are PER EMITTER, and they live in the RECORD rather than in a uniform for one
-    /// reason: #131 batches emitters into a single draw, so anything that varies per emitter and is uploaded
-    /// as a uniform would split the groups it took the whole ticket to merge.</para></summary>
-    /// <summary>#261: one particle RECORD, in floats. Six <c>vec4</c>s, std430:
+    /// <summary>One particle RECORD, in floats: six <c>vec4</c>s, std430,
     /// <c>{pos.xyz, col} {far.xyz, colFar} {right.xyz, soft} {up.xyz, type} {centre.xyz, -} {u0,u1,v0,v1}</c>,
     /// the two colours as <c>uintBitsToFloat</c>. Everything is WORLD space -- the build applies the
-    /// emitter's model matrix to the centre and its two axes, which is exact for an affine matrix and four
-    /// transforms cheaper per particle than transforming the corners.</summary>
+    /// emitter's model matrix to the centre and its two axes, four transforms cheaper than the corners.</summary>
     private const int RecFloats = 24;
     /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
     /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
-    /// stage names, and #288's two descriptor buffers take the next free pair above the cull's.</summary>
+    /// stage names, and the two descriptor buffers take the next free pair above the cull's.</summary>
     internal const uint BindRecs = 10, BindIdx = 11;
-    /// <summary>#288: the compute stage's inputs. <see cref="BindSpans"/> is one entry per emitter the pass
+    /// <summary>The compute stage's inputs. <see cref="BindSpans"/> is one entry per emitter the pass
     /// placed, <see cref="BindGroups"/> one per draw group.</summary>
     private const uint BindSpans = 17, BindGroups = 18;
 
-    /// <summary>#288: the index-build workgroup size, and the largest group the compute sort will order.
-    /// One workgroup per draw group, one shared-memory bitonic network per blended group.
-    /// <para>ponytail: the cap is what the shared arrays hold -- 2048 * (float + uint) is 16KB, half the
-    /// 32KB GL guarantees, and a blended group past it keeps fill order exactly as it did before this
-    /// ticket. The upgrade path is a global key sort over the whole index list rather than a bigger
-    /// workgroup; <c>sort-skipped=</c> on the period line is when that becomes worth writing.</para></summary>
+    /// <summary>The index-build workgroup size, and the largest group the compute sort will order: one
+    /// workgroup per draw group, one shared-memory bitonic network per blended group. ponytail: the cap is
+    /// what the shared arrays hold (2048 * (float + uint) = 16KB, half the 32KB GL guarantees), and a bigger
+    /// group keeps fill order -- a global key sort is the upgrade, and <c>sort-skipped=</c> the trip-wire.</summary>
     private const int SortLocal = 256, SortCap = 2048;
-    /// <summary>#288: the top bit of a group descriptor's particle count, set by the CPU on exactly the
-    /// groups the sort may reorder. The count itself is bounded by <see cref="MaxRecs"/>, so the bit is
-    /// free -- and it is the ONLY thing that decides a reorder, which is what keeps the classes separable.
-    /// </summary>
+    /// <summary>The top bit of a group descriptor's particle count, set by the CPU on exactly the groups the
+    /// sort may reorder. The count itself is bounded by <see cref="MaxRecs"/>, so the bit is free -- and it
+    /// is the ONLY thing that decides a reorder, which is what keeps the classes separable.</summary>
     private const uint SortFlag = 0x80000000u;   // not-an-offset: a sort-key bit of ours
 
-    /// <summary>Emitters tracked at once. Past this an emitter is declined and, since #264 deleted the
-    /// engine walk, does not draw at all (#285) -- which is the whole cost of the cap.</summary>
+    /// <summary>Emitters tracked at once. Past this an emitter is declined and, with the engine walk gone,
+    /// does not draw at all -- which is the whole cost of the cap.</summary>
     private const int MaxEmitters = 8192;
     /// <summary>Draw groups per pass. One group is one <c>glDrawArrays</c>; overflowing it declines the
     /// remaining emitters rather than merging groups that must not merge.</summary>
@@ -166,12 +115,11 @@ internal static unsafe partial class Particles
     private struct Emit
     {
         public IntPtr Ptr;
-        /// <summary>CX-120: the database part this emitter is, or -1 when it is an engine <c>PartEmitter</c>.
+        /// <summary>The database part this emitter is, or -1 when it is an engine <c>PartEmitter</c>.
         /// The discriminant for every read the build makes.</summary>
         public int Part;
-        /// <summary>CX-120 (DB mode): the GL texture name the simulation resolved for this emitter, which is
-        /// both the batch key and what the draw binds. There is no <c>CAurTexture</c> to bind through here.
-        /// </summary>
+        /// <summary>The GL texture name the simulation resolved for this emitter, which is both the batch key
+        /// and what the draw binds. There is no <c>CAurTexture</c> to bind through here.</summary>
         public uint DbTex;
         public Matrix4x4 Model;
         public bool Ident;
@@ -181,18 +129,18 @@ internal static unsafe partial class Particles
         /// that spawned after the last capture and has therefore never been built -- keeps its vanilla
         /// draw.</summary>
         public int IssuedGen;
-        /// <summary>#148: the material's <c>fEmissive</c>, read ONCE when the slot is allocated. The walk is
+        /// <summary>The material's <c>fEmissive</c>, read ONCE when the slot is allocated. The walk is
         /// a string compare over up to 64 records across two lists, which is cold work -- doing it in the
         /// per-frame resolve would put it on the hot path for every emitter on screen, every frame.</summary>
         public float Emissive;
-        /// <summary>#261: this emitter's slice of the persistent record buffer, in RECORDS. Stable across
+        /// <summary>This emitter's slice of the persistent record buffer, in RECORDS. Stable across
         /// frames -- that is what makes the upload a delta rather than a rebuild -- and reassigned only when
         /// the emitter needs more room than it holds.</summary>
         public int RecBase, RecCap;
-        /// <summary>CX-86: this emitter's particle array and its count, as the enroller handed them in. The
-        /// pass is indifferent to who stepped them -- <see cref="EmitterSim"/>'s pool records are laid out as
-        /// engine <c>Particle</c>s, so both sources are a <c>Particle*</c> array -- which is what lets one
-        /// build loop serve the owned simulation and the engine's own walk.</summary>
+        /// <summary>This emitter's particle array and its count, as the enroller handed them in. The pass is
+        /// indifferent to who stepped them -- <see cref="EmitterSim"/>'s pool records are laid out as engine
+        /// <c>Particle</c>s -- which is what lets one build loop serve the owned simulation and the engine's
+        /// own walk.</summary>
         public IntPtr* Parts;
         public int PartCount;
         /// <summary>FNV-1a over the block as it was last UPLOADED. Equal means the engine's simulation
@@ -218,7 +166,7 @@ internal static unsafe partial class Particles
     /// the engine draws with.</summary>
     private static readonly IntPtr[] _sTexObj = new IntPtr[MaxEmitters];
     private static readonly bool[] _sTaken = new bool[MaxEmitters];
-    /// <summary>CX-120: is this staged emitter's texture a <see cref="TexRegistry"/> GL name rather than a
+    /// <summary>Is this staged emitter's texture a <see cref="TexRegistry"/> GL name rather than a
     /// <c>CAurTexture*</c>? The batch key is the same word either way; what differs is the bind.</summary>
     private static readonly bool[] _sDb = new bool[MaxEmitters];
     // _gFirst/_gCount index into _draw (emitters); _gStart/_gParts are the range of the draw-order INDEX
@@ -233,14 +181,13 @@ internal static unsafe partial class Particles
     private static readonly bool[] _gDb = new bool[MaxGroups];
     /// <summary>Vertices each entry of <see cref="_draw"/> actually wrote.</summary>
     private static readonly int[] _wrote = new int[MaxEmitters];
-    /// <summary>#288: one span descriptor per entry of <see cref="_draw"/> -- (record base, particles, index
+    /// <summary>One span descriptor per entry of <see cref="_draw"/> -- (record base, particles, index
     /// offset, unused), std430 <c>uvec4</c>. This is the whole of what replaced the per-particle CPU index
     /// loop: three numbers an emitter instead of four bytes a particle.</summary>
     private static readonly uint[] _span = new uint[MaxEmitters * 4];
-    /// <summary>#288: one descriptor per draw group -- (first span, spans, index offset, particles with
+    /// <summary>One descriptor per draw group -- (first span, spans, index offset, particles with
     /// <see cref="SortFlag"/>). One workgroup consumes one of these, and a group is single-class by
-    /// construction (see <see cref="Group"/>), so no workgroup can ever move a particle across a class.
-    /// </summary>
+    /// construction, so no workgroup can ever move a particle across a class.</summary>
     private static readonly uint[] _grp = new uint[MaxGroups * 4];
     /// <summary>Emitters in draw order, grouped -- the permutation of <see cref="_order"/> the writer walks.
     /// </summary>
@@ -253,7 +200,7 @@ internal static unsafe partial class Particles
     private static ExtenderLog? _log;
     private static MatGetTextureFn _getTexture;
     private static AurTextureBindInUnitFn _bindInUnit;
-    /// <summary>#237: the engine's bound-texture cache, snapshot-restored across the draw loop. See
+    /// <summary>The engine's bound-texture cache, snapshot-restored across the draw loop. See
     /// <see cref="SymbolMap.GlBoundTextures"/> for why a pass that draws in its own context has to.</summary>
     private static ulong* _engBoundTex;
     private static uint* _engActiveStage, _engStageEnabled;
@@ -270,13 +217,13 @@ internal static unsafe partial class Particles
     /// (<see cref="Enabled"/>) and <c>particles.enabled</c> must never clear it.</summary>
     private static bool _off, _failed;
     private static uint _prog, _vao, _recBuf, _idxBuf;
-    /// <summary>#288: the index-build/sort compute program and its two descriptor buffers.</summary>
+    /// <summary>The index-build/sort compute program and its two descriptor buffers.</summary>
     private static uint _csProg, _spanBuf, _grpBuf;
     private static int _csEye = -1;
     private static bool _csFailed;
     private static int _spanCap, _grpCap;
     private static int _locEye = -1;
-    /// <summary>#341: the fog block's locations, as one <see cref="AlloyRenderer.FeatLoc"/> -- the
+    /// <summary>The fog block's locations, as one <see cref="AlloyRenderer.FeatLoc"/> -- the
     /// stage fogs through the world pass's own uploader, so it takes the world pass's own location set.</summary>
     private static AlloyRenderer.FeatLoc _fogLoc;
 
@@ -291,39 +238,31 @@ internal static unsafe partial class Particles
     /// writes here; only the blocks whose hash moved are sent to GL.</summary>
     private static float* _recs;
     private static int _recsCap, _recTop;
-    /// <summary>Record indices in DRAW order, one per particle. #288 moved the WRITE of this list onto the
-    /// GPU, so the CPU shadow is now only the <c>/particles sort 0</c> path's staging area -- kept because
-    /// that dial is the escape hatch for a driver where the compute program does not build.</summary>
+    /// <summary>Record indices in DRAW order, one per particle. The WRITE of this list is the GPU's, so the
+    /// CPU shadow is only the <c>/particles sort 0</c> path's staging area -- kept because that dial is the
+    /// escape hatch for a driver where the compute program does not build.</summary>
     private static uint* _idx;
     private static int _idxCap;
 
     private static int _frame;
     private static int _captured, _declined, _emitters, _groups, _suppressed, _overflow;
-    /// <summary>#261's own numbers: record blocks re-sent this period, blocks the hash said were unchanged,
-    /// and times the block allocator ran out and started over (which costs one frame of vanilla emitters).</summary>
+    /// <summary>Record blocks re-sent this period, blocks the hash said were unchanged, and times the block
+    /// allocator ran out and started over (which costs one frame of vanilla emitters).</summary>
     private static int _blockUploads, _blockSkips, _recResets;
-    /// <summary>#288's numbers: groups the compute pass ordered, and blended groups it left in fill order
-    /// because they were larger than <see cref="SortCap"/>.</summary>
+    /// <summary>Groups the compute pass ordered, and blended groups it left in fill order because they were
+    /// larger than <see cref="SortCap"/>.</summary>
     private static int _sorted, _sortSkipped;
     // Why an emitter was declined, split -- "particles are still vanilla" has five different fixes behind
     // it and only the split says which.
     private static int _decFade, _decEmpty, _decShader, _decTex, _decFull, _reclaimed, _softPasses,
                        _emissive, _litGroups;
-    /// <summary>CX-120: tinted emitters drawn WITHOUT the scene tint, because DB mode has no engine light
-    /// list to sample at the emitter's origin. A named difference, on the period line.</summary>
+    /// <summary>Tinted emitters drawn WITHOUT the scene tint, because there is no engine light list to sample
+    /// at the emitter's origin. A named difference, on the period line.</summary>
     private static int _dbNoTint;
-    /// <summary>How far inside its own cell a quad's UV range is pulled, as a fraction of the cell.
-    /// <para>An atlas cell has no border. Bilinear filtering at its edge reaches into the NEIGHBOURING cell,
-    /// and a mip level of an atlas averages cells together outright -- so a frame whose neighbour holds a
-    /// star or a spark shows that neighbour's rays along its own boundary, at whatever LOD the derivatives
-    /// ask for. The engine gets away with sampling the exact cell because it binds through
-    /// <c>CAurTexture::BindInUnit</c>, which applies the texture's own filtering; this pass cannot rely on
-    /// inheriting that, so it contains the read instead.</para>
-    /// <para>ponytail: a fraction of the cell rather than a true half-texel, which would mean querying every
-    /// texture's dimensions and caching them per <c>CAurTexture*</c>. 1/128 of a cell is half a pixel at the
-    /// 64px cells NWN particle atlases actually use, and erring large costs a sliver of the frame's own
-    /// artwork rather than a ray from the frame beside it. Query the real size if an atlas ever ships cells
-    /// small enough for this to visibly crop.</para></summary>
+    /// <summary>How far inside its own cell a quad's UV range is pulled, as a fraction of the cell. An atlas
+    /// cell has no border, so bilinear filtering at its edge reaches into the NEIGHBOURING cell and a mip
+    /// averages cells outright. ponytail: a fraction of the cell rather than a true half-texel, which would
+    /// mean querying and caching every texture's dimensions; 1/128 is half a pixel at NWN's 64px cells.</summary>
     private const float CellInset = 1f / 128f;
     private static uint _samp;
     private static readonly int[] _cType = new int[7], _cCls = new int[ClsCount];
@@ -364,11 +303,10 @@ internal static unsafe partial class Particles
         log.Info($"Particles: armed and {(Enabled.V ? "ON" : "IDLE")} -- {Describe()} (/particles enabled 1 arms it)");
     }
 
-    /// <summary>CX-86: enrolment from <see cref="EmitterSim"/>, which walks <c>emitterbucket</c> itself now
-    /// that <c>Scene::DoEmitterBucket</c> is not called. Same two jobs <see cref="OnRenderEmitter"/> had --
-    /// learn the population and its transform -- minus the suppression, because there is no original left to
-    /// decline. The caller walks in its own back-to-front order, so capture order still IS draw order.
-    /// </summary>
+    /// <summary>Enrolment from <see cref="EmitterSim"/>, which walks <c>emitterbucket</c> itself now that
+    /// <c>Scene::DoEmitterBucket</c> is not called. The same two jobs the render hook had -- learn the
+    /// population and its transform -- minus the suppression, because there is no original left to decline.
+    /// The caller walks in its own back-to-front order, so capture order still IS draw order.</summary>
     internal static void Enroll(IntPtr em, int part, uint dbTex, IntPtr scene, IntPtr* parts, int count)
     {
         // CX-188: `part` is always a database part index. The engine arm this used to carry (an engine
@@ -433,9 +371,9 @@ internal static unsafe partial class Particles
 
     // ---- the Alloy pass -------------------------------------------------------------------------------
 
-    /// <summary>ADR 0011 (#131): the Alloy emitter pass, after the beams -- vanilla's own placement (step 28,
-    /// straight after <c>Scene::RenderBeams</c>). Leaves GL_BLEND off, the depth mask on and culling off,
-    /// which is the state the beams handed over and the probe capture after this needs.</summary>
+    /// <summary>The Alloy emitter pass, after the beams -- vanilla's own placement (step 28, straight after
+    /// <c>Scene::RenderBeams</c>). Leaves GL_BLEND off, the depth mask on and culling off, which is the state
+    /// the beams handed over and the probe capture after this needs.</summary>
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj, int* viewport, float near, float far,
                               bool lightingOn)
     {
@@ -706,7 +644,7 @@ internal static unsafe partial class Particles
         return true;
     }
 
-    /// <summary>CX-120: this captured emitter's parameters, from whichever source owns it. One call, and every
+    /// <summary>This captured emitter's parameters, from whichever source owns it. One call, and every
     /// read after it is a plain field -- which is what lets one build loop serve the engine's objects and the
     /// scene database.</summary>
     private static bool Snapshot(in Emit slot, out Emitter e)
@@ -715,10 +653,6 @@ internal static unsafe partial class Particles
         return slot.Part >= 0 && EmitterSim.FillDb(slot.Part, ref e);
     }
 
-    /// <summary>Build the draw order and its groups. Punch-through and additive gather by (texture, cull)
-    /// across the whole screen -- that is the batching AC 4 asks for, and it is legal because neither class
-    /// depends on order. The blended remainder keeps the engine's back-to-front sequence and merges only
-    /// ADJACENT runs, which is the most that can be done without changing what the frame looks like.</summary>
     /// <summary>Can these two staged emitters share a draw? Texture and cull are GL state; emissive is a
     /// uniform, and a uniform that varies inside a draw is one that has to cut it. Exact float compare is
     /// right here -- both values came out of the same parsed record or are both the literal 1.0.</summary>
@@ -726,6 +660,10 @@ internal static unsafe partial class Particles
         => _sTexObj[a] == _sTexObj[b] && _sCull[a] == _sCull[b] && _sEmis[a] == _sEmis[b]
         && _sDb[a] == _sDb[b];
 
+    /// <summary>Build the draw order and its groups. Punch-through and additive gather by (texture, cull)
+    /// across the whole screen, which is legal because neither class depends on order; the blended remainder
+    /// keeps the engine's back-to-front sequence and merges only ADJACENT runs, the most that can be done
+    /// without changing what the frame looks like.</summary>
     private static int Group(int n)
     {
         int g = 0, at = 0;
@@ -790,12 +728,9 @@ internal static unsafe partial class Particles
     // ---- the vertex build -----------------------------------------------------------------------------
 
     /// <summary>The camera-derived bases <c>RenderEmitter</c> computes once per emitter, hoisted to once per
-    /// pass because every term in them is the camera's.
-    /// <para>The quaternion at <c>CurrentCamera+0xbc</c> is stored (w, x, y, z), which is what makes these
-    /// read as the standard rotations of the unit axes: <paramref name="fwd"/> is q(0,0,1),
-    /// <paramref name="axisY"/> is q(0,1,0) and <paramref name="axisX"/> is q(1,0,0). The caller hands the
-    /// pose over rather than a camera pointer, because DB mode has no camera object to read it off.</para>
-    /// </summary>
+    /// pass because every term in them is the camera's. The quaternion at <c>CurrentCamera+0xbc</c> is stored
+    /// (w, x, y, z), which is what makes these the standard rotations of the unit axes. The caller hands the
+    /// pose over rather than a camera pointer, because the database path has no camera object.</summary>
     private static void Basis(in Quaternion c, out Vector3 fwd, out Vector4 q, out Vector3 axisY, out Vector3 axisX)
     {
         float w = c.W, x = c.X, y = c.Y, z = c.Z;
@@ -906,7 +841,7 @@ internal static unsafe partial class Particles
         float sMax = MathF.Max(wStart, hStart);
         if (splat || sx0 != sx1) sMax = MathF.Max(sMax, wEnd);
         if (splat || sy0 != 0f || sy1 != 0f) sMax = MathF.Max(sMax, hEnd);
-        float soft = SoftSuppressed(splat, type) || sMax <= 0f ? 0f : SoftScale / MathF.Min(sMax, 1f);
+        float soft = SoftnessFor(splat, type, sMax);
 
         // the world-Z flip render type 4 stands its quads up with: the engine picks it off the sign of the
         // camera's own Y axis in Z, once per emitter
@@ -1076,13 +1011,8 @@ internal static unsafe partial class Particles
 
     /// <summary>FNV-1a over a record block, eight bytes at a time. The delta's whole change detector: the
     /// engine simulates particles and tells nobody, so "did this emitter move" is a question about its own
-    /// bytes and nothing else.
-    /// <para>It cannot match for an emitter whose billboard basis is the CAMERA's: slots 8..14 carry `right`
-    /// and `up`, and render types 0, 3, 4 and 6 derive them from the camera's axes, so a rotation dirties even
-    /// an emitter whose particles did not move. Left that way deliberately -- measured at 2,1 blocks and about
-    /// 8KB a frame, and the case it would win does not exist, since a settled emitter here is a landed SPLAT
-    /// whose right and up come from the particle's own contact normal and quaternion and already match, while
-    /// the emitters that do re-send are live effects whose particles are moving anyway.</para></summary>
+    /// bytes and nothing else. It cannot match for an emitter whose billboard basis is the CAMERA's, since a
+    /// rotation dirties the stored right and up -- measured at about 8KB a frame, and left that way.</summary>
     private static ulong Fnv(float* f, long floats)
     {
         ulong h = 14695981039346656037UL;
@@ -1092,16 +1022,10 @@ internal static unsafe partial class Particles
         return h;
     }
 
-    /// <summary>#148: this material's <c>fEmissive</c>, or 1.0. Cold -- once per emitter per table slot.
-    /// <para>Both lists, shared first then instance, exactly as <c>AlloyRenderer.ReadMaterial</c> walks
-    /// them: the .mtr's declared values are parsed onto the SHARED material's list, while the instance list
-    /// is merely sized to match and carries defaults, so reading the instance one alone would answer 1.0 for
-    /// every effect this parameter exists for.</para>
-    /// <para>ponytail: an emitter this pass DECLINES draws through the engine and sow-topdata's own
-    /// <c>fsparticle</c>, which knows nothing about this parameter -- so an effect that flips between owned
-    /// and declined flips brightness with it. Rare (declining is a custom shader, a missing texture or a
-    /// fading tile, none of which toggle frame to frame) and not worth a mechanism; named because the
-    /// symptom would otherwise read as a flickering bug.</para></summary>
+    /// <summary>This material's <c>fEmissive</c>, or 1.0. Cold -- once per emitter per table slot. Both
+    /// lists, shared first then instance: the .mtr's declared values are parsed onto the SHARED material's
+    /// list while the instance list is merely sized to match, so reading the instance alone answers 1.0 for
+    /// every effect this parameter exists for. ponytail: a DECLINED emitter draws without it.</summary>
     private static float ReadEmissive(CX.Engine.Material mat)
     {
         if (mat.IsNull) return 1f;
@@ -1139,19 +1063,14 @@ internal static unsafe partial class Particles
 
     /// <summary>Guard on the motion normalisation: a zero-length delta would otherwise divide by zero and
     /// make every corner of the quad NaN, which takes the WHOLE emitter's draw with it rather than one
-    /// particle. Zero instead collapses that one quad to a point -- degenerate, invisible, and harmless.
-    /// <para>That is not a fix for a vanilla defect: the engine's own <c>fast_rsqrt</c> path is degenerate
-    /// at zero too, so a stationary motion-blurred particle is invisible in vanilla as well. The guard is
-    /// here to keep the failure THAT small.</para></summary>
+    /// particle. Zero instead collapses that one quad to a point -- degenerate, invisible, and harmless, and
+    /// the engine's own <c>fast_rsqrt</c> path is degenerate at zero too.</summary>
     private static float Rsqrt(float x) => x > 0f ? 1f / MathF.Sqrt(x) : 0f;
 
     /// <summary>UV-grid animation, including the frame ADVANCE -- which is a WRITE back into the particle
     /// (<c>+0x44</c> frame index, <c>+0x48</c> the age it last stepped at). Owning the vertex build means
     /// owning that write: suppress the engine's draw without it and every animated particle freezes on
-    /// whatever frame it was showing.
-    /// <para>Ascending (start &lt;= end) counts up and wraps back to start past the end; descending counts
-    /// down and wraps past it the other way. Both come straight off the engine's two branches.</para>
-    /// </summary>
+    /// whatever frame it was showing. Both wrap branches come straight off the engine's.</summary>
     private static void Frame(Particle pt, float period, float frameStart, float frameEnd,
                               float du, float dv, int gx, int cells,
                               out float u0, out float u1, out float v0, out float v1)
@@ -1249,15 +1168,10 @@ internal static unsafe partial class Particles
         return true;
     }
 
-    /// <summary>Grow the vertex buffer (and its CPU staging copy) until the frame fits, doubling the way the
-    /// engine's own stream object does. Past the cap the pass stands down for the frame rather than
-    /// truncating -- half an emitter is worse than a vanilla one.</summary>
     /// <summary>The sampler this pass reads every particle diffuse through. Deliberately un-mipmapped:
-    /// every emitter on screen animates through a UV ATLAS (the #148 census reports uvgrid on all of them),
-    /// and a mip level of an atlas averages neighbouring CELLS together -- so the frame a particle is meant
-    /// to be showing gets blended with the frames beside it, along the cell borders, at whatever LOD the
-    /// derivatives ask for. LINEAR without mips is also what makes the texture's completeness irrelevant,
-    /// which is the trap <see cref="GrassField"/> needed two samplers to dodge.</summary>
+    /// every emitter on screen animates through a UV ATLAS, and a mip level of an atlas averages neighbouring
+    /// CELLS together -- so the frame a particle is meant to show gets blended with the frames beside it.
+    /// LINEAR without mips also makes the texture's completeness irrelevant.</summary>
     private static bool EnsureSampler()
     {
         if (_samp != 0) return true;
@@ -1266,10 +1180,9 @@ internal static unsafe partial class Particles
         return _samp != 0;
     }
 
-    /// <summary>#288: build the index-build/sort program. Not an overridable stage -- ADR 0012's table is
-    /// the set a content author can restyle, and there is no look here to restyle. A driver whose loader
-    /// never produced the compute entry points latches <see cref="_csFailed"/> and the CPU path stands in.
-    /// </summary>
+    /// <summary>Build the index-build/sort program. Not an overridable stage -- ADR 0012's table is the set a
+    /// content author can restyle, and there is no look here to restyle. A driver whose loader never produced
+    /// the compute entry points latches <see cref="_csFailed"/> and the CPU path stands in.</summary>
     private static bool EnsureSort()
     {
         if (_csProg != 0) return true;
@@ -1284,20 +1197,15 @@ internal static unsafe partial class Particles
         return true;
     }
 
-    /// <summary>#288: fill the draw-order index list, and order the blended groups back-to-front, on the
-    /// GPU. False means the caller does it on the CPU instead, unsorted -- which is what this pass did
-    /// before the ticket.
-    /// <para><b>The separability guarantee is structural, not arithmetic.</b> One workgroup owns one draw
-    /// group; a draw group is single-class by construction (see <see cref="Group"/>); and the index ranges
-    /// the groups occupy are disjoint and issued in group order. So no dispatch can move a particle out of
-    /// its group, and #131's rule -- that additive and alpha-over do not commute with each other -- is
-    /// preserved by the shape of the dispatch rather than by anything the shader is careful about.</para>
-    /// </summary>
-    /// <summary>#288: may the compute pass reorder this group? The whole of the ordering rule, in one place
+    /// <summary>May the compute pass reorder this group? The whole of the ordering rule, in one place
     /// so that <see cref="SelfCheck"/> pins the SAME predicate <see cref="Order"/> stages rather than a
     /// restatement of it that can drift away from it.</summary>
     private static bool WillSort(int cls, int parts) => cls == ClsBlend && parts > 1 && parts <= SortCap;
 
+    /// <summary>Fill the draw-order index list, and order the blended groups back-to-front, on the GPU.
+    /// False means the caller does it on the CPU instead, unsorted. The separability guarantee is structural:
+    /// one workgroup owns one draw group, a group is single-class by construction, and the groups' index
+    /// ranges are disjoint and issued in group order, so no dispatch can move a particle out of its class.</summary>
     private static bool Order(int groups, Vector3 eye)
     {
         if (!Sort.V || !EnsureSort()) return false;
@@ -1350,12 +1258,10 @@ internal static unsafe partial class Particles
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, binding, buf);
     }
 
-    /// <summary>#261: the persistent record buffer and the per-frame index list. Growth is by doubling and
-    /// a grow REBUILDS the GL store, so every block's hash is void -- <see cref="EnsureBlock"/> is what
-    /// re-sends them, one emitter at a time, on the next frame each is drawn.
-    /// <para>There is no vertex buffer and no vertex format: the stage expands six vertices a particle from
-    /// <c>gl_VertexID</c>, so the VAO is empty and exists only because core profile requires one bound.</para>
-    /// </summary>
+    /// <summary>The persistent record buffer and the per-frame index list. Growth is by doubling and a grow
+    /// REBUILDS the GL store, so every block's hash is void -- <see cref="EnsureBlock"/> re-sends them, one
+    /// emitter at a time, on the next frame each is drawn. There is no vertex buffer and no vertex format:
+    /// the stage expands six vertices a particle, so the VAO is empty and exists only because GL wants one.</summary>
     private static bool EnsureBuffers(int parts)
     {
         if (parts <= 0 || parts > MaxRecs) { if (parts > MaxRecs) _overflow++; return false; }
@@ -1390,13 +1296,10 @@ internal static unsafe partial class Particles
         return _recBuf != 0 && _idxBuf != 0;
     }
 
-    /// <summary>Give this emitter a block big enough for <paramref name="count"/> records, bump-allocated
-    /// and then left alone. Reassignment voids the hash, which is what re-sends the block.
-    /// <para>ponytail: growing an emitter's block LEAKS its old one -- there is no free list, because an
-    /// emitter's particle count is declared in its model and effectively never grows. The allocator's
-    /// backstop is <see cref="ResetBlocks"/>: run out, start over, and pay one frame of vanilla emitters.
-    /// <c>rec-resets=</c> on the period line is the trip-wire; a non-zero rate is when a free list becomes
-    /// worth writing.</para></summary>
+    /// <summary>Give this emitter a block big enough for <paramref name="count"/> records, bump-allocated and
+    /// then left alone; reassignment voids the hash, which is what re-sends the block. ponytail: growing a
+    /// block LEAKS the old one -- an emitter's particle count is declared in its model and effectively never
+    /// grows -- and <see cref="ResetBlocks"/> is the backstop, at one frame of vanilla emitters.</summary>
     private static bool EnsureBlock(ref Emit e, int count)
     {
         if (count <= 0) return false;
@@ -1429,15 +1332,10 @@ internal static unsafe partial class Particles
         _recTop = 0;
     }
 
-    /// <summary>The 4.6 context went away. Every GL NAME this class holds belongs to it, so they are not
-    /// merely unused -- they are stale, and there is nothing to delete because the objects went with the
-    /// context.
-    /// <para>This is separate from <see cref="Forget"/> for a reason with teeth. <c>EnsureProgram</c> returns
-    /// true on <c>_prog != 0</c> and <c>EnsureBuffers</c> on its own caps, so a table-only reset would
-    /// leave both believing they were ready, every GL call in the draw would fail silently, and the
-    /// suppression stamp -- which keys on vertices STAGED, not on vertices drawn -- would go on suppressing
-    /// the engine's own draw. The result is no particles anywhere, for the rest of the process, with nothing
-    /// in the log to say so.</para></summary>
+    /// <summary>The 4.6 context went away: every GL NAME this class holds belongs to it, so they are stale
+    /// and there is nothing to delete. Separate from <see cref="Forget"/> with teeth -- <c>EnsureProgram</c>
+    /// returns true on <c>_prog != 0</c>, so a table-only reset would leave the draw failing silently while
+    /// the suppression stamp (which keys on vertices STAGED) went on declining the engine's own draw.</summary>
     internal static void ContextLost()
     {
         Forget();
@@ -1510,7 +1408,7 @@ internal static unsafe partial class Particles
         return sb.ToString();
     }
 
-    /// <summary>#288: the compute stage's bitonic network, transcribed. It exists ONLY for
+    /// <summary>The compute stage's bitonic network, transcribed. It exists ONLY for
     /// <see cref="SelfCheck"/> -- the shader is the one that runs -- and it is written line for line against
     /// <see cref="ParticleCs"/> so that a change to one and not the other shows up as a failing check
     /// rather than as reordered smoke on somebody's screen.</summary>
@@ -1537,44 +1435,19 @@ internal static unsafe partial class Particles
 
     private static string ParticleCs => ShaderSource.Get("cx_part_c.glsl");
 
-    /// <summary>The vertex stage. Everything the stock <c>vsparticle</c> does is already done by the time a
-    /// vertex exists -- it is <c>VertexColor = vColor; TransformMainCoordinates();</c> and nothing else.
-    /// <para>#261: attributeless. There is no vertex buffer; six vertices a particle are expanded from
-    /// <c>gl_VertexID</c> against the persistent record buffer, through the draw-order index list. The
-    /// corner signs reproduce the CPU build's own winding exactly -- (A, B, C) then (C, B, D), with A/B on
-    /// the NEAR centre and C/D on the far one, which is what makes a motion-blurred streak fade along its
-    /// length rather than across it.</para>
-    /// <para>The hemispherical shading normal moved here with the expansion: it is
-    /// <c>normalize(sx*rn + sy*un + facing)</c>, four CPU normalisations a particle before and one cheap
-    /// vertex expression now. A degenerate quad (a zero half-extent) normalises a zero vector, which is why
-    /// the axes go through a guarded normalise -- the quad has no area either way, but a NaN normal is not
-    /// something to leave to chance.</para>
-    /// <para>No #119 invariant clip expression: particles never enter the depth prepass (two of the three
-    /// classes do not write depth at all), so there is no LEQUAL match to preserve.</para>
-    /// <para>#336: the light rig runs HERE, six times a particle, not once a fragment. A torch's smoke at
-    /// the camera covers the screen more than once over, and the cube taps per fragment were the whole
-    /// 5ms that equipping one cost; a media particle has no detail a per-vertex term loses. The cluster
-    /// lookup takes its screen tile from this vertex's own NDC (CX_CLUSTER_XY) since there is no
-    /// gl_FragCoord to read; the libraries compose between the head and the main.</para></summary>
+    /// <summary>The vertex stage, attributeless: six vertices a particle expanded from <c>gl_VertexID</c>
+    /// against the persistent record buffer, through the draw-order index list, with the CPU build's own
+    /// winding -- (A, B, C) then (C, B, D), near centre then far, so a motion-blurred streak fades along its
+    /// length rather than across it. The light rig runs HERE, per vertex, not per fragment.</summary>
     private static string ParticleVsHead => ShaderSource.Get("cx_part_vhead.glsl");
 
     /// <summary>The vertex main, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
     private static string ParticleVsMain => ShaderSource.Get("cx_part_vmain.glsl");
 
-    /// <summary>The fragment stage, ported from the client's <c>fsparticle</c>: modulate, discard, fog.
-    /// <para>The fog split is the stock one -- an additive fragment cannot be lerped towards the fog colour
-    /// (adding fog colour BRIGHTENS a distant effect), so it loses alpha instead, which is what fading into
-    /// fog means for something that only ever adds. The fog term itself is
-    /// <see cref="AlloyRenderer"/>'s, so the Alloy frame fogs particles the same way it fogs everything
-    /// else.</para>
-    /// <para>#148 adds the soft-particle fade the stock stage has, in the stock stage's own PLACE: after the
-    /// alpha discard, before fog. That ordering is why punch-through needs no special case -- its post-discard
-    /// alpha goes nowhere with blending off, which is exactly vanilla's behaviour.</para>
-    /// <para><b>Noir desaturation</b> is still absent, for the same reason it is absent from every other
-    /// Alloy class -- the Alloy pass does not implement it at all, so particles stay consistent with the
-    /// world around them rather than becoming the one coloured thing in a grey frame.</para>
-    /// <para>No colour-space encode: since #139 the Alloy colour target holds DISPLAY-SPACE values (RGBA16F
-    /// is headroom, not a colour space), so writing what vanilla wrote IS the match.</para></summary>
+    /// <summary>The fragment stage, ported from the client's <c>fsparticle</c>: modulate, discard, soft fade,
+    /// fog. The fog split is the stock one -- an additive fragment cannot be lerped towards the fog colour,
+    /// so it loses alpha instead -- and the soft fade sits where the stock stage puts it, after the discard,
+    /// which is why punch-through needs no special case. The stage writes LINEAR; the resolve encodes.</summary>
     internal static string ParticleFsHead => ShaderSource.Get("cx_part_fhead.glsl");
 
     /// <summary>The body, composed after <see cref="AlloyLights"/>'s three libraries.</summary>

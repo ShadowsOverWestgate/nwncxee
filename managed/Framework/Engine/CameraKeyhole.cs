@@ -9,12 +9,12 @@ namespace CX.Engine;
 /// </summary>
 public readonly unsafe partial struct Camera
 {
-    /// <summary>#330: the aperture plane <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 tests a box against,
+    /// <summary>The aperture plane <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 tests a box against,
     /// as the four floats it reads them as.</summary>
     public Span<float> KeyholePlane => new((void*)(Ptr + EngineLayout.CamKeyholeState + PlaneInBlock), 4);
-    /// <summary>#330: the height cut that follows the plane -- geometry above it never dissolves.</summary>
+    /// <summary>The height cut that follows the plane -- geometry above it never dissolves.</summary>
     public ref float KeyholeCut => ref *(float*)(Ptr + EngineLayout.CamKeyholeState + CutInBlock);
-    /// <summary>#330: the whole block as the 8-byte words a dirty-compare takes it in, rather than as the
+    /// <summary>The whole block as the 8-byte words a dirty-compare takes it in, rather than as the
     /// fields above -- the enable byte and its padding ride along, and comparing more is only more
     /// conservative.</summary>
     public Span<ulong> KeyholeWords => new((void*)(Ptr + EngineLayout.CamKeyholeState), KeyholeWordCount);
@@ -24,7 +24,7 @@ public readonly unsafe partial struct Camera
     /// <summary>Byte offsets INSIDE the keyhole block: the plane starts past the enable byte and its three
     /// bytes of padding (+0x4), the height cut past the plane's four floats (+0x14).</summary>
     private const int PlaneInBlock = 4, CutInBlock = 20;
-    /// <summary>CX-104: the camera's world-space frustum, as the <c>List&lt;Plane&gt;</c> HEAD the engine's own
+    /// <summary>The camera's world-space frustum, as the <c>List&lt;Plane&gt;</c> HEAD the engine's own
     /// <c>GobOutside</c> / <c>PartOutside</c> / <c>BinOutside</c> take by reference. A list head is an address,
     /// not a field load, which is why <see cref="EngineLayout.CamViewVolume"/> is an untyped row and this is a
     /// concept.</summary>

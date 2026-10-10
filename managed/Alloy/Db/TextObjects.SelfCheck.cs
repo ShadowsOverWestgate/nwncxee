@@ -5,7 +5,7 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-119: the layout port, checked against hand arithmetic. Pure logic -- no engine, no GL -- so
+/// <summary>The layout port, checked against hand arithmetic. Pure logic -- no engine, no GL -- so
 /// <c>run-demo.sh</c> runs all of it. Two kinds of case: synthetic metrics chosen so every expected number is
 /// exact, and a GOLDEN case on the real shipped metrics of <c>fnt_galahad14</c> whose expected positions are
 /// derived by hand from its <c>.txi</c>.</summary>
@@ -215,7 +215,7 @@ public static class TextObjectsSelfCheck
           "a wrapped continuation line inherits the state but NOT the colour index");
     }
 
-    /// <summary>CX-120: a build never writes the list an issuer may be walking. The issuer takes
+    /// <summary>A build never writes the list an issuer may be walking. The issuer takes
     /// <see cref="TextDoc.PublishedQuads"/> in one reference read, so what this asserts is that the reference
     /// it holds stays whole across the next build -- and that a SECOND build inside one frame takes a fresh
     /// list rather than recycling the one this frame already published.</summary>
@@ -295,11 +295,10 @@ public static class TextObjectsSelfCheck
         c.Expect(Near(TextObjects.CaretAlpha(1000), 1f), "with a one-second period");
     }
 
-    /// <summary>CX-120: the click that picks a list ROW. A GUI list is ONE text gob whose rows are its LINES,
-    /// and the game answers a click on the list control by handing <c>StringGob::MoveCaretTo</c> @0x4926d0 the
-    /// hit point IN WORLD SPACE -- the slot's own first statement is the transform into the string's frame.
-    /// Taking the argument as already-local clamped every click to the first line, which is the whole of
-    /// "clicking a list row selects the wrong row".</summary>
+    /// <summary>The click that picks a list ROW. A GUI list is ONE text gob whose rows are its LINES, and the
+    /// game answers a click on the list control by handing <c>StringGob::MoveCaretTo</c> @0x4926d0 the hit
+    /// point IN WORLD SPACE -- the slot's first statement is the transform into the string's frame. Taking the
+    /// argument as already-local clamps every click to the first line.</summary>
     private static void ListRowClick(Checker c)
     {
         TextFont f = Synthetic();
@@ -540,8 +539,9 @@ public static class TextObjectsSelfCheck
                                  out float u1, out float v1, out float z1);
         c.Expect(Near(u0, 9.5f / 256f) && Near(u1, 19.5f / 256f),
           "the u range is (x0 - 0.5) .. (x1 + 1.5), one padding texel each side");
-        c.Expect(Near(v0, (2f - (-9f + 11f - 0.5f)) / 32f), "ul.v lifts the box by the glyph's y offset and the baseline");
-        c.Expect(Near(v1, (14f - 11f - 3f + 0.5f + 14f) / 32f), "lr.v drops it to the full line box");
+        // (2 - (-9 + 11 - 0.5)) / 32 and (14 - 11 - 3 + 0.5 + 14) / 32, worked out by hand.
+        c.Expect(Near(v0, 0.015625f), "ul.v lifts the box by the glyph's y offset and the baseline");
+        c.Expect(Near(v1, 0.453125f), "lr.v drops it to the full line box");
         c.Expect(Near(z0, 1f / 256f) && Near(z1, 9.25f / 256f), "ul.z is the left bearing and lr.z the advance, in u");
 
         // --- the outline filter (CAuroraTTFTexture::EnhanceCharacter @0x1132810) ---

@@ -133,11 +133,10 @@ public abstract class Knob
 }
 
 /// <summary>
-/// The typed knob, and the storage: a feature reads <c>Grass.Density.V</c> where it read a private field,
-/// which is a plain field read and hot-path safe. <c>Boot</c> is bound at construction and never moves; a
-/// Restart reader reads that. Built-in <typeparamref name="T"/>: <c>bool</c>, <c>int</c>, <c>float</c>,
-/// <c>string</c>, <c>uint</c> (swatch, <c>rrggbbaa</c>), <see cref="TextList"/> (list); any other T supplies a
-/// format/parse pair.
+/// The typed knob, and the storage: a feature reads <c>Grass.Density.V</c> as a plain field read, so it is
+/// hot-path safe. <c>Boot</c> is bound at construction and never moves, which is what a Restart-effect reader
+/// reads. Built-in <typeparamref name="T"/>: <c>bool</c>, <c>int</c>, <c>float</c>, <c>string</c>, <c>uint</c>
+/// (swatch, <c>rrggbbaa</c>) and <see cref="TextList"/>; any other T supplies a format/parse pair.
 /// </summary>
 public sealed class Knob<T> : Knob
 {

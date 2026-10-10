@@ -7,27 +7,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52 step 5: texture streaming, for putting the player in sooner rather than for VRAM. The engine
-/// builds textures one frame after it asks for them: <c>AurTextureGet</c> appends to <c>RefreshTextures</c> and
-/// <c>AurTextureBuildAndStoreAll</c> @0x48e680 drains the whole queue at every <c>AurTextureMakeCurrent</c>
-/// @0x48f560 -- the top of <c>Scene::Render</c>, and every <c>UpdateScreen</c> tick.
-/// <para>CX-54 corrects what this said: <c>LoadArea</c> @0x70e010 does NOT drain. It calls
-/// <c>AurTextureSuspendUpdates</c> @0x486af0 ahead of its tile loop and <c>AurTextureResumeUpdates</c> @0x486b00
-/// only after <c>LoadBorder</c>, and <c>AurTextureMakeCurrent</c> returns after <c>texcurrentframe++</c> while
-/// <c>g_bIsSuspended</c> is set. So no texture is read, decoded or uploaded inside <c>LoadArea</c>, its own
-/// <c>UpdateScreen</c> ticks included; the whole area's queue drains at the first <c>MakeCurrent</c> after it
-/// returns -- <c>Scene::Render</c> and the <c>UpdateScreen</c> ticks of
-/// <c>HandleServerToPlayerUpdate_WorkRemaining</c> -- which is still before the AreaLoaded send, so the builds
-/// are on the load's critical path all the same. Here the drain is spread: <see cref="BudgetMs"/> is what each
-/// segment of a transition may spend on it, and <see cref="Drain"/> is what waits and what never does.</para>
-/// <para>Leaving entries queued is the engine's own state stretched: <c>~CAurTextureBasic</c> removes itself from
-/// the queue, <c>Material::GetIsOpaque</c> @0x4c6190 does not memo an answer for an unbuilt texture, and Alloy
-/// draws an unbuilt diffuse on the white stand-in (<see cref="OwnedTextures.WhiteTid"/>). What would stick is
-/// Alloy's own: a part enrolled against an unbuilt diffuse would keep the class it got then -- CX-54 classes it
-/// opaque instead (<c>AlloyCensus</c>: the stand-in carries no alpha to test) and <see cref="Landed"/> re-enrols
-/// it when the real one lands -- and a map slot recorded unbuilt drops out of the mask (the draw loop keeps it
-/// stale).</para>
-/// <para>The <c>[load]</c> line times every transition whether streaming is on or off, which is the A/B.</para></summary>
+/// <summary>
+/// Texture streaming -- for putting the player in sooner, not for VRAM. The engine builds a texture the frame
+/// after it is asked for: <c>AurTextureGet</c> appends to <c>RefreshTextures</c> and
+/// <c>AurTextureBuildAndStoreAll</c> drains the whole queue at every <c>AurTextureMakeCurrent</c> (the top of
+/// <c>Scene::Render</c>, every <c>UpdateScreen</c> tick), all of it ahead of the AreaLoaded send. Here it spreads.
+/// </summary>
 internal static unsafe class TexStream
 {
     private static ExtenderLog? _log;
@@ -48,8 +33,8 @@ internal static unsafe class TexStream
     private const int SentPriority = 100;
     /// <summary>Inside it: sees only the send that actually leaves, the one that places the player.</summary>
     private const int PlacedPriority = -10;
-    /// <summary>CX-56: <c>LoadArea</c> is shared now -- <see cref="LightmapBake"/> chains it for the static
-    /// set's close -- so this one is a chain too, outermost, keeping the load's timing the whole call.</summary>
+    /// <summary><c>LoadArea</c> is shared with <see cref="LightmapBake"/>, so this one chains, outermost: the
+    /// load's timing then spans the whole call.</summary>
     private const int LoadAreaPriority = 50;
 
     /// <summary>Every hook took: the queue is ours to spread and the transitions ours to time.</summary>
@@ -110,19 +95,10 @@ internal static unsafe class TexStream
                 FrameZones.Ticks(FrameZones.Zone.Tex) - u0);
     }
 
-    /// <summary>What a drain may spend building world textures. Zero inside <c>LoadArea</c> (the engine
-    /// suspends its own builds there anyway) and zero under the lightmap hold, which CX-54 measured as the
-    /// one thing between the AreaLoaded send and the player being placed: work moved into the hold is not
-    /// saved, it is paid at a worse rate, because the hold is a per-frame drain clock and every millisecond
-    /// spent building stretches it. <see cref="LoadingMs"/> covers the segment to the send (the engine's
-    /// own critical path, where spreading the drain is the win), the knob covers a placed player.
-    /// <para>The engine's drain still runs every time: <see cref="Drain"/> builds every entry no world
-    /// material asked for -- the 2D GUI, fonts, portraits, the loading screen itself -- whatever the budget,
-    /// and hands the engine's own <c>BuildAndStoreAll</c> one entry so its bookkeeping (the
-    /// <c>m_StaticTextureList</c> sort and the <c>TextureIndices</c> rebuild) keeps running: that function
-    /// returns at once on an EMPTY queue (Ghidra @0x48e680, the <c>count == 0</c> branch), so the
-    /// bookkeeping cannot be had without handing it something. World textures therefore drip at one per
-    /// drain under the hold instead of twelve milliseconds' worth, and the rest wait for placement.</para></summary>
+    /// <summary>What a drain may spend building world textures. Zero inside <c>LoadArea</c> (the engine suspends
+    /// its own builds there anyway) and zero under the lightmap hold, which is itself a per-frame drain clock: a
+    /// millisecond spent building there stretches the hold, so the work is paid at a worse rate, not saved.
+    /// <see cref="LoadingMs"/> covers the segment to the AreaLoaded send, the knob a placed player.</summary>
     private static int BudgetMs => _inLoadArea || LightmapBake.Held ? 0
                                  : _t.Active && _t.Placed == 0 ? LoadingMs : Renderer.TexStream.V;
 
@@ -131,17 +107,10 @@ internal static unsafe class TexStream
     private static bool IsWorld(IntPtr basic) => _world.Contains(basic);
     private static void OrigDrain() => _origDrain();
 
-    /// <summary>One drain under a deadline. Only an entry <paramref name="deferrable"/> answers yes for may wait; every
-    /// other entry (the 2D GUI, fonts, portraits, anything not requested by a world material) is built this drain,
-    /// as the engine would. Deferrable ones go newest first off the tail (the engine's own order) while the clock
-    /// is short of <paramref name="deadline"/>. Then every entry but one is set aside -- the last non-deferrable
-    /// if there is one, else the OLDEST -- and the engine's drain runs on it: it builds it, zeroes the count and
-    /// does its bookkeeping (the <c>m_StaticTextureList</c> sort, <c>TextureIndices</c>) for everything built here;
-    /// the rest go back in order. So every drain builds at least one, and the oldest entry never starves. An entry
-    /// the engine would skip (<see cref="CAurTextureBasic.FlagNoDrain"/>) is dropped unbuilt, as its drain drops it.
-    /// Returns the builds, negated when the queue was past <paramref name="hold"/> and drained whole.
-    /// <para>Safe to set entries aside across a build: a build appends (a TXI's bump map) but frees no texture, and
-    /// appends made during the engine's call are dropped by its count reset exactly as they are without us.</para></summary>
+    /// <summary>One drain under a deadline: a non-<paramref name="deferrable"/> entry is built at once, as the
+    /// engine would; deferrable ones go newest first off the tail while the clock is short of
+    /// <paramref name="deadline"/>. One entry is left for <paramref name="engineDrain"/>, which returns at once on
+    /// an EMPTY queue -- its bookkeeping needs something; the oldest never starves. Negated: drained whole.</summary>
     internal static int Drain(EngineList q, long deadline, delegate*<long> clock, delegate*<IntPtr, bool> deferrable,
                               delegate*<IntPtr, void> build, delegate*<void> engineDrain, IntPtr[] hold)
     {
@@ -192,7 +161,7 @@ internal static unsafe class TexStream
         return n;
     }
 
-    /// <summary>A texture the unbuilt-texture drips (<see cref="OwnedTextures"/> prefetch and #284 rebuild) just built
+    /// <summary>A texture the unbuilt-texture drips (<see cref="OwnedTextures"/> prefetch and rebuild) just built
     /// out of turn: out of the queue, so the drain does not build it twice. Cold -- a few a frame.</summary>
     internal static void Dequeue(IntPtr basic)
     {
@@ -238,11 +207,9 @@ internal static unsafe class TexStream
     /// <summary>Per segment of <see cref="_t"/> (<see cref="Segment"/>): the drain's ticks and builds.</summary>
     private static readonly long[] _ticks = new long[4];
     private static readonly int[] _builds = new int[4];
-    /// <summary>CX-54 step 0: the same drains split into the three halves of a build -- the file read
-    /// (<see cref="FrameZones.Zone.TexRead"/>), the decode (<see cref="FrameZones.Zone.TexDecode"/>) and the
-    /// GL upload (<see cref="FrameZones.Zone.Tex"/>, the engine's upload funnel). Sampled as zone deltas
-    /// across the drain, so what they miss is what <see cref="_ticks"/> holds and they do not: the engine's
-    /// own bookkeeping between builds.</summary>
+    /// <summary>The same drains split into the three halves of a build: file read, decode, GL upload. Sampled as
+    /// <see cref="FrameZones"/> deltas across the drain, so what they miss is what <see cref="_ticks"/> holds and
+    /// they do not -- the engine's own bookkeeping between builds.</summary>
     private static readonly long[] _read = new long[4], _decode = new long[4], _upload = new long[4];
     private static bool _inLoadArea;
 
@@ -275,7 +242,7 @@ internal static unsafe class TexStream
         _t.DemMdl = CX.Services.Perf.EngineZonesService.DemandMdlTicks - mdl0;
         _t.DemOther = CX.Services.Perf.EngineZonesService.DemandOtherTicks - other0;
         _t.DemCalls = CX.Services.Perf.EngineZonesService.DemandCalls - calls0;
-        ModelLoad.OnLoadAreaEnd(area, ok != 0);   // CX-56: every peek has run, so the area key is foldable
+        ModelLoad.OnLoadAreaEnd(area, ok != 0);   // every peek has run, so the area key is foldable
         if (ok == 0) { _t.Failed = true; Report("LoadArea failed"); }
         return ok;
     }
@@ -303,9 +270,9 @@ internal static unsafe class TexStream
     internal static bool InTransition => _t.Active;
 
     /// <summary>A frame nobody is waiting on: outside <c>LoadArea</c>, outside the lightmap hold, and either no
-    /// transition open or the player already placed. The same gate <see cref="BudgetMs"/> spends its budget
-    /// behind, and where CX-55's model compiles run -- a compile inside <c>LoadArea</c> or under the hold is
-    /// paid straight out of the load the cache exists to shorten.</summary>
+    /// transition open or the player already placed. The gate <see cref="BudgetMs"/> spends its budget behind, and
+    /// where model compiles run -- one inside <c>LoadArea</c> or under the hold is paid straight out of the load
+    /// the cache exists to shorten.</summary>
     internal static bool ColdPoint => !_inLoadArea && !LightmapBake.Held && (!_t.Active || _t.Placed != 0);
 
     /// <summary>The segment a drain now belongs to: inside LoadArea, to the send, under the hold, after placement.</summary>
@@ -348,7 +315,6 @@ internal static unsafe class TexStream
         line += $" | streaming {(On ? $"on, {Renderer.TexStream.V} ms/frame (to the send {LoadingMs}, under the hold 0)" : "off")}{(cut != null ? $" -- cut short: {cut}" : "")}";
         string src = ResSources.Line();
         if (src.Length > 0) line += $" | {src}";
-        // CX-55 step 0: what loaded AFTER LoadArea returned -- the object spawns between it and placement.
         string after = CX.Services.Perf.ModelZonesService.AfterClause();
         if (after.Length > 0) line += $" | after LoadArea {after}";
         _log?.Info(line);
@@ -367,8 +333,9 @@ internal static unsafe class TexStream
     private static long _reenrolled, _landedDropped;
 
     /// <summary>The staging walk saw part-table entry <paramref name="e"/> swap the white stand-in for its real
-    /// diffuse: its class was decided against the unbuilt texture, so it re-enrols on the next <see cref="Tick"/>.
-    /// Stage workers call this, so it only appends an int; nothing is dereferenced, then or later.</summary>
+    /// diffuse: an unbuilt diffuse draws on the stand-in and is classed opaque (no alpha to test), so the part
+    /// re-enrols on the next <see cref="Tick"/>. Stage workers call this: it only appends an int, dereferencing
+    /// nothing, then or later.</summary>
     internal static void Landed(int e)
     {
         int k = System.Threading.Interlocked.Increment(ref _landedN) - 1;
@@ -417,8 +384,8 @@ internal static unsafe class TexStream
         IntPtr T(int i) => (IntPtr)(texs + i * obj);   // the queue array is rewritten in place, so compare against these
         for (int i = 0; i < n; i++) { items[i] = T(i); *(byte*)T(i) = (byte)(i == 1 || i == 5 ? 0 : 1); }   // byte 0 = world
         new CAurTextureBasic(T(3)).FlagNoDrain = 1;
-        *(IntPtr*)(head + EngineLayout.ListItems) = (IntPtr)items;
         _fakeQ = new EngineList((IntPtr)head);
+        _fakeQ.Items = (IntPtr)items;
         _fakeQ.Count = n;
         _fakeBuilt = built; _fakeBuiltN = 0; _fakeClock = 0;
         var hold = new IntPtr[8];

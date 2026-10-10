@@ -38,10 +38,6 @@ internal static unsafe partial class Particles
         check.Expect(MathF.Abs(id.X - h) < 1e-6f && MathF.Abs(id.W - h) < 1e-6f,
           "a zero roll composes to the camera quaternion unchanged");
 
-        // ---- the interpolation domain. The short at +0x1d4 is the whole difference between "fade over the
-        // particle's life" and "fade along the emitter's array", and reading it as an int inverts it.
-        check.Expect(1f / 8 * 4 == 0.5f, "index-domain t is i/count");
-
         // ---- the UV grid, including the wrap in both directions.
         var pt = stackalloc byte[0x80];
         for (int i = 0; i < 0x80; i++) pt[i] = 0;
@@ -92,16 +88,20 @@ internal static unsafe partial class Particles
         // silently vanishes rather than standing still.
         check.Expect(Rsqrt(0f) == 0f && Rsqrt(4f) == 0.5f, "a stationary motion-blurred particle normalises to zero, not NaN");
 
-        // ---- #148's softness curve. The two engine branches meet at S = 1, and the collapsed form has to
-        // agree with both of them or every quad either never softens or softens over its whole length.
-        static float SoftCurve(float sMax) => SoftScale / MathF.Min(sMax, 1f);
-        check.Expect(SoftCurve(0.5f) == 1f / (0.2f * 0.5f), "below S = 1 the curve is the engine's 1/(0.2*S)");
-        check.Expect(SoftCurve(4f) == 5f && SoftCurve(1f) == 5f, "at and above S = 1 it is the engine's flat 5.0");
-        check.Expect(1f / SoftCurve(0.5f) == 0.1f && 1f / SoftCurve(2f) == 0.2f,
+        // ---- #148's softness curve, through the stage's own SoftnessFor. The two engine branches meet at
+        // S = 1, and the collapsed form has to agree with both of them or every quad either never softens
+        // or softens over its whole length. The expectations are the engine's two branches written out by
+        // hand: 1/(0.2*S) below S = 1, a flat 5.0 at and above it.
+        check.Expect(SoftnessFor(false, 0, 0.5f) == 1f / (0.2f * 0.5f),
+          "below S = 1 the curve is the engine's 1/(0.2*S)");
+        check.Expect(SoftnessFor(false, 0, 4f) == 5f && SoftnessFor(false, 0, 1f) == 5f,
+          "at and above S = 1 it is the engine's flat 5.0");
+        check.Expect(1f / SoftnessFor(false, 0, 0.5f) == 0.1f && 1f / SoftnessFor(false, 0, 2f) == 0.2f,
           "...which is a fade distance that grows with the quad and caps at 0.2 world units");
-        check.Expect(SoftSuppressed(true, 0) && SoftSuppressed(false, 1) && SoftSuppressed(false, 2)
-          && !SoftSuppressed(false, 0) && !SoftSuppressed(false, 6),
-          "splats and render types 1 and 2 suppress softness; nothing else does");
+        check.Expect(SoftnessFor(true, 0, 1f) == 0f && SoftnessFor(false, 1, 1f) == 0f
+          && SoftnessFor(false, 2, 1f) == 0f && SoftnessFor(false, 0, 1f) != 0f
+          && SoftnessFor(false, 6, 1f) != 0f && SoftnessFor(false, 0, 0f) == 0f,
+          "splats, render types 1 and 2 and a zero-extent emitter soften not at all; nothing else is exempt");
         check.Expect(Norm(Vector3.Zero) == Vector3.Zero, "a degenerate axis normalises to zero rather than to NaN");
         // #261: the corner table, which is the CPU winding this stage replaced. A/B ride the NEAR centre
         // and C/D the far one -- get that pairing backwards and a motion-blurred streak fades across itself
@@ -170,7 +170,11 @@ internal static unsafe partial class Particles
         check.Expect(ParticleCs.Contains("0x80000000u") && SortFlag == 0x80000000u && MaxRecs < SortFlag,
           "the sort flag rides a bit the particle count can never reach");
 
-        // #131's ordering rule rests on exactly two things: groups are single-class, and their ranges disjoint
+        // #131's ordering rule rests on exactly two things: groups are single-class, and their ranges
+        // disjoint. Staged on the batching path: particles.batch=0 walks the capture order instead, so the
+        // player's dial would otherwise decide whether these assertions run at all.
+        bool batch0 = Batch.Boot;
+        Batch.Boot = true;
         int[] cls0 = { ClsAdd, ClsBlend, ClsPunch, ClsBlend, ClsAdd, ClsPunch };
         for (int i = 0; i < cls0.Length; i++)
         {
@@ -192,7 +196,7 @@ internal static unsafe partial class Particles
             if (_gFirst[gi] != placed) partition = false;
             placed += _gCount[gi];
             if (WillSort(_gCls[gi], gp) && _gCls[gi] != ClsBlend) flagged = false;
-            if (Batch.Boot && _gCls[gi] < prevCls) monotone = false;
+            if (_gCls[gi] < prevCls) monotone = false;
             prevCls = _gCls[gi];
             cur += gp;
         }
@@ -205,7 +209,8 @@ internal static unsafe partial class Particles
           && !WillSort(ClsBlend, 1) && !WillSort(ClsBlend, SortCap + 1),
           "only an alpha-blended group is ever reordered, and only up to the shared-memory cap -- "
           + "additive and punch-through keep their issue order, which is #131's whole ordering rule");
-        check.Expect(!Batch.Boot || monotone, "the groups come out class-major: punch, then blended, then additive");
+        check.Expect(monotone, "the groups come out class-major: punch, then blended, then additive");
+        Batch.Boot = batch0;
         _drawN = 0; _orderN = 0;
         Array.Clear(_wrote, 0, cls0.Length);
 

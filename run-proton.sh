@@ -5,7 +5,7 @@
 # Proton setting or the depot. Log: build/proton-pfx/pfx/drive_c/users/steamuser/Documents/Neverwinter Nights/cx.log
 set -e
 cd "$(dirname "$0")"
-GAME="${NWN_WIN:-~/gry/steam/Neverwinter Nights/bin/win32}"
+GAME="${NWN_WIN:-$(dirname "$(python3 tools/paths.py NWN_WIN_EXE)")}"
 PROTON="${PROTON:-$HOME/.steam/root/steamapps/common/Proton - Experimental/proton}"
 [ -f "$GAME/nwmain.exe" ] || { echo "!! no nwmain.exe under $GAME (set NWN_WIN)" >&2; exit 1; }
 [ -f "$PROTON" ] || { echo "!! no proton at $PROTON (set PROTON)" >&2; exit 1; }

@@ -5,37 +5,17 @@ using CX.Engine;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-106: the two pieces of the engine's key sampler the scene database still runs on --
-/// <c>NewController::GetKeyIndexAndAlpha</c> @0x4980e0 and <c>slerp</c> @0x5b6500.
-/// <para>CX-188: the SAMPLERS are gone. <c>Float</c>/<c>Vector</c>/<c>Turn</c>/<c>Control</c> read a
-/// <c>NewController</c> record off a live <c>MdlNode</c> and blended the result into a <c>Part</c> field, and
-/// their only callers were <c>AnimHierarchy.Control</c> -- itself unreachable, the engine part-tree walk --
-/// and <c>EmitterSim.Keyed</c>, a self-recursive orphan. <c>DbAnim.Pose</c> samples the database's own
-/// <c>ControllerTrack</c> arrays and calls the two below.</para>
+/// The two pieces of the engine's key sampler <c>DbAnim.Pose</c> runs on:
+/// <c>NewController::GetKeyIndexAndAlpha</c> @0x4980e0 and <c>slerp</c> @0x5b6500. Allocation-free.
+/// <para>The key SEARCH diverges on purpose -- binary where the engine scans from index 1 on every sample --
+/// and is identical by construction; <c>AnimMathCheck</c> proves it against the engine's own loop.</para>
 /// </summary>
-/// <remarks>
-/// <para><b>The key SEARCH is an intentional divergence.</b> The engine scans key times from index 1 upward
-/// on every sample, so a 40-key track costs 40 compares per part per controller per run per frame. This
-/// binary-searches instead. The result is identical by construction -- both answer "the smallest index whose
-/// key time is at or after <c>t</c>" -- and <c>AnimMathCheck</c> proves it against a transcription of the
-/// engine's own loop over random tracks. A cursor would have been cheaper still and is wrong:
-/// <c>NewController</c> records live on the <c>MdlNode</c>, which every instance of a model shares, so there
-/// is no per-instance place to keep one.</para>
-/// <para>Allocation-free.</para>
-/// </remarks>
 internal static unsafe class AnimKeys
 {
-    /// <summary>
-    /// <c>NewController::GetKeyIndexAndAlpha</c>: <paramref name="idx"/> is 0 at or before the first key,
-    /// <paramref name="n"/> past the last, and otherwise the index whose key time first reaches
-    /// <paramref name="t"/>, with <paramref name="alpha"/> the position inside
-    /// <c>[times[idx-1], times[idx]]</c>. Binary search where the engine scans; same answer.
-    /// </summary>
-    /// <remarks>Premise: <paramref name="times"/> is non-decreasing. Every MDL key track is authored that
-    /// way and the engine's own alpha is garbage otherwise, but the engine SCANS and so still answers "the
-    /// first key at or past <paramref name="t"/>" on an unsorted track where this search need not. Checking
-    /// per sample would cost exactly what the search saves; the place to check, if it is ever worth it, is
-    /// once at model load.</remarks>
+    /// <summary><c>NewController::GetKeyIndexAndAlpha</c>: <paramref name="idx"/> is 0 at or before the first
+    /// key, <paramref name="n"/> past the last, else the first index whose key time reaches
+    /// <paramref name="t"/>; <paramref name="alpha"/> is the position inside <c>[times[idx-1], times[idx]]</c>.</summary>
+    /// <remarks>Premise: non-decreasing <paramref name="times"/>, which the engine's scan does not need.</remarks>
     internal static void Key(float* times, int n, float t, out int idx, out float alpha)
     {
         alpha = 1f;

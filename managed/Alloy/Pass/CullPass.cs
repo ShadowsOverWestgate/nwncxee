@@ -6,39 +6,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// Alloy's own visibility (ADR 0017 step 3, #243): a compute dispatch over the per-draw list that tests each
-/// draw's world bounding sphere against this pass's frustum (and, for the colour pass, a hi-Z pyramid),
-/// compacts the survivors into an indirect command buffer and writes a per-batch count. Submission is
-/// <c>glMultiDrawElementsIndirectCount</c>, so the count never comes back to the CPU.
-/// <para><b>Same-frame for the colour pass; two-phase for the prepass.</b> The pyramid is built from the depth
-/// prepass INSIDE the frame that consumes it, and the colour dispatch tests against that fresh pyramid -- a
-/// pyramid one frame stale pops silhouettes. The prepass dispatch is TWO phases: phase one tests each draw
-/// against the PREVIOUS pass's pyramid in that pyramid's own clip space (exact for anything that did not
-/// move) and marks every draw the stale pyramid rejected; the prepass draws the survivors, the pyramid is
-/// rebuilt, and phase two re-tests ONLY the marked draws against the fresh pyramid. A wrong stale rejection
-/// is corrected in the same frame; a draw the frustum, the LOD or the fog dropped is not marked, because
-/// those verdicts were same-frame already (#489).</para>
-/// <para>What the prepass leaves out (cutouts, discarding classes, everything the engine still draws) only
-/// leaves the pyramid holding the FARTHER depth behind them, and a farther max culls less. The test is
-/// <c>objectNear &gt; maxSceneDepth</c>, so anything that LOWERS the max culls MORE: over-covering the sampled
-/// region is safe, under-covering it is the bug.</para>
-/// <para>LOD selection rides the same dispatch (<see cref="LodPx"/>): the batch walk stages the six-uint
-/// record where it already stages the draw's count, offset and base, and this class uploads it. What is left
-/// on the CPU is the batch CUT alone, whose keys are engine pointers read during revalidation (#287).</para>
-/// <para><b>Two kinds of batch.</b> Below <c>compactBelow</c> a batch COMPACTS: an <c>atomicAdd</c> appends
-/// survivors in hardware order, sound for the opaque range because its draws are order-independent. At and
-/// above it a batch is SORTED: the first dispatch measures each survivor's squared distance from the eye, a
-/// second gives it its slot by counting how many survivors of the same batch are farther (<see cref="SortCs"/>).
-/// The key is the float distance from the bounding sphere already resident in the SSBO (no quantised ties
-/// between coplanar surfaces), the tie-break is the staged index (equal-distance draws hold their enrollment
-/// order frame to frame), and the per-draw alpha multiplier rides the RECORD, which the permutation names
-/// through <c>uOut</c> rather than reorders (#290).</para>
-/// <para>Cutout batches blend and ride the COMPACTING side, so overlapping cutouts can composite in a
-/// different order frame to frame. Named rather than hidden: they depth-write with a discard, so the visible
-/// consequence is at most a shimmer where two graded edges overlap; <c>/alloy cull 0</c> is the A/B.</para>
-/// <para>Stands down whole when 4.6 indirect-count or compute is missing, when the programs fail to build, or
-/// when the knob is off -- and standing down means the caller's existing <c>BaseVertex</c> submission. A cull
-/// that cannot run must never mean an empty world.</para>
+/// Alloy's own visibility (ADR 0017): a compute dispatch tests each draw's world bounding sphere against this
+/// pass's frustum and, for the colour pass, a hi-Z pyramid; survivors compact into an indirect command buffer
+/// with a per-batch count, submitted so no count comes back to the CPU. Standing down means the caller's
+/// existing <c>BaseVertex</c> submission -- a cull that cannot run must never mean an empty world.
 /// </summary>
 internal static unsafe class CullPass
 {
@@ -51,36 +22,40 @@ internal static unsafe class CullPass
 
     /// <summary>Uints per source record: index count, first index, base vertex, record slot, batch, and the
     /// batch's output base. Six rather than five because the batch's start offset is what turns an
-    /// <c>atomicAdd</c> into an output index without a second buffer to look it up in.
-    /// <para>#287: STAGED BY THE CALLER, at the one site that already writes the same draw's
-    /// <c>_dCount/_dOff/_dBase/_dSlot</c>. This class used to rebuild it in a second walk of its own every
-    /// pass, which was the CPU half of "which draws exist" the ticket names; the batch and its output base
-    /// are known at that store (the cut has just placed the draw), so the rebuild folds into it at no
-    /// loop.</para></summary>
+    /// <c>atomicAdd</c> into an output index without a second buffer to look it up in. STAGED BY THE CALLER,
+    /// at the one site that already writes the same draw's count, offset, base and slot.</summary>
     internal const int SrcUints = 6;
     /// <summary>Uints per <c>DrawElementsIndirectCommand</c>: count, instanceCount, firstIndex, baseVertex,
     /// baseInstance. Fixed by GL, and the stride the draw calls pass.</summary>
     internal const int CmdUints = 5;
 
+    /// <summary>Do both compute stages stride the source list by <see cref="SrcUints"/>? The stride is a
+    /// layout shared with GLSL, so the shader text is what says whether the two halves still agree -- a drift
+    /// reads every draw out of its neighbour's record, silently.</summary>
+    internal static bool SourceStrideSafe()
+        => CullCs.Contains($"uint b = i * {SrcUints}u;")
+        && SortCs.Contains($"uint b = i * {SrcUints}u;")
+        && SortCs.Contains($"uSrc[j * {SrcUints}u + 4u] != batch");
+
     /// <summary>Compute workgroup size; the dispatch is 1D over draws.</summary>
     private const int GroupSize = 64;
 
     /// <summary>The three dispatch phases, and the three output sets they fill. <see cref="PhaseRetest"/> is
-    /// #489's second prepass phase: its own set, because <c>MultiDrawElementsIndirectCount</c> takes a CPU
-    /// byte offset for the start and phase one's count never comes back to say where its survivors end.</summary>
+    /// the prepass's second phase, with a set of its own because <c>MultiDrawElementsIndirectCount</c> takes a
+    /// CPU byte offset for the start and phase one's count never comes back to say where its survivors end.</summary>
     internal const int PhasePrepass = 0, PhaseColour = 1, PhaseRetest = 2;
-    /// <summary>CX-51: the planar reflection's mirrored draw -- frustum, size and plane only, never sampled.</summary>
+    /// <summary>The planar reflection's mirrored draw -- frustum, size and plane only, never sampled.</summary>
     internal const int PhaseMirror = 3;
     private const int Phases = 4;
     /// <summary>The shader's <c>uRej</c> mode per phase: the colour phase ignores the verdict buffer, phase
     /// one WRITES it, phase two READS it and tests only the marked draws.</summary>
     private const int RejOff = 0, RejWrite = 1, RejRead = 2;
 
-    /// <summary>#489: run the prepass's second phase (<c>/alloy retest</c>). Off = phase one tests the
-    /// frustum alone, exactly the pre-#489 prepass, which is the before half of the ticket's measurement.</summary>
+    /// <summary>Run the prepass's second phase (<c>/alloy retest</c>). Off = phase one tests the frustum
+    /// alone, which is the before half of the measurement.</summary>
     internal static bool Retest => Renderer.Retest.V;
     internal const bool DefRetest = true;
-    /// <summary>#489: phase one of this pass tested against a stale pyramid, so it may have marked rejects
+    /// <summary>Phase one of this pass tested against a stale pyramid, so it may have marked rejects
     /// and phase two has something to re-test. False when there was no pyramid to reproject (first pass,
     /// after <see cref="Revoke"/>, after a resize) -- phase one was frustum-only and marked nothing.</summary>
     internal static bool RetestPending;
@@ -94,7 +69,7 @@ internal static unsafe class CullPass
     private static int _hSrc, _hLevel;
 
     private static uint _sphBuf, _keyBuf, _rejBuf;
-    /// <summary>CX-45: the source list as <see cref="Begin"/> streamed it; the dispatches of the same pass rebind it.</summary>
+    /// <summary>The source list as <see cref="Begin"/> streamed it; the dispatches of the same pass rebind it.</summary>
     private static StreamRing.Range _src;
     private static readonly uint[] _cmdBuf = new uint[Phases];
     private static readonly uint[] _slotBuf = new uint[Phases];
@@ -107,15 +82,14 @@ internal static unsafe class CullPass
     /// phase two, which must test the FRESH pyramid. Not "a pyramid exists": a declined build (no depth
     /// texture, a zero viewport) would otherwise hand the same-frame test the previous frame's pyramid.</summary>
     private static int _pyrGen = -1;
-    /// <summary>#489: a pyramid from a PRIOR pass is resident and <see cref="_pyrVp"/> is the
-    /// view-projection it was built under, so phase one may reproject against it. Deliberately separate
-    /// from <see cref="_pyrGen"/>: a declined build resets that, and phase one wants exactly the pyramid a
-    /// decline leaves behind. Cleared where the texels stop being a scene -- a recreate, a context loss,
-    /// the world edge (<see cref="Revoke"/>).</summary>
+    /// <summary>A pyramid from a PRIOR pass is resident and <see cref="_pyrVp"/> is the view-projection it
+    /// was built under, so phase one may reproject against it. Deliberately separate from
+    /// <see cref="_pyrGen"/>: a declined build resets that, and phase one wants exactly the pyramid a decline
+    /// leaves behind. Cleared where the texels stop being a scene -- recreate, context loss, world edge.</summary>
     private static bool _pyrStale;
     private static Matrix4x4 _pyrVp;
 
-    /// <summary>#243 (AC5): what the last readable dispatch actually kept. Copied out of the count buffer
+    /// <summary>What the last readable dispatch actually kept. Copied out of the count buffer
     /// two samples late through a mapped ring, so the period line can report culled-vs-drawn without a
     /// readback anywhere near the submission path.</summary>
     private static GpuReadback _sampleRead;
@@ -128,7 +102,7 @@ internal static unsafe class CullPass
     private static uint[] _counts = new uint[1024];
     private static int _readSeq;
     internal static long CulledDraws, KeptDraws, CullFrames;
-    /// <summary>#489 (AC2): what the prepass's two phases kept, the same three-frames-late way. The staged
+    /// <summary>What the prepass's two phases kept, the same three-frames-late way. The staged
     /// figure the period line already prints is the ceiling; these are the GPU's counts under it.</summary>
     internal static long PrepassKept, RetestKept;
     /// <summary>Count words per ring slot: one range per phase, back to back.</summary>
@@ -138,48 +112,25 @@ internal static unsafe class CullPass
     private const int SamplePeriod = 60;
     private static int _sampleTick;
 
-    /// <summary>Live dial behind <c>/alloy cull</c>, and deliberately three-state rather than two: culling is
-    /// the one system whose bug is invisible geometry, and "something is missing" has two possible authors
-    /// here. <b>0</b> stands the whole pass down -- both submissions back on <c>BaseVertex</c> and, since
-    /// #264 deleted the engine walk, EVERY owned part drawn every frame with no cull anywhere, which is slow
-    /// and correct and is exactly what makes it the A/B for "is the cull eating this?"; <b>1</b> is the
-    /// frustum test alone; <b>2</b> adds the hi-Z occlusion test. Reporting a hole means saying which of the
-    /// three it survives.</summary>
+    /// <summary>Live dial behind <c>/alloy cull</c>, three-state rather than two because culling is the one
+    /// system whose bug is invisible geometry. <b>0</b> stands the whole pass down -- every owned part drawn
+    /// every frame, with no cull anywhere, slow and correct, which is what makes it the A/B for "is the cull
+    /// eating this?"; <b>1</b> is the frustum test alone; <b>2</b> adds the hi-Z occlusion test.</summary>
     internal static int Mode => Renderer.Cull.V;
     internal const int ModeOff = 0, ModeFrustum = 1, ModeHiZ = 2;
 
-    /// <summary>#287: LOD selection, in pixels. A draw whose bounding sphere projects to a screen radius
-    /// smaller than this is dropped by the same dispatch that culls it -- the classic distance thinning NWN
-    /// never had. 0 disables it; <c>/alloy lod</c> is the dial and <c>/alloy cull 0</c> stands it down with
-    /// everything else, because it IS the cull shader.
-    /// <para>#152 shipped this on the CPU and 73ea59b deleted it, measured: <c>LOD skipped 0 sub-pixel
-    /// draws/frame</c> in every period of the live log, because the tile exemption it needed (a small TILE
-    /// part is a patch of wall, and culling it is a hole in a surface) excluded most of what a distant
-    /// camera sees. There is no exemption here. On the GPU the test is free, the hole it can leave is by
-    /// construction under <see cref="LodPx"/> pixels wide, and the exempt population that remains is the one
-    /// the cull already exempts -- <see cref="AlloyRenderer.NeverCull"/> bounds.</para></summary>
+    /// <summary>LOD selection, in pixels: a draw whose bounding sphere projects to a screen radius smaller
+    /// than this is dropped by the same dispatch that culls it. 0 disables it and <c>/alloy cull 0</c> stands
+    /// it down with everything else, because it IS the cull shader. No tile exemption -- the hole it can
+    /// leave is by construction under <see cref="LodPx"/> pixels wide.</summary>
     internal static float LodPx => Renderer.Lod.V;
-    /// <summary>The boot threshold, and #152's own: one pixel of projected radius.</summary>
+    /// <summary>The boot threshold: one pixel of projected radius.</summary>
     internal const float DefLodPx = 1.0f;
 
-    /// <summary>#336: drop geometry the fog has already painted over. <c>CxFog</c> clamps its lerp, so a
-    /// fragment past <see cref="SceneFog.OpaqueDistance"/> is EXACTLY the fully-fogged colour -- it is drawn,
-    /// lit, prepassed and shadowed to produce a pixel the fog would have painted anyway. Measured: camfar 215
-    /// against a fog end of 125, so two thirds of the ground area in the frustum was past it.
-    /// <c>fog.cull</c>, off with the fog master.
-    /// <para><b>#341: opaque is not enough -- what is BEHIND it has to be the same colour too</b>, and that
-    /// is where the far-plane version of this was wrong. Culling a distant tower does not reveal more fog,
-    /// it reveals the SKY, which is not fogged at all; the tower's fully-fogged silhouette simply vanishes
-    /// and the pop is plainly visible on a skyline. What the fog genuinely hides is everything below the
-    /// eye: a ray that leaves the camera going DOWN never reaches the sky dome's lit half, it reaches other
-    /// fogged geometry or the fog-tinted skyfade band. So the test is two conditions, not one -- past the
-    /// opaque distance AND entirely below the eye's own height -- which a frustum plane cannot express and
-    /// the dispatch can, because it has the sphere. The ground, which is where the measured win was, is
-    /// exactly the half that survives.</para>
-    /// <para>What a downward ray reaches is no longer an assumption: the sky stage fogs every ray at or
-    /// below the horizon to the same fully-fogged colour (<see cref="SceneFog.SkyBand"/>), so culled ground
-    /// under a kept building reveals the colour it had. And the distance is measured the way the fog is --
-    /// radially from <see cref="SceneFog.Origin"/> when that is the player, view depth otherwise.</para></summary>
+    /// <summary>Drop geometry the fog has already painted over: a fragment past
+    /// <see cref="SceneFog.OpaqueDistance"/> is EXACTLY the fully-fogged colour. Opaque is not enough, though
+    /// -- what is behind it must be that colour too -- so the test is two conditions a frustum plane cannot
+    /// express: past that distance AND entirely below the eye, where a downward ray never reaches the sky.</summary>
     internal static bool FogCull => SceneFog.Cull;
 
     /// <summary>Pixels per unit of world radius at unit view depth -- <c>proj.M22 * viewportHeight / 2</c>,
@@ -188,7 +139,7 @@ internal static unsafe class CullPass
     /// </summary>
     private static float _lodScale;
 
-    /// <summary>#290: this pass's eye, the sort key's one input. The same quantity
+    /// <summary>This pass's eye, the sort key's one input. The same quantity
     /// <c>AlloyRenderer.EyeDist2</c> measures from on the CPU, so the two orders agree and
     /// <c>/alloy cull 0</c> is a like-for-like A/B rather than a different sort.</summary>
     private static Vector3 _eye;
@@ -196,21 +147,20 @@ internal static unsafe class CullPass
     /// <summary>The pass can actually run: the programs built and every entry point it needs exists.</summary>
     internal static bool Ready => _prog != 0;
 
-    /// <summary>#243: the extent of the staged sphere CENTRES, and the eye they were culled against. A
-    /// diagnostic with one job: the bounds are derived from <c>PartTriMesh</c>'s bbox, which is world-space
-    /// for a world-space part and object-space for a matrix-class one, and that reading has never been
-    /// verified for TILES. If it is wrong for them every tile's sphere collapses toward one point, and this
-    /// line says so -- a centre spread far smaller than the area is the signature.</summary>
+    /// <summary>The extent of the staged sphere CENTRES, and the eye they were culled against. A diagnostic
+    /// with one job: the bounds come from <c>PartTriMesh</c>'s bbox, which is world-space for a world-space
+    /// part and object-space for a matrix-class one, and that reading has never been verified for TILES. If
+    /// it is wrong for them every tile's sphere collapses toward one point, and this line says so.</summary>
     internal static float SpreadX, SpreadY, SpreadZ, SpreadMaxR;
     private static int _drawN, _groups, _phase = -1;
 
-    /// <summary>#290: the first SORTED batch -- everything below it compacts in the first dispatch, and
+    /// <summary>The first SORTED batch -- everything below it compacts in the first dispatch, and
     /// everything at or above it is placed by the second. Kept because the dispatch needs it as a uniform
     /// and <see cref="SortCs"/> needs it to know which draws are its.</summary>
     private static int _compactBelow;
 
-    /// <summary>#287: the diagnostic above, measured by the staging walk that already touches every one of
-    /// these spheres. It used to be a second walk here; the extent is the same extent either way.</summary>
+    /// <summary>The diagnostic above, measured by the staging walk that already touches every one of these
+    /// spheres.</summary>
     internal static void SetSpread(float x, float y, float z, float maxR)
     { SpreadX = x; SpreadY = y; SpreadZ = z; SpreadMaxR = maxR; }
 
@@ -230,14 +180,14 @@ internal static unsafe class CullPass
         _phase = -1; _compactBelow = 0;
     }
 
-    /// <summary>#489: the world edge (area transition, module unload). The resident pyramid is a scene that
+    /// <summary>The world edge (area transition, module unload). The resident pyramid is a scene that
     /// no longer exists, so the next pass's phase one is frustum-only rather than reprojecting against it.
     /// Phase two would correct the rejections anyway; this only spares it the whole area's worth.</summary>
     internal static void Revoke() { _pyrStale = false; RetestPending = false; }
 
-    /// <summary>Everything the dispatch needs from GL. #264 promoted this to a BOOT term: with the engine's
-    /// bucket walk deleted there is no other visibility test in the frame, so a driver that cannot run the
-    /// dispatch cannot run Alloy at all -- see <see cref="AlloyGate"/>.</summary>
+    /// <summary>Everything the dispatch needs from GL -- a BOOT term: with the engine's bucket walk gone
+    /// there is no other visibility test in the frame, so a driver that cannot run the dispatch cannot run
+    /// Alloy at all (see <see cref="AlloyGate"/>).</summary>
     internal static bool Capable()
         => Gl.DispatchCompute != null && Gl.MemoryBarrier != null && Gl.BindBufferBase != null
            && Gl.MultiDrawElementsIndirectCount != null
@@ -291,18 +241,10 @@ internal static unsafe class CullPass
     /// ONLY thing that may switch them off the <c>BaseVertex</c> path.</summary>
     internal static bool Active => Mode > ModeOff && _phase >= 0;
 
-    /// <summary>Upload the pass's draw list and the per-record bounding spheres. Returns false when
-    /// the cull is not running this pass, and the caller then submits exactly as before.
-    /// <para>#290: <paramref name="groups"/> is now EVERY batch of the pass, and
-    /// <paramref name="compactBelow"/> is where the compacting half ends -- the opaque batch count. Batches
-    /// at or above it are SORTED back-to-front by the second dispatch (see the class summary), which the
-    /// and additive ranges are placed by the sort dispatch instead of the atomic.</para>
-    /// <para>#287: <paramref name="src"/> is <see cref="SrcUints"/> uints per draw, staged by the batch walk
-    /// itself -- see <see cref="SrcUints"/>. Nothing per-draw is computed here any more; this is an upload
-    /// and a set of buffer sizes.</para>
-    /// <para>#303: the spheres are no longer a parameter -- <see cref="UploadSpheres"/> carries them, outside
-    /// the Mode gate, because the shadow gather culls against the same buffer whatever <c>/alloy cull</c>
-    /// says.</para></summary>
+    /// <summary>Upload the pass's draw list. Returns false when the cull is not running this pass, and the
+    /// caller then submits exactly as before. <paramref name="groups"/> is every batch of the pass and
+    /// <paramref name="compactBelow"/> is where the compacting half ends; <paramref name="src"/> is
+    /// <see cref="SrcUints"/> uints per draw, staged by the batch walk itself.</summary>
     internal static bool Begin(int groups, int drawN, uint* src,
                               float lodScale, int compactBelow, Vector3 eye)
     {
@@ -349,12 +291,10 @@ internal static unsafe class CullPass
         return true;
     }
 
-    /// <summary>#303: the per-ownership-slot <c>CxCullSphere</c> upload, hoisted out of <see cref="Begin"/>
-    /// and out of the Mode gate: the shadow gather culls against this same buffer, so it must stay current
-    /// under <c>/alloy cull 0</c> and during a probe capture alike. The spheres are indexed by RECORD slot,
-    /// exactly as the records are, and go up whole -- four floats against the record's forty-four, changing
-    /// on the same edges, so a dirty list here would be #242's machinery again for a fortieth of the
-    /// traffic. Not on <see cref="StreamRing"/>: the next frame's shadow gather culls against it (CX-45).</summary>
+    /// <summary>The per-ownership-slot <c>CxCullSphere</c> upload, outside the Mode gate: the shadow gather
+    /// culls against this same buffer, so it must stay current under <c>/alloy cull 0</c> and during a probe
+    /// capture alike. Indexed by RECORD slot, exactly as the records are, and uploaded whole -- four floats
+    /// against the record's forty-four. Not on <see cref="StreamRing"/>: next frame's gather reads it.</summary>
     internal static void UploadSpheres(float* spheres, int sphereSlots)
     {
         if (sphereSlots <= 0 || Gl.NamedBufferSubData == null) return;
@@ -368,13 +308,10 @@ internal static unsafe class CullPass
     /// colour build uploads it, and the gather stands down for that frame.</summary>
     internal static uint SphereBuf => _sphBuf;
 
-    /// <summary>Run one dispatch into output set <paramref name="phase"/>. <paramref name="hiZ"/> false is
-    /// a frustum-only dispatch; true adds the occlusion test -- for <see cref="PhaseColour"/> and
-    /// <see cref="PhaseRetest"/> against the pyramid this pass just built (<paramref name="gen"/> gates it),
-    /// for <see cref="PhasePrepass"/> against the PRIOR pass's pyramid in its own clip space (#489), which
-    /// also marks the rejects phase two re-tests.</summary>
-    /// <para><paramref name="lodPx"/> overrides <see cref="LodPx"/> when non-negative; a draw whose sphere lies
-    /// wholly below <paramref name="clipZ"/> is dropped (the mirror plane).</para>
+    /// <summary>Run one dispatch into output set <paramref name="phase"/>. <paramref name="hiZ"/> false is a
+    /// frustum-only dispatch; true adds the occlusion test -- for <see cref="PhaseColour"/> and
+    /// <see cref="PhaseRetest"/> against the pyramid this pass just built, for <see cref="PhasePrepass"/>
+    /// against the PRIOR pass's in its own clip space, which also marks the rejects phase two re-tests.</summary>
     internal static bool Dispatch(int phase, Matrix4x4* vp, bool hiZ, int gen, float lodPx = -1f, float clipZ = -1e30f)
     {
         bool stale = phase == PhasePrepass;
@@ -514,9 +451,8 @@ internal static unsafe class CullPass
 
     /// <summary>Bind the compacted list of output set <paramref name="phase"/> for submission: the indirect
     /// commands, the parameter buffer the count comes from, and the per-draw slot array the vertex stages
-    /// already read at <see cref="AlloyRenderer.BindDrawIdx"/>. The stages are untouched -- the compacted
-    /// array holds the same record slots in a different order, so <c>uDraw[uDrawIdx[uDrawBase + gl_DrawID]]</c>
-    /// resolves exactly as it did (and #119's clip expression never moves).</summary>
+    /// already read. The stages are untouched -- the compacted array holds the same record slots in a
+    /// different order, so <c>uDraw[uDrawIdx[uDrawBase + gl_DrawID]]</c> resolves exactly as it did.</summary>
     internal static void BindForDraw(int phase)
     {
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _cmdBuf[phase]);
@@ -535,8 +471,7 @@ internal static unsafe class CullPass
     /// <summary>One batch, submitted from the compacted list. <paramref name="start"/> is the batch's
     /// output base -- the same <c>_gStart[g]</c> the record lookup uses as <c>uDrawBase</c>, because the
     /// cull compacts each batch into its OWN source region rather than into one global run -- and
-    /// <paramref name="batch"/> indexes the parameter buffer, whose word <c>g</c> is that batch's survivor
-    /// count. <paramref name="max"/> is the batch's staged length, the ceiling GL clamps the count to.</summary>
+    /// <paramref name="batch"/> indexes the parameter buffer, whose word is that batch's survivor count.</summary>
     internal static void Draw(uint mode, int batch, int start, int max)
         => Gl.MultiDrawElementsIndirectCount(mode, AlloyRenderer.GlUnsignedShort,
                                              (void*)((long)start * CmdUints * sizeof(uint)),
@@ -544,11 +479,9 @@ internal static unsafe class CullPass
                                              max, CmdUints * sizeof(uint));
 
     /// <summary>Build the hi-Z pyramid from the depth the prepass just wrote. Level 0 is a 2x2 MAX reduction
-    /// of the depth buffer (so the pyramid is half resolution and every level after it chains from the one
-    /// above), and MAX is what makes the test conservative: an object is culled only when its NEAREST depth
-    /// is behind the FARTHEST scene depth anywhere in the region it covers.
-    /// <para>Restores the framebuffer, viewport and program the caller had -- the colour bracket is mid-pass
-    /// and everything it set is still live.</para></summary>
+    /// of the depth buffer, and MAX is what makes the test conservative: an object is culled only when its
+    /// NEAREST depth is behind the FARTHEST scene depth anywhere in the region it covers. Restores the
+    /// framebuffer, viewport and program the caller had -- the colour bracket is mid-pass.</summary>
     internal static void BuildHiZ(uint depthTex, int w, int h, int* viewport, uint restoreFbo, int gen,
                                   Matrix4x4* vp)
     {
@@ -619,9 +552,9 @@ internal static unsafe class CullPass
         return true;
     }
 
-    /// <summary>#243 (AC5): the culled-vs-drawn figure, taken two samples behind the dispatch that produced it,
-    /// off a <see cref="GpuReadback"/> once the copy has landed. Never a <c>glGetBufferSubData</c>: NVIDIA queues
-    /// that behind the whole frame so far and waits it out, whichever buffer it names.</summary>
+    /// <summary>The culled-vs-drawn figure, taken two samples behind the dispatch that produced it,
+    /// off a <see cref="GpuReadback"/> once the copy has landed. Never a <c>glGetBufferSubData</c>: NVIDIA
+    /// queues that behind the whole frame so far and waits it out, whichever buffer it names.</summary>
     private static void Sample()
     {
         if (_groups <= 0 || !GpuReadback.EntryPoints) return;
@@ -653,12 +586,8 @@ internal static unsafe class CullPass
 
     /// <summary>The six frustum planes of a row-major <c>view*proj</c>, Gribb-Hartmann, normalised so the
     /// plane distance is in world units and the sphere test is a plain compare. Row-major here means the
-    /// combination is <c>clip = v * VP</c>, so the planes come off the COLUMNS -- the transpose of the form
-    /// the paper writes for column-vector convention.
-    /// <para>#341 took the fog out of here. A PLANE cannot express the fog cull's real condition -- see
-    /// <see cref="FogCull"/> -- so the test moved into the dispatch, where the sphere's height is readable.
-    /// The <paramref name="eye"/> argument stays: callers pass the eye their vp was built from, and a
-    /// mirrored subframe measuring from the wrong camera is the bug that argument prevents.</para></summary>
+    /// combination is <c>clip = v * VP</c>, so the planes come off the COLUMNS. <paramref name="eye"/> is the
+    /// eye the caller's vp was built from: a mirrored subframe measuring from the wrong camera is the bug.</summary>
     internal static void Planes(float* m, float* p, Vector3 eye)
     {
         // m[r*4+c] is row r, column c of the row-vector matrix: clip.c = sum_r v[r] * m[r*4+c].
@@ -722,13 +651,13 @@ internal static unsafe class CullPass
         check.Expect(src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 11 && src[4] == 0 && src[5] == 0,
           "draw 0 packs count/firstIndex/baseVertex/slot/batch/start in that order");
         check.Expect(src[SrcUints + 1] == 200, "...and the byte offset becomes an ELEMENT index (two-byte indices)");
-        check.Expect(CmdUints * sizeof(uint) == 20, "the indirect command stride is GL's 20 bytes");
+        check.Expect(SourceStrideSafe(), "the cull and sort stages stride the source list by SrcUints");
 
         check.Ok &= Parity(log, vp, planes);
         log.Info(check.Ok ? "CullPass.SelfCheck: passed" : "CullPass.SelfCheck: FAILED -- see above");
     }
 
-    /// <summary>#287: one draw's source record, written where the batch walk already writes the same draw's
+    /// <summary>One draw's source record, written where the batch walk already writes the same draw's
     /// count/offset/base. The one place the layout <see cref="CullCs"/> reads back is spelled out.</summary>
     internal static void Pack(uint* r, int idxCount, nint byteOff, int baseVertex, int slot,
                              int batch, int batchStart)
@@ -743,20 +672,10 @@ internal static unsafe class CullPass
         r[5] = (uint)batchStart;
     }
 
-    /// <summary>#287 (AC5's off-device half): does the compute-produced draw list agree with the CPU-staged
-    /// one? A line-by-line port of <see cref="CullCs"/>'s <c>main</c>, run one invocation at a time -- which
-    /// is what a sequential <c>atomicAdd</c> is -- over a synthetic pass, compared against the list the
-    /// <c>BaseVertex</c> path would submit from the same staging.
-    /// <para>Two standards, because #290 gave the pass two kinds of batch. For a COMPACTING batch it is set
-    /// equality: the order inside it is the atomic's, not the staging walk's, and on real hardware it is not
-    /// even deterministic -- so what is asserted is what the submission actually depends on, that every
-    /// survivor lands inside its own batch's output region, carries its own record slot, and its command is
-    /// its source record field for field. For an ORDERED batch it is SEQUENCE equality, which is the whole
-    /// point of one: every draw sits at its exact staged index and a culled one holds its place as a
-    /// zero-instance command. Class order is preserved either way, because each batch owns its own output
-    /// region.</para>
-    /// <para>The port is deliberately adjacent to the GLSL it mirrors. If one changes and the other does not,
-    /// that is what this goes red on.</para></summary>
+    /// <summary>Does the compute-produced draw list agree with the CPU-staged one? A line-by-line port of
+    /// <see cref="CullCs"/>'s <c>main</c>, run one invocation at a time -- which is what a sequential
+    /// <c>atomicAdd</c> is. Two standards: a COMPACTING batch is asserted as a SET (the atomic's order is not
+    /// deterministic on hardware), an ORDERED one as a SEQUENCE, which is the whole point of one.</summary>
     private static bool Parity(ExtenderLog log, Matrix4x4 vp, float* planes)
     {
         var check = new Checker(log, "CullPass.ParitySelfCheck");
@@ -863,9 +782,7 @@ internal static unsafe class CullPass
     /// <summary>The port. <c>i</c> is <c>gl_GlobalInvocationID.x</c> and the counter is the atomic; every
     /// other line is <see cref="CullCs"/>'s and <see cref="SortCs"/>'s, in order -- two loops because there
     /// are two dispatches, and the barrier between them is what the loop boundary stands for.
-    /// <para><paramref name="scramble"/> runs the invocations backwards. A sequential port hands the atomic
-    /// out in staged order, which is the one thing real hardware never promises; the sorted range must come
-    /// out identical either way, and that is asserted rather than assumed.</para></summary>
+    /// <paramref name="scramble"/> runs the invocations backwards, which the sorted range must survive.</summary>
     private static void Emulate(uint* src, float* sph, int drawN, int groups, float* planes, Matrix4x4 vp,
                                 float lodPx, float lodScale, int compactBelow, Vector3 eye, float* key,
                                 uint* cmd, int* outSlot, uint* cnt, bool scramble = false,
@@ -945,7 +862,7 @@ internal static unsafe class CullPass
         }
     }
 
-    /// <summary>#290 (AC5): the submitted run really is back-to-front. Read off the SPHERES rather than the
+    /// <summary>The submitted run really is back-to-front. Read off the SPHERES rather than the
     /// keys, so a key the emulator computed wrongly cannot agree with itself.</summary>
     private static bool Sorted(float* sph, int* outSlot, int start, int count, Vector3 eye, ExtenderLog log)
     {
@@ -988,36 +905,20 @@ internal static unsafe class CullPass
     }
 
     /// <summary>The cull itself. One thread per draw; a survivor appends into its batch's own region with an
-    /// atomicAdd, so the compacted list keeps every batch's boundaries and only its interior order moves.
-    /// <para>A radius of infinity is "do not cull me" -- the CPU writes it for anything whose vertices move
-    /// under a matrix that does not (skinned, dangly, a displacing feature), and for a degenerate bbox.
-    /// Unknown bounds mean visible, always: the failure mode of this pass is invisible geometry.</para></summary>
+    /// atomicAdd, so the compacted list keeps every batch's boundaries and only its interior order moves. A
+    /// radius of infinity is "do not cull me" -- skinned, dangly, a displacing feature, a degenerate bbox.
+    /// Unknown bounds mean visible, always: the failure mode of this pass is invisible geometry.</summary>
     private static string CullCs => ShaderSource.Get("cx_cull_c.glsl");
 
-    /// <summary>#290: the back-to-front sort, as a RANK rather than a shuffle. One thread per draw; a
-    /// survivor of a sorted batch counts how many survivors of the same batch are FARTHER than it, and that
-    /// count is its offset from the batch's output base. No scratch list, no bucket table, and no key
-    /// quantisation -- the compare is on the float key itself, so two coplanar surfaces cannot tie into the
-    /// wrong order the way a radix over quantised depth lets them.
-    /// <para>The tie-break is the STAGED index, which keeps equal-distance draws in the texture-grouped
-    /// enrollment order the CPU sort also leaves them in -- stable, and stable the same way, so a still
-    /// camera does not shuffle its transparents frame to frame.</para>
-    /// <para>A batch's draws are contiguous in the source list (the cut walks it in order), so the scan runs
-    /// from the batch's base until the batch field changes. ponytail: that is O(n^2) compares inside a
-    /// batch, spread across n threads. The blending ranges are the small remainder of a scene by
-    /// construction -- single-digit batches in a typical area -- and every alternative (bitonic, radix)
-    /// needs more dispatches and a scratch list to beat it. If a scene ever lands enough transparents to
-    /// show on the <c>[alloy]</c> line, a bitonic sort over these same keys drops in without changing
-    /// anything around it.</para></summary>
+    /// <summary>The back-to-front sort, as a RANK rather than a shuffle: a survivor counts how many
+    /// survivors of its batch are FARTHER, and that count is its offset from the batch's output base. No key
+    /// quantisation, so coplanar surfaces cannot tie into the wrong order, and the tie-break is the STAGED
+    /// index. ponytail: O(n^2) compares per batch across n threads; a bitonic sort drops in if it ever shows.</summary>
     private static string SortCs => ShaderSource.Get("cx_cullsort_c.glsl");
 
-    /// <summary>One level of the pyramid: the MAX of the source region the destination texel covers.
-    /// <para>A 3x3 tap, not a 2x2, and that is a correctness fix rather than a refinement. GL sizes mip
-    /// <c>i</c> as <c>floor(size / 2^i)</c>, so a source level with an ODD dimension has a last row (or
-    /// column) that no 2x2 destination texel reads. The test downstream is
-    /// <c>objectNear &gt; maxSceneDepth =&gt; occluded</c>, so a max that is missing texels fires the cull
-    /// MORE readily -- dropping them is the dangerous direction, not the safe one. The third tap folds the
-    /// remainder in; where there is no remainder it merely over-covers by one texel, which raises the max
-    /// and therefore only ever draws more.</para></summary>
+    /// <summary>One level of the pyramid: the MAX of the source region the destination texel covers. A 3x3
+    /// tap, not a 2x2, and that is a correctness fix: GL sizes mip <c>i</c> as <c>floor(size / 2^i)</c>, so a
+    /// source level with an ODD dimension has a last row no 2x2 destination texel reads -- and a max missing
+    /// texels fires the cull MORE readily. Over-covering by one texel only ever draws more.</summary>
     private static string HiZFs => ShaderSource.Get("cx_hiz_f.glsl");
 }

@@ -6,37 +6,17 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// The scene fog's TARGET COLOUR, and the terms that shape it (#341). The area author still owns the ramp --
-/// <c>Scene+0x140..0x14c</c>'s enable/start/end and colour are read untouched by <see cref="FrameRead"/> and
-/// the lerp stays linear in view depth -- so every knob here changes only what a fully-fogged fragment
-/// converges TO, or a multiplier on how fast it gets there.
-/// <para><b>Why.</b> Vanilla fog converges on one flat colour while the skybox above it stays blue, and the
-/// seam between them is the horizon band the engine paints with the skyfade gob to hide exactly that.
-/// Converging on the SKY removes the seam rather than covering it.</para>
-/// <para><b>Where the sky colour comes from.</b> The Alloy sky pass already knows the dome's GL texture per
-/// role (<see cref="AlloyRenderer.StageSky"/>), so the colour is a readback of that texture's smallest mip
-/// -- the sampler's own average -- weighted by the role alpha the cross-fade is running at, so a cross-fade
-/// to the night dome carries the fog with it. Not the <see cref="EnvProbe"/> cube, which contains no sky:
-/// its faces are CLEARED to a sky stand-in. No sky staged (an interior, or a sky pass standing down) and BOTH
-/// direction terms switch off: the fog is the area author's flat colour, exactly as vanilla.</para>
-/// <para>ponytail: one colour for the whole dome, not a gradient by elevation; a dome texture whose lower
-/// half is ground darkens it. The upgrade is to read a 4x4 mip and split it by row, which needs the model's
-/// UV convention -- worth doing when a specific sky looks wrong, not before.</para>
+/// The scene fog's TARGET COLOUR, and the terms that shape it. The area author still owns the ramp, read
+/// untouched off <c>Scene+0x140..0x14c</c>, so every knob here changes only what a fully-fogged fragment
+/// converges TO: the SKY (a readback of the staged dome's smallest mip, role-weighted), which removes the
+/// horizon seam vanilla paints over. ponytail: one colour for the whole dome, not a gradient by elevation.
 /// </summary>
 internal static unsafe class SceneFog
 {
     /// <summary>The dials are <see cref="Fog"/>'s, read through these so <c>fog.enabled</c> off makes every
     /// one read as 0 -- vanilla's flat colour, view-depth metric and no cull -- without a branch at each site.
-    /// <c>sky</c>: how far the target moves from the author's colour toward the sky; 0 = vanilla, which is what
-    /// every knob here reduces to. <c>sun</c>/<c>sunexp</c>: in-scatter strength and the phase lobe's
-    /// exponent (big = a tight glow, small = a half-sky wash). <c>height</c>: falloff per world unit above
-    /// <c>floor</c>, a DENSITY the area author did not set, hence 0 by default. <c>floor</c> is an offset from
-    /// the player's feet, upward only: an area has no ground plane to read. <c>cullz</c>: how high above the
-    /// layer floor <see cref="OpaqueDistance"/> assumes geometry reaches while the height falloff is on.
-    /// <c>origin</c>: fog measured radially from the player's feet rather than in view depth, so zooming out
-    /// does not push the fog; the cull, the light cut and the grass cut measure the same way through
-    /// <see cref="Origin"/>. <c>skyband</c>: the sky stage's horizon band in ray elevation -- rays at or
-    /// below the horizon fully fogged, fading to the raw dome this far above; 0 brings the #341 seam back.</summary>
+    /// <c>sky</c> 0 is vanilla, which is what every knob here reduces to; <c>floor</c> is an offset from the
+    /// player's feet, upward only, because an area has no ground plane to read.</summary>
     internal static float SkyMix => Fog.Enabled.V ? Fog.Sky.V : 0f;
     internal static float SunAmount => Fog.Enabled.V ? Fog.Sun.V : 0f;
     internal static float SunExp => Fog.SunExp.V;
@@ -57,7 +37,7 @@ internal static unsafe class SceneFog
     private static Vector3 _acc; private static float _accW;
 
     /// <summary>The sky average, LINEAR, once one has been read: <see cref="EnvProbe"/>'s clear where the capture
-    /// draws no dome -- a hosted content sky (SoW's <c>inc_clouds</c>) is never in it.</summary>
+    /// draws no dome -- a hosted content sky (a cloud stage) is never in it.</summary>
     internal static bool TrySky(out Vector3 sky) { sky = _sky; return _haveSky; }
     private static uint _lastTid;
 
@@ -103,8 +83,8 @@ internal static unsafe class SceneFog
     private static Vector3 _noteCol; private static bool _noteOk;
 
     /// <summary>DB mode's <see cref="NoteSky"/>: the dome part's texture is a registry slot, whose mean the
-    /// loader took off the decoded image -- the engine funnel <see cref="Average"/> reads never saw it. Without
-    /// this the sky term never armed in DB mode and the fog stood on the author's colour alone (#341 lost).</summary>
+    /// loader took off the decoded image -- the engine funnel <see cref="Average"/> reads never saw it.
+    /// Without this the sky term never arms and the fog stands on the author's colour alone.</summary>
     internal static void NoteSkyDb(Db.TexId id, float alpha)
     {
         if (alpha <= 0f || !Db.TexRegistry.TryMean(id, out Vector3 m)) return;
@@ -123,11 +103,9 @@ internal static unsafe class SceneFog
     }
 
     /// <summary>The sky texture's own average, LINEAR -- <c>glGetTexImage</c> of the smallest mip that has
-    /// storage, which is the value <c>textureLod(sky, uv, 20)</c> would return. Cached per texture name.
-    /// <para>Same walk <see cref="TexProbe.TexTopMip"/> uses and for the same reason: TEXTURE_MAX_LEVEL is a
-    /// cap, not a promise, so the chain is walked down to a level that actually exists. A texture with no
-    /// usable small level is refused rather than read at level 0 -- a full-size readback mid-frame is a
-    /// pipeline stall, and this runs on the staging path.</para></summary>
+    /// storage, which is the value <c>textureLod(sky, uv, 20)</c> would return; cached per texture name.
+    /// TEXTURE_MAX_LEVEL is a cap, not a promise, so the chain is walked down to a level that exists, and a
+    /// texture with no usable small level is refused rather than read at level 0 (a mid-frame stall).</summary>
     private static Vector3 Average(uint tid, out bool ok)
     {
         ok = false;
@@ -174,14 +152,10 @@ internal static unsafe class SceneFog
         Gl.Uniform3fv(loc.FogSunColor, 1, v);
     }
 
-    /// <summary>The display-space colour the skyfade gob is painted in (#222's <c>Mat()</c> branch). Vanilla
-    /// uses the raw fog colour; under a sky-matched fog that band is the seam it was invented to hide, so it
-    /// takes the same fully-fogged colour the geometry under it converges to -- evaluated looking at the
-    /// HORIZON, which is where the band is.
-    /// <para>ponytail: elevation only. The band is one constant colour per part, so a sun in-scatter that
-    /// varies with azimuth cannot be represented in it; at a low sun the band matches the fog on the sun's
-    /// side and is a little flat on the other. Fixing that means a per-fragment tint, i.e. a world varying on
-    /// the unlit stage.</para></summary>
+    /// <summary>The display-space colour the skyfade gob is painted in. Vanilla uses the raw fog colour; under
+    /// a sky-matched fog that band is the seam it was invented to hide, so it takes the same fully-fogged
+    /// colour the geometry under it converges to, evaluated looking at the HORIZON. ponytail: elevation only,
+    /// so at a low sun the band matches the fog on the sun's side and is a little flat on the other.</summary>
     internal static void SkyfadeTint(float* rgb)
     {
         Vector3 c = FrameInputs.FogColor;   // display space, as the Scene block stores it
@@ -197,16 +171,9 @@ internal static unsafe class SceneFog
     }
 
     /// <summary>The distance past which a fragment is FULLY fogged, and therefore the distance the cull may
-    /// throw geometry away at (<see cref="CullPass.FogCull"/>). Infinity means "nothing is provably opaque",
-    /// which stands the fog cull down.
-    /// <para>With the plain ramp that distance IS <c>FogEnd</c>, which is what #336 culled at, measured the
-    /// way the fog is (<see cref="Origin"/>). The height falloff breaks that: fog thinned by height reaches
-    /// 1.0 further out, and how much further depends on the fragment's own Z, which a distance cannot ask.
-    /// So the cut is placed for geometry
-    /// <see cref="CullZ"/> above the layer floor and anything higher than that is the ceiling this trades
-    /// against -- a tower top past that distance can be culled while still a shade short of opaque. The
-    /// number is on <see cref="Describe"/> next to the camera's own far plane, because past that the whole
-    /// question is moot and the cull simply stops applying.</para></summary>
+    /// throw geometry away at (<see cref="CullPass.FogCull"/>); infinity stands the fog cull down. With the
+    /// plain ramp that distance IS <c>FogEnd</c>, measured the way the fog is; the height falloff breaks that,
+    /// so the cut is placed for geometry <see cref="CullZ"/> above the layer floor and higher is traded off.</summary>
     internal static float OpaqueDistance()
     {
         if (!FrameInputs.FogOn || FrameInputs.FogEnd <= 0f) return float.PositiveInfinity;
@@ -277,9 +244,16 @@ internal static unsafe class SceneFog
 
         // /fog origin 0 is the engine's metric: view depth, measured from the pass eye -- not a sphere
         // around wherever the player happens to stand.
-        bool origWas = Fog.Origin.V; Fog.Origin.V = false;
-        check.Expect(!(Origin(out bool radial) != AlloyRenderer.EyePos) && !radial, "origin 0 is view depth from the pass eye");
+        // Both arms of the gate: off-device the pass eye and the player position are both default, so an
+        // assertion on the POINT would hold whichever arm ran. The flag is what says which.
+        bool origWas = Fog.Origin.V;
+        Fog.Origin.V = false;
+        Origin(out bool radial);
+        check.Expect(!radial, "origin 0 is view depth from the pass eye, never a sphere round the player");
         Fog.Origin.V = true;
+        Origin(out radial);
+        check.Expect(!radial, "...and origin 1 with no player position staged degrades to view depth, not to the world origin");
+        Fog.Origin.V = origWas;
 
         // The master: off, every dial reads as 0 -- the author's flat colour, view depth, no cull -- whatever
         // the knobs hold, and the skyfade band is the author's colour byte for byte.

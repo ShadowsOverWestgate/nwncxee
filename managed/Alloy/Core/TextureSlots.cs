@@ -3,21 +3,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#208: the texture-unit contract, written down once. Which sampler lives on which GL texture unit
-/// is shared between this renderer and the <c>cx_*.shd</c> stages a content repo may override, and until now
-/// it lived as a scatter of <c>const uint</c> beside whichever pass happened to bind it. That is the shape of
-/// contract that drifts: a unit collision is not a compile error and not a log line -- GL forbids two
-/// samplers of DIFFERENT types on one image unit, so the draw raises INVALID_OPERATION and simply vanishes,
-/// and two samplers of the same type just read each other's texture.
-/// <para>Numbers only. There is no allocator and no reservation API here: units are a fixed, tiny, hand-read
-/// set, and a manager would only move the decision somewhere a reader has to go looking for it.</para>
-/// <para><see cref="Check"/> asserts the table against the sampler declarations in the EMBEDDED stage text
-/// and names the slot that disagreed, gating arming through <see cref="ShaderContract.SelfCheck"/>. It sees
-/// only that text -- exactly the limit <see cref="ShaderContract.RecordSafe"/> is documented as having. A
-/// content override (#92) that renames a sampler still links, still binds a -1 location, and still passes
-/// here. What catches THAT is <see cref="ShaderContract.SlotSafe"/>, applied at each program's build to the
-/// source that actually compiled -- the two are halves of one guard, and neither covers the other's
-/// case.</para></summary>
+/// <summary>The texture-unit contract, written down once: which sampler lives on which GL texture unit is
+/// shared between this renderer and the <c>cx_*.shd</c> stages a content repo may override. A collision is
+/// neither a compile error nor a log line -- two samplers of DIFFERENT types on one unit raise
+/// INVALID_OPERATION and the draw vanishes; two of the same type read each other's texture.</summary>
 internal static class TextureSlots
 {
     /// <summary>Unit 0, the material diffuse -- and the unit every pass leaves current, because the colour
@@ -28,8 +17,7 @@ internal static class TextureSlots
     /// its default points at unit 0 alongside the diffuse, which is the type collision above.</summary>
     internal const uint SunShadow = 1, LocalShadow = 2;
     /// <summary>The material map block: <see cref="MapCount"/> consecutive units from here, in
-    /// <see cref="MapSamplers"/> order. #146 put AO last on this ladder rather than taking the frozen env
-    /// bit.</summary>
+    /// <see cref="MapSamplers"/> order.</summary>
     internal const uint MapBase = 3;
     /// <summary>How many units <see cref="MapBase"/> spans. Growing it walks into <see cref="Probe"/>.</summary>
     internal const int MapCount = 7;
@@ -37,30 +25,26 @@ internal static class TextureSlots
     /// displacement field instead. Deliberate and safe: they are different programs that never run in the
     /// same bracket, so the table records the reuse rather than burning a unit to avoid it.</summary>
     internal const uint PostHdr = 10, PostBloom = 11, GrassPush = 10;
-    /// <summary>#305: the dynamic-pool cube array (<c>samplerCubeArrayShadow</c>), sampled by every program
-    /// that samples <see cref="LocalShadow"/>. Shares <see cref="PostBloom"/>'s unit on the same argument as
-    /// <see cref="GrassPush"/>: the post resolve is a different program that never runs in the lit/water/
-    /// grass/particle brackets, and 0..15 is the whole budget. Bound at each program's link, because a
-    /// samplerCubeArrayShadow left at its default unit 0 collides with the diffuse's sampler2D -- an
-    /// INVALID_OPERATION that silently drops every draw.</summary>
+    /// <summary>The dynamic-pool cube array (<c>samplerCubeArrayShadow</c>), sampled by every program that
+    /// samples <see cref="LocalShadow"/>. Shares <see cref="PostBloom"/>'s unit on <see cref="GrassPush"/>'s
+    /// argument: the post resolve never runs in the lit/water/grass/particle brackets, and 0..15 is the whole
+    /// budget. Bound at each program's link -- left at default unit 0 it collides with the diffuse.</summary>
     internal const uint LocalShadowDyn = PostBloom;
-    /// <summary>#306: the sun's dynamic cascade array (<c>sampler2DArrayShadow</c>), sampled by every program
-    /// that samples <see cref="SunShadow"/>. Shares <see cref="PostHdr"/>'s unit on
-    /// <see cref="LocalShadowDyn"/>'s argument -- except on the GRASS program, where unit 10 is the
-    /// displacement field, so grass binds it to <see cref="SnapshotColor"/>'s instead (free there: grass
-    /// samples no frame snapshot). <see cref="AlloyRenderer.UploadSunCascades"/> binds the array on BOTH
-    /// units, which is two cheap binds against burning a unit the budget does not have.</summary>
+    /// <summary>The sun's dynamic cascade array (<c>sampler2DArrayShadow</c>), sampled by every program that
+    /// samples <see cref="SunShadow"/>. Shares <see cref="PostHdr"/>'s unit on <see cref="LocalShadowDyn"/>'s
+    /// argument -- except on the GRASS program, where unit 10 is the displacement field, so grass binds it to
+    /// <see cref="SnapshotColor"/>'s instead. The upload binds the array on BOTH units.</summary>
     internal const uint SunShadowDyn = PostHdr, SunShadowDynGrass = SnapshotColor;
     /// <summary>The environment probe cube -- above the whole map block for the type-collision reason.</summary>
     internal const uint Probe = 12;
-    /// <summary>CX-374: the owned depth at the resolve, which reads it to exempt the sky. <see cref="Probe"/>'s
+    /// <summary>The owned depth at the resolve, which reads it to exempt the sky. <see cref="Probe"/>'s
     /// unit on <see cref="PostHdr"/>'s argument: the resolve is its own program and the probe is not bound there.</summary>
     internal const uint PostDepth = Probe;
     /// <summary>The aa stage's own passes, post stack only -- after the world pass, so the probe and snapshot
     /// units are free on the same argument as <see cref="PostHdr"/>: edges then weights on 12, the area
     /// table on 13, the search table on 14.</summary>
     internal const uint AaEdges = 12, AaBlend = 12, AaArea = 13, AaSearch = 14;
-    /// <summary>#339: the SCENE's environment map, which vanilla's water reflects. Shares
+    /// <summary>The SCENE's environment map, which vanilla's water reflects. Shares
     /// <see cref="Probe"/>'s unit -- the water program stopped sampling the probe when the port replaced
     /// Alloy's own reflection with stock's, so the two are never live in one program. A sampler2D here and
     /// a samplerCube there, which is why it may not move onto a unit the lit program also binds.</summary>
@@ -70,7 +54,7 @@ internal static class TextureSlots
     /// <summary>The OIT resolve's accumulation pair. The snapshot's units: the resolve runs before the water
     /// copy is taken, and FrameSnapshot.Bind re-binds its own textures before any water draw.</summary>
     internal const uint OitAccum = SnapshotColor, OitReveal = SnapshotDepth;
-    /// <summary>#490: the opaque depth the linked-list append tests against, bound for the accumulate only --
+    /// <summary>The opaque depth the linked-list append tests against, bound for the accumulate only --
     /// the reveal unit, which is free until the resolve rebinds it.</summary>
     internal const uint OitDepth = OitReveal;
     /// <summary>The frame copy the grass root blend reads. The last material-map unit (<see cref="MapBase"/>+6):
@@ -78,7 +62,7 @@ internal static class TextureSlots
     /// that program by the light rig (<see cref="LocalShadowDyn"/> on 11 was the first attempt, and the blade
     /// sampled a shadow cube).</summary>
     internal const uint GrassGround = MapBase + 6;
-    /// <summary>#379: the screen-space visibility the lit stage reads. Shares <see cref="SnapshotColor"/>'s
+    /// <summary>The screen-space visibility the lit stage reads. Shares <see cref="SnapshotColor"/>'s
     /// unit: the snapshot takes it at FbCopy and lit additive draws follow, so the lit program REBINDS it at
     /// every program bind (<see cref="SsaoPass.BindForDraw"/>) rather than trusting the pass's own bind.
     /// Both sampler2D; the grass program's dyn-sun array on the same unit is a different program.</summary>
@@ -87,85 +71,72 @@ internal static class TextureSlots
     /// unit on <see cref="Ssao"/>'s argument, re-bound at every lit program bind; the OIT accumulate takes
     /// the unit back (<see cref="OitDepth"/>) and the stage falls back to a hard compare under uOit.</summary>
     internal const uint CoverEsm = SnapshotDepth;
-    /// <summary>CX-102: the cover layer as plain depth, read by the SPLASH vertex stage to place each impact
+    /// <summary>The cover layer as plain depth, read by the SPLASH vertex stage to place each impact
     /// at its landing point. The map block's first unit on <see cref="GrassPush"/>'s argument -- the
     /// precipitation programs bind no material maps, and the splash program is the only thing in that
     /// bracket that binds a sampler2D below unit 10 at all.</summary>
     internal const uint CoverDepth = MapBase;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
-    /// <summary>CX-188 (ADR 0029): the four G-buffer lanes and the frame depth, read by the DEFERRED COMPUTE
-    /// program (<see cref="DeferredLights"/>) and by nothing else. The MAP BLOCK's units, on
-    /// <see cref="CoverDepth"/>'s and <see cref="HiZ"/>'s shared argument: the dispatch is a compute program
-    /// that runs BETWEEN two draw passes, binds no material map of its own, and every draw program rebinds its
-    /// whole slot set at the program switch that opens each pass. It still puts texture 0 back on all five.</summary>
+    /// <summary>The four G-buffer lanes and the frame depth (ADR 0029), read by the DEFERRED COMPUTE program
+    /// (<see cref="DeferredLights"/>) and by nothing else. The MAP BLOCK's units, on <see cref="CoverDepth"/>'s
+    /// argument: the dispatch runs BETWEEN two draw passes, binds no material map of its own, and every draw
+    /// program rebinds its whole slot set at the program switch. It still puts texture 0 back on all five.</summary>
     internal const uint Gbuf0 = MapBase, Gbuf1 = MapBase + 1, Gbuf2 = MapBase + 2, Gbuf3 = MapBase + 3,
                         GbufDepth = MapBase + 4;
-    /// <summary>CX-188 step 3: the per-pixel shadow visibility record (<see cref="DeferredShadows"/>), read by
+    /// <summary>The per-pixel shadow visibility record (<see cref="DeferredShadows"/>), read by
     /// the deferred lighting dispatch alone. The map block's last two units, on <see cref="Gbuf0"/>'s argument
     /// and <see cref="GrassGround"/>'s -- the grass program is a later pass that rebinds its own, and this one
     /// puts texture 0 back on both.</summary>
     internal const uint ShadowVis = MapBase + 5, ShadowKey = MapBase + 6;
-    /// <summary>CX-189: the coverage layer's seed (the lit frame and its depth) and depth write-back (the layer's
-    /// multisampled depth), read by <see cref="CoverageLayer"/>'s two full-screen programs alone. The map block's
-    /// units, on <see cref="Gbuf0"/>'s argument: those programs run between draw passes and bind no material
-    /// map, every draw program rebinds its slot set, and the layer puts texture 0 back on both.</summary>
+    /// <summary>The coverage layer's seed (the lit frame and its depth) and depth write-back (the layer's
+    /// multisampled depth), read by <see cref="CoverageLayer"/>'s two full-screen programs alone. The map
+    /// block's units, on <see cref="Gbuf0"/>'s argument: those programs run between draw passes and bind no
+    /// material map, every draw program rebinds its slot set, and the layer puts texture 0 back on both.</summary>
     internal const uint CoverSeed = MapBase, CoverSeedDepth = MapBase + 1;
-    /// <summary>#642: the two shadow cube arrays again, through a sampler object with no compare mode, for the
-    /// receiver's blocker search. Past the 0..15 budget on purpose: every unit below is spent, and every driver
-    /// Alloy has met reports 32 per stage. The lib binds them by <c>layout(binding)</c>; the bind site asks
-    /// the driver once and leaves the search off (uLocalPcss.x = 0) where it is short -- the declaration
-    /// stays, so a strict-16 driver would fail the lit link, which the limits line names.</summary>
+    /// <summary>The two shadow cube arrays again, through a sampler object with no compare mode, for the
+    /// receiver's blocker search. Past the 0..15 budget on purpose: every unit below is spent, and every
+    /// driver Alloy has met reports 32 per stage. The lib binds them by <c>layout(binding)</c>, so a
+    /// strict-16 driver would fail the lit link -- which the limits line names.</summary>
     internal const uint LocalShadowRaw = 16, LocalShadowDynRaw = 17;
     /// <summary>R2: the area wetness map (<see cref="Weather"/>), read by the lit stage and the grass blade.
     /// Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason -- every unit below is spent in the lit
     /// bracket -- and declared by <c>layout(binding)</c>, so no bind-time <c>glUniform1i</c> can miss it.</summary>
     internal const uint WetMap = 18;
-    /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a
-    /// fragment can ask whether the visibility at its pixel was computed from ITS OWN surface. Under #119 the
-    /// prepass and the colour pass compute gl_Position character-for-character, so a prepassed fragment's
-    /// gl_FragCoord.z equals the buffer exactly and anything else is another surface's occlusion. Free on
-    /// this unit in the lit bracket: the particle fade and the water noise are later programs.</summary>
+    /// <summary>The SAME prepass depth, on the same unit, read by the LIT stage -- so a fragment can ask
+    /// whether the visibility at its pixel was computed from ITS OWN surface. The prepass and the colour pass
+    /// compute gl_Position character-for-character, so a prepassed fragment's gl_FragCoord.z equals the buffer
+    /// exactly and anything else is another surface's occlusion. Free on this unit in the lit bracket.</summary>
     internal const uint SsaoDepth = SceneDepth;
-    /// <summary>#339: the engine's <c>solid_noise</c>, which vanilla's water shader samples as
-    /// <c>texUnitNoise</c>. Shares <see cref="SceneDepth"/>'s unit on <see cref="GrassPush"/>'s argument --
-    /// the particle pass is a different program in a later bracket, and both are sampler2D so even a missed
-    /// rebind reads a wrong texture rather than dropping the draw.
-    /// <para>NOT on the map block, and this is the whole reason the unit is written down: the colour loop's
-    /// slot binds run for any batch that is not a merged bindless lit one, and a water batch is never one --
-    /// so units 3..9 are overwritten with texture 0 on the first water draw. The first cut put the noise on
-    /// unit 3 and got a perfectly flat sea: every noise read returned 0, which drives the wave amplitude to
-    /// exactly zero.</para></summary>
+    /// <summary>The engine's <c>solid_noise</c>, which vanilla's water shader samples as <c>texUnitNoise</c>.
+    /// Shares <see cref="SceneDepth"/>'s unit on <see cref="GrassPush"/>'s argument, both sampler2D. NOT on
+    /// the map block, and that is the whole reason the unit is written down: the colour loop's slot binds run
+    /// for any batch that is not a merged bindless lit one, so a water draw overwrites units 3..9.</summary>
     internal const uint WaterNoise = SceneDepth;
-    /// <summary>#243: the hi-Z pyramid, read by the CULL DISPATCH only. Shares <see cref="Probe"/>'s unit
-    /// for <see cref="PostHdr"/>'s reason and one more: the dispatch is a compute program that runs BETWEEN
-    /// two draw passes and samples nothing else, and every draw program rebinds its own probe at the program
-    /// switch that opens each pass. The dispatch still leaves texture 0 on the unit rather than its pyramid,
-    /// so a consumer that somehow did not rebind samples nothing instead of a 2D texture through a cube
-    /// sampler. 0..15 is the whole budget this renderer allows itself (GL guarantees only 16 per stage), so
-    /// a seventeenth unit is not available to spend here.</summary>
+    /// <summary>The hi-Z pyramid, read by the CULL DISPATCH only. Shares <see cref="Probe"/>'s unit: the
+    /// dispatch is a compute program that runs BETWEEN two draw passes and samples nothing else, and every
+    /// draw program rebinds its own probe at the program switch. It leaves texture 0 on the unit rather than
+    /// its pyramid, so a consumer that did not rebind samples nothing. 0..15 is the whole budget.</summary>
     internal const uint HiZ = Probe;
-    /// <summary>CX-82/CX-83: the frame's own depth texture, read by the two highlight overlays that draw over
+    /// <summary>The frame's own depth texture, read by the two highlight overlays that draw over
     /// the FINISHED frame -- the glow quads' depth test and the trigger decal's world reconstruction.
     /// Shares <see cref="SceneDepth"/>'s unit: both are the last programs of the frame, past every pass that
     /// wants that unit for anything else.</summary>
     internal const uint HiliteDepth = SceneDepth;
 
-    /// <summary>CX-117: the master PLT palette (256x1792 RGBA8), read by the lit stage to resolve a layered
+    /// <summary>The master PLT palette (256x1792 RGBA8), read by the lit stage to resolve a layered
     /// texture per instance. Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason -- every unit
     /// below is spent in the lit bracket -- and declared with <c>layout(binding)</c> in <c>cx_plt.glsl</c>,
     /// so no bind-time <c>glUniform1i</c> can miss it.</summary>
     internal const uint PltPalette = 19;
 
-    /// <summary>CX-188 step 4 (<see cref="PairShadows"/>): the (static light, mover) pair depth atlas. Read by
-    /// the debt dispatch and -- for an unbaked receiver whose light traded its dyn page for tiles -- by
+    /// <summary>The (static light, mover) pair depth atlas (<see cref="PairShadows"/>). Read by the debt
+    /// dispatch and -- for an unbaked receiver whose light traded its dyn page for tiles -- by
     /// <c>CxLocalShadowQ</c>, so by every program that lights. Past the 0..15 budget for
-    /// <see cref="LocalShadowRaw"/>'s reason and declared with <c>layout(binding)</c> in
-    /// <c>cx_pairshad.glsl</c>, so no bind-time <c>glUniform1i</c> can miss it; re-bound at every lighting
-    /// bind beside the pair table.</summary>
+    /// <see cref="LocalShadowRaw"/>'s reason and declared with <c>layout(binding)</c>.</summary>
     internal const uint PairMap = 28;
 
-    /// <summary>CX-188: the deferred pass's light record (<see cref="GBuffer.TexLight"/>), read by the lit stage's
+    /// <summary>The deferred pass's light record (<see cref="GBuffer.TexLight"/>), read by the lit stage's
     /// blended draws. Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason and declared with
     /// <c>layout(binding)</c> in <c>cx_ownlit_head.glsl</c>; bound for the blended class by <see cref="Issue"/>.</summary>
     internal const uint LightRec = 26;

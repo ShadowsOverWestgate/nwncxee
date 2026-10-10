@@ -7,11 +7,10 @@ using System.Threading;
 namespace CX.Framework;
 
 /// <summary>
-/// The one <c>cx.cfg</c> writer (spec §2). Every set arms a trailing debounce; when it fires, a pool thread
-/// walks the registry, writes <c>cx.cfg.tmp</c> beside <see cref="Settings.Path"/> and renames it over the
-/// file. Content: the fixed header, then off-default declared keys ∪ every <see cref="KnobBag"/> pair ∪ keys no
-/// declaration claims (verbatim), one alphabetical list. Last writer wins; no write-if-changed compare. The render thread never comes
-/// here and the input thread only arms the timer.
+/// The one <c>cx.cfg</c> writer. Every set arms a trailing debounce; when it fires, a pool thread walks the
+/// registry, writes <c>cx.cfg.tmp</c> beside <see cref="Settings.Path"/> and renames it over the file. Content:
+/// the fixed header, then off-default declared keys, every <see cref="KnobBag"/> pair and any key no declaration
+/// claims, one alphabetical list. Last writer wins; the render thread never comes here.
 /// </summary>
 public static class KnobFile
 {

@@ -3,13 +3,10 @@ using System.Collections.Generic;
 
 namespace CX.Ui;
 
-/// <summary>A first-class UI window: rect, z-order, focus/keyboard state, capability flags, and the cursor
-/// regions under it. Constructing one registers it with <see cref="UiHost"/> (no discovery interface). The
-/// framework owns chrome (hit-test, cursor, focus) and routes captured input to the content delegates (#64);
-/// the service supplies content and handles the routed events. Pure Core -- no native refs. Drag/resize
-/// *mechanics* still live in the content (e.g. ChatWindow); the framework only picks the cursor from the
-/// capability flags and delivers the events. ponytail: promote the drag/resize state machine here when a
-/// second consumer needs it.</summary>
+/// <summary>A first-class UI window: rect, z-order, focus/keyboard state, capability flags, and the cursor regions
+/// under it. Constructing one registers it with <see cref="UiHost"/> -- there is no discovery interface. The
+/// framework owns the chrome (hit-test, cursor, focus) and routes captured input to the content delegates; the
+/// service supplies content. Drag/resize mechanics stay in the content; the framework only picks the cursor.</summary>
 public sealed class Window
 {
     /// <summary>Design px for the built-in chrome regions; multiplied by <see cref="Metrics.Scale"/> so cursor
@@ -22,8 +19,9 @@ public sealed class Window
     /// <summary>Higher is nearer the top; assigned on register and bumped by <see cref="UiHost.Focus"/>.</summary>
     public int Z { get; internal set; }
 
-    /// <summary>Capability flags (US #10). A non-focusable window is skipped by focus hit-testing but still
-    /// drives the cursor (US #11); draggable/resizable expose the move/resize cursor zones.</summary>
+    /// <summary>Capability flags. A non-focusable window is skipped by focus hit-testing but still drives the
+    /// cursor; draggable/resizable expose the move/resize cursor zones.
+    /// ponytail: promote the drag/resize state machine here when a second consumer needs it.</summary>
     public bool Focusable = true;
     public bool Draggable;
     public bool Resizable;
@@ -39,16 +37,15 @@ public sealed class Window
     /// engine keyboard gate); a chord-suppressing window still lets unconsumed keys reach gameplay.</summary>
     public bool SuppressChords;
 
-    /// <summary>A modal window that owns EVERY press and wheel notch while up, ahead of the engine's own GUI
-    /// (the radial cascade, CX-690: it opens over HUD chrome and its click-away must reach it). The pump runs
-    /// a capture-only dispatch before the NUI/vanilla-GUI yield for these windows and nothing else.</summary>
+    /// <summary>A modal window that owns EVERY press and wheel notch while up, ahead of the engine's own GUI -- the
+    /// radial cascade opens over HUD chrome and its click-away must reach it. The pump runs a capture-only dispatch
+    /// before the NUI/vanilla-GUI yield for these windows and nothing else.</summary>
     public bool CapturesPointer;
 
-    /// <summary>Content input slots (US #64). The framework's raw-input layer routes captured events here in
-    /// z-order; the service owns what happens inside. Each returns true when it consumed the event (routing
-    /// stops). Null = the window ignores that channel. Cold (input thread), so allocation is fine.
-    /// <see cref="OnKey"/> takes the SDL keycode + raw SDL modifier state; <see cref="OnText"/> takes the
-    /// SDL_TEXTINPUT payload pointer (finished UTF-8) for the keyboard owner.</summary>
+    /// <summary>Content input slots. The framework's raw-input layer routes captured events here in z-order; each
+    /// returns true when it consumed the event, which stops routing, and null means the window ignores that channel.
+    /// Cold (input thread), so allocation is fine. <see cref="OnKey"/> takes the SDL keycode + raw modifier state;
+    /// <see cref="OnText"/> takes the SDL_TEXTINPUT payload pointer (finished UTF-8) for the keyboard owner.</summary>
     public Func<bool, int, int, int, bool>? OnMouseButton;   // (down, button, x, y) -> consumed
     public Func<int, int, bool>? OnMouseMotion;              // (x, y) -> consumed
     public Func<int, bool>? OnMouseWheel;                    // (dy) -> consumed
@@ -86,8 +83,7 @@ public sealed class Window
     /// <summary>Clamp one axis of a window so its <paramref name="size"/>-wide span stays fully inside a
     /// <paramref name="viewport"/>-wide screen: pinned to 0 off the near edge, to viewport-size off the far edge,
     /// and to 0 when the span is larger than the viewport. Screen-space, so the on-screen guarantee is
-    /// scale-invariant. This is the one piece of window chrome that is NOT input-driven (drag mechanics stay in
-    /// content until #64); a second consumer (Dialog, #63) shares it here instead of re-rolling the Math.Clamp.</summary>
+    /// scale-invariant; shared here so every consumer clamps alike.</summary>
     public static float ClampAxis(float pos, float size, float viewport)
         => System.Math.Clamp(pos, 0f, System.Math.Max(0f, viewport - size));
 

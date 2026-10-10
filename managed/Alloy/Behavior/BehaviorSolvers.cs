@@ -14,9 +14,9 @@ internal enum BehaviorKind
     CameraLooseFollow, CameraOnAStick,
 }
 
-/// <summary>CX-107's behaviour solvers, as the arithmetic every solve derives (the zoom curve, the shared lag
-/// factor, the rig offset, the GUI-scale division, the viewport rounding, the navigate basis), pinned to the
-/// decompilation. <see cref="Db.DbAnim"/> solves the engine's behaviour classes over database columns with it.</summary>
+/// <summary>The arithmetic every behaviour solve derives from -- the zoom curve, the shared lag factor, the
+/// rig offset, the GUI-scale division, the viewport rounding, the navigate basis -- transcribed from the
+/// engine. <see cref="Db.DbAnim"/> solves the engine's behaviour classes over database columns with it.</summary>
 internal static unsafe partial class BehaviorSolvers
 {
     /// <summary>The engine constant a GUI viewport's part coordinates are expressed in: the subwindow solver

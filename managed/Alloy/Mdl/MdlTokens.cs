@@ -5,25 +5,10 @@ using System.Runtime.CompilerServices;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: the ASCII side's lexer, ported from the engine's own three primitives so a line reads
-/// exactly as the engine reads it. Span-based and allocation-free: one pass over the file's bytes, no string
-/// per line and no string per word.
-/// <para>The engine's semantics, from the decompile:</para>
-/// <list type="bullet">
-/// <item><c>AurResGetNextLine</c> (@0x432fa0, its body <c>FUN_00532e40</c>) ends a line at <c>\r</c> or
-/// <c>\n</c> and folds <c>\r\n</c> (and <c>\r\r\n</c>) into one break.</item>
-/// <item><c>dofile</c> @0x434930 left-trims <b>spaces and tabs only</b>, drops the line when it is then empty
-/// or starts with <c>#</c> (so a comment is a whole line, never a tail), and right-trims the characters
-/// <c>\t \n \r</c> and space.</item>
-/// <item><c>firstword</c> @0x446630 takes the first run of bytes that are not NUL, tab, LF, CR or space --
-/// note that other control bytes are NOT separators -- and the field tests are <c>strcasecmp</c>.</item>
-/// <item>every value is read by an <c>sscanf</c>, so <see cref="Scan"/> ports sscanf itself: conversions are
-/// SEQUENTIAL and stop dead at the first failure (a later field is never reached, however well formed), a
-/// numeric conversion takes the LONGEST VALID PREFIX of its field (<c>1.5abc</c> is 1.5; <c>3.7</c> read by
-/// <c>%d</c> is 3 and leaves <c>.7</c> for the next field), and a failed conversion leaves its target alone.</item>
-/// <item>the engine's buffers are NUL-terminated C strings, so a NUL ends the line for every scan -- which is
-/// also what stops a hostile file with an embedded NUL from spinning a scanner forever.</item>
-/// </list></summary>
+/// <summary>The ASCII side's lexer, ported from the engine's three primitives so a line reads exactly as the
+/// engine reads it; span-based and allocation-free. <c>AurResGetNextLine</c> @0x432fa0 breaks on <c>\r</c> or
+/// <c>\n</c>, folding <c>\r\n</c>; <c>dofile</c> @0x434930 left-trims spaces and tabs only and drops a line then
+/// empty or starting with <c>#</c>; <c>firstword</c> @0x446630 splits only on NUL, tab, LF, CR and space.</summary>
 internal static class MdlTok
 {
     /// <summary>The separators <c>firstword</c> stops on: NUL, tab, LF, CR, space (the engine's
@@ -163,12 +148,9 @@ internal static class MdlTok
     }
 
     /// <summary>The longest prefix of <paramref name="s"/> from <paramref name="at"/> that <c>strtof</c> would
-    /// consume: a sign, digits with an optional point, and an exponent only when it is complete. <c>inf</c>,
-    /// <c>infinity</c> and <c>nan</c> are accepted as the C library accepts them, so <c>1.#INF</c> reads as
-    /// <c>1.</c> and stops at the <c>#</c>.
-    /// <para>ponytail: hex floats (<c>0x1p3</c>) are not accepted. glibc's strtof does take them, no
-    /// <c>.mdl</c> in either corpus contains one, and accepting them would change what a plain <c>0</c>
-    /// followed by an <c>x</c> parses to.</para></summary>
+    /// consume: a sign, digits with an optional point, and an exponent only when complete; <c>inf</c>,
+    /// <c>infinity</c> and <c>nan</c> as the C library takes them, so <c>1.#INF</c> reads as <c>1.</c>.
+    /// <para>ponytail: hex floats (<c>0x1p3</c>) are not accepted; no <c>.mdl</c> in either corpus has one.</para></summary>
     private static int FloatEnd(ReadOnlySpan<byte> s, int at)
     {
         int i = at;

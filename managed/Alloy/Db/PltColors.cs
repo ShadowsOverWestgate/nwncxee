@@ -5,16 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-117: a creature's PLT colours, as per-instance DATA rather than a composite.
-/// <para>Vanilla composites every layered texture per character: ten palette lookups per texel into a
-/// private RGBA copy, re-run whenever a colour changes (<c>AurSetPalette</c> -&gt; rebuild). Alloy holds the
-/// PLT file once (<see cref="TexKind.Plt"/>, RG8) and the palettes once
-/// (<see cref="PltPalettes"/>), and carries only the ten ROW indices per object. So a colour change is one
-/// byte written into <see cref="SceneDb.ObjPltRow"/> plus a dirty bit -- no composite, no texture copy, no
-/// upload -- and a hundred humans wearing <c>pmh0_head001</c> share one texture.</para>
-/// <para>The rows reach the shader as one <c>uvec4</c> per DRAW record, in a block of its own
-/// (<see cref="Binding"/>): <c>CxDraw</c>'s three extension vec4s are spent by ADR 0026 and CX-52, so there
-/// is no lane left in the record itself.</para></summary>
+/// <summary>A creature's PLT colours, as per-instance DATA rather than a composite: the PLT file is held once
+/// (<see cref="TexKind.Plt"/>, RG8) and the palettes once (<see cref="PltPalettes"/>), with only the ten ROW
+/// indices per object -- so a colour change is one byte into <see cref="SceneDb.ObjPltRow"/> plus a dirty bit.
+/// The rows reach the shader as one <c>uvec4</c> per DRAW record in a block of its own (<see cref="Binding"/>).</summary>
 internal static unsafe class PltColors
 {
     /// <summary>Layers a PLT pixel may name, which is <see cref="PltPalettes.Layers"/>: ten, one palette
@@ -188,8 +182,8 @@ internal static unsafe class PltColors
     /// <summary>Records staged against an object that was not live, and therefore cleared.</summary>
     private static long _badObj;
     /// <summary>Has any record ever carried the PLT flag? Until one has, the GPU block stays a
-    /// <see cref="WordsPerRecord"/>-word zero buffer rather than the full table: engine mode never resolves a
-    /// PLT, and <c>cx_plt.glsl</c>'s <c>length()</c> test turns that into a defined false.</summary>
+    /// <see cref="WordsPerRecord"/>-word zero buffer rather than the full table, and <c>cx_plt.glsl</c>'s
+    /// <c>length()</c> test turns that into a defined false.</summary>
     private static bool _everPlt;
 
     /// <summary>Does record <paramref name="slot"/> currently carry the PLT flag? A plain read; the stage uses

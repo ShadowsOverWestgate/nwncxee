@@ -107,8 +107,9 @@ def audit(g):
 # off -- so compiling that proves only that the world still renders. What is worth checking offline is the
 # real content file against Alloy's environment, which is why this splices from a content checkout when it
 # can find one. Set CX_CONTENT_SHD to point elsewhere; missing is not an error, it is the stub's case.
-CONTENT_SHD = os.environ.get("CX_CONTENT_SHD",
-                             os.path.expanduser("~/repos/sow-topdata/assets/shaders"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+import paths  # noqa: E402
+CONTENT_SHD = os.environ.get("CX_CONTENT_SHD") or paths.get("CONTENT_SHADERS") or ""
 # #352: the ENGINE's own includes a content file reaches (inc_random, inc_framebuffer, inc_postpr_debug),
 # which the runtime resolves off the resource chain and a content checkout never carries. An extracted
 # ovr.bif tree; missing means those includes drop, as an absent chain file would.
@@ -462,13 +463,13 @@ def check_material(g):
 # tessellation out with the custom water shader: water is a plain vertex/fragment pair again, like every
 # other class here.
 def ablate(src, n):
-    """CX.Alloy.AblateProgram's own splice: `#define CX_ABLATE n` immediately after the #version line. The
-    ablation variants are built only by an `/alloy bench` step, so this is the one place a rung that stopped
-    compiling is caught before someone runs the bench and loses that rung of the ladder."""
+    """CX.Alloy.ShaderStages.WithDefine's own splice: `#define CX_ABLATE n` immediately after the #version
+    line. The ablation variants are built only by an `/alloy bench` step, so this is the one place a rung
+    that stopped compiling is caught before someone runs the bench and loses that rung of the ladder."""
     return src.replace("#version 460 core\n", f"#version 460 core\n#define CX_ABLATE {n}\n", 1)
 
 
-# CX-188: each ablated pass's ladder length -- the rungs AblateProgram can be asked for, which is what
+# CX-188: each ablated pass's ladder length -- the rungs CX.Alloy.Ablation can be asked for, which is what
 # AlloyRenderer.Bench's own step list walks. Rung 0 is the shipped program, a program in its own right below.
 ABLATIONS = {"cx_deferred_cs": 12, "cx_defshadow_cs": 2, "cx_pairdebt": 2}
 
@@ -486,7 +487,7 @@ def programs(g):
         "clustered lit (OIT lists)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
         # CX-188: the deferred twin -- the same two defines Programs.WithDeferred injects, in the same place
         "clustered lit (deferred twin)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_DEFERRED 1\n#define CX_GBUF_OUT 1\n", 1)),
-        # CX-188: /alloy bench's blended ladder -- Programs.BlendAblate's defines, in the same place
+        # CX-188: /alloy bench's blended ladder -- Ablation.LitDefines, in the same place
         **{f"clustered lit (blended ablate {n}{tw})": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", f"#version 460 core\n{lx}{d}", 1))
            for tw, lx in (("", ""), (", OIT lists", "#define CX_OIT_LISTS 1\n"))
            for n, d in ((3, "#define CX_BLEND_FLAT 1\n"), (4, "#define CX_NO_HOT 1\n#define CX_ABLATE 2\n"),

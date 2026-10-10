@@ -6,29 +6,15 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120: <b>light beams out of the scene database.</b> The engine path's two inputs were a draw
-/// bucket (which parts are beams) and a baked <c>VertexDataObject</c> (what to draw); both are replaced here by
-/// one question each of the database.
-/// <para><b>Membership</b> is <see cref="DbInputs.IsBeam"/> -- the mesh's own <c>beaming</c> keyword, interned
-/// on its <see cref="DrawRecipe"/> when the part was seated. The engine answered the same question by looking
-/// in bucket 15, which is a per-frame classification the BSP visitor filled; the model says so once and for
-/// good.</para>
-/// <para><b>Geometry</b> is the part's arena range (CX-114) -- the mesh itself, at its own placement -- and
-/// that is the one real departure from vanilla. The engine does not draw the mesh: it bakes a SILHOUETTE
-/// volume per (mesh, light) pair in <c>BSPCreateStaticProjections</c> @0x47e890 via
-/// <c>PartTriMesh::Project</c> @0x4524f0, which marks each face front- or back-facing against the light,
-/// collects the edges where the two meet, and emits two triangles per such edge with a per-vertex
-/// <c>fProjectionFrontal</c> flag saying which end extrudes. DB mode has no such bake, so it draws the whole
-/// mesh and derives that flag per vertex from the NORMAL (<c>cx_beamdb_v.glsl</c>): a face turned toward the
-/// light stays at the minimum offset, one turned away extrudes down to <c>projectionWorldZClip</c>. The result
-/// is the same additive shaft between the same two surfaces; what differs is that vanilla accumulates only the
-/// volume's side walls while this accumulates its caps as well, so a shaft reads slightly denser. Named rather
-/// than hidden -- the silhouette bake is a ticket of its own, not a line of this one.</para></summary>
+/// <summary>Light beams out of the scene database: membership is <see cref="DbInputs.IsBeam"/> (the mesh's own
+/// <c>beaming</c> keyword, interned on its <see cref="DrawRecipe"/>) and geometry is the part's arena range,
+/// the mesh itself at its own placement. The engine instead baked a silhouette volume per (mesh, light) pair;
+/// with no such bake this draws the whole mesh and derives the extrude flag from the NORMAL, denser by its caps.</summary>
 internal static unsafe partial class Beams
 {
     /// <summary>Did the last enrolment come from the database? Decides which program and which draw the pass
-    /// runs. The two cannot mix: <see cref="Enroll"/> only ever runs in engine mode and
-    /// <see cref="EnrollDb"/> only in DB mode.</summary>
+    /// runs. The two cannot mix: <see cref="EnrollDb"/> is the live one, <see cref="Enroll"/> the engine-side
+    /// enrolment nothing calls now.</summary>
     private static int _owned;
     /// <summary>The <c>DbSetGen</c> and scene the DB table was walked for. The pair is the enrolment's whole
     /// change gate.</summary>
@@ -76,7 +62,7 @@ internal static unsafe partial class Beams
 
     /// <summary>One DB beam's draw arguments: three integers off the arena, exactly as the world draw takes
     /// them. False means the range has no resident geometry yet -- the beam is skipped and its neighbours
-    /// draw, which is what #261 retired the all-or-none rule for.</summary>
+    /// draw.</summary>
     private static bool StageDb(int i, int k)
     {
         ref Beam b = ref _beams[i];

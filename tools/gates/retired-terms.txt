@@ -1,0 +1,20 @@
+# CX-195/CX-198: names this codebase has retired. A match under managed/ or docs/ fails the gate.
+#
+# Format, tab-separated:   <regex>  <ticket>  [exception regex]
+#   <regex>          extended regex, matched case-insensitively against every line
+#   <ticket>         the work item that retired the name (for the failure message; not matched)
+#   exception regex  optional: a line that ALSO matches this is allowed, because the words mean
+#                    something that is still real. Use it to disambiguate, not to grandfather drift.
+#
+# Not scanned: this file, docs/adr/ and docs/handoff/ (dated records of what was decided or handed over,
+# which have to keep saying what was true then), and tools/.
+
+clustered forward\+	CX-188
+alloy\.scenedb	CX-198
+vanilla=1	CX-198
+# A bare "mode 0" is the retired engine-scene renderer path. A line about one of the ENGINE's own numbered
+# modes has to say which mode it means -- that is what the exception asks for.
+\bmode[ -]0\b	CX-198	text-bubble|bubble mode|chat mode|camera mode|hit-?test|interpolat
+\bengine mode\b	CX-198	text-bubble|bubble|camera|keyboard
+# The standalone content repo, folded into sow-codebase; CX is engine-generic, content is "a hak or NWSync".
+sow-topdata	the-monorepo-move

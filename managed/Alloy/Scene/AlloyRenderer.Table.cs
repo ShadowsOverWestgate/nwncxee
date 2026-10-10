@@ -7,11 +7,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#173: the OWNERSHIP TABLE and the staging tables built from it. Every one is a fixed-capacity
-/// parallel array indexed by Alloy slot (or by VDO slot, or by batch group), allocated once at type init and
-/// never after -- which is what makes the whole per-frame path allocation-free. A struct-of-arrays rather
-/// than an array-of-structs on purpose: the hot walks touch two or three columns of a wide row, and the
-/// sorts permute an index array rather than the rows themselves.</summary>
+/// <summary>The OWNERSHIP TABLE and the staging tables built from it: fixed-capacity parallel arrays indexed
+/// by Alloy slot (or VDO slot, or batch group), allocated once at type init and never after, which is what
+/// makes the per-frame path allocation-free. Struct-of-arrays on purpose -- the hot walks touch two or three
+/// columns of a wide row, and the sorts permute an index array rather than the rows.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     // the ownership table (parallel arrays, index = Alloy slot; _order walks them grouped by VAO)
@@ -27,7 +26,7 @@ public sealed unsafe partial class AlloyRenderer
     /// from an Alloy arena, 0 otherwise. Carried per SLOT rather than per draw because the velocity pass redraws a mover off the
     /// ownership table and has to bind the element buffer the colour draw used, not the other one.</summary>
     private static readonly int[] _oLodBit = new int[MaxOwned];
-    /// <summary>CX-12: each part's last <see cref="MeshChart.Range"/> answer, re-probed on a table epoch or LOD change.</summary>
+    /// <summary>Each part's last <see cref="MeshChart.Range"/> answer, re-probed on a table epoch or LOD change.</summary>
     private static readonly MeshChart.RangeMemo[] _oChart = new MeshChart.RangeMemo[MaxOwned];
     private static readonly int[] _oRotBits = new int[MaxOwned];    // part+0xb0 at enrollment (revalidation)
     private static readonly float[] _oCos = new float[MaxOwned];
@@ -35,81 +34,78 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly bool[] _oMx = new bool[MaxOwned];       // matrix-class: needs uMVP = model*view*proj
     private static readonly bool[] _oLit = new bool[MaxOwned];      // #83: shade it, don't paint it fullbright
     private static readonly int[] _oTexKey = new int[MaxOwned];     // #84: interned diffuse-texture sort key
-    /// <summary>#128: the Gob this part instances off, zero for static geometry. The key the all-owned-or-none
+    /// <summary>The Gob this part instances off, zero for static geometry. The key the all-owned-or-none
     /// sweep groups by -- never dereferenced here, only compared.</summary>
     internal static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
     /// <summary>Is this part's gob a TILE gob (<see cref="EngineLayout.GobTileData"/>)? Sampled at
     /// enrolment because that is the one place the gob is known live. See <c>Dissolves</c>.</summary>
     private static readonly bool[] _oTileGob = new bool[MaxOwned];
-    /// <summary>#336: see <c>AlloyCandidate.LodRoot</c>.</summary>
+    /// <summary>See <c>AlloyCandidate.LodRoot</c>.</summary>
     private static readonly IntPtr[] _oLodRoot = new IntPtr[MaxOwned];
-    /// <summary>#137: this enrolled part's bone slot for THIS pass, or -1 for a rigid one. Rewritten every
+    /// <summary>This enrolled part's bone slot for THIS pass, or -1 for a rigid one. Rewritten every
     /// frame in <c>PoseSkinned</c>, never carried across one -- a pose is per-frame by definition.</summary>
     private static readonly int[] _oBone = new int[MaxOwned];
-    /// <summary>#120: the two PBR vec4s of this part's draw record, staged verbatim -- (Specularity,
-    /// Roughness, Metallicness, _) then (CustomSpecularColor.rgb, declared?). Read once at enrollment off the
-    /// material's parsed .mtr list; a value of 0 means "not declared" and the shader synthesises it, which is
-    /// what the stock shaders do with the same uniforms. The spare w is filled in per frame with the live
-    /// slot mask, so index 3 of each pair is deliberately never written here.</summary>
+    /// <summary>The two PBR vec4s of this part's draw record, staged verbatim -- (Specularity, Roughness,
+    /// Metallicness, _) then (CustomSpecularColor.rgb, declared?). Read once at enrollment off the material's
+    /// parsed .mtr list; 0 means "not declared" and the shader synthesises it, as the stock shaders do. The
+    /// spare w carries the live slot mask per frame, so index 3 of each pair is never written here.</summary>
     private static readonly float[] _oParam = new float[MaxOwned * ParamFloats];
     /// <summary>Staged floats per part: the two stock PBR vec4s, then ADR 0026's three extension vec4s
     /// (<see cref="ExtFloat"/> onward in the record) at <see cref="ParamExt"/>.</summary>
     internal const int ParamFloats = 20, ParamExt = 8;
-    /// <summary>#120: which of slots 1..5 this material had a texture in at enrollment (bit s-1). The live
-    /// tid is still re-fetched per frame like slot 0's -- this only says which slots are worth asking for.
-    /// #123 adds slot 6, the flow map, at bit 5 -- above the five, below <see cref="EnvSlot"/>.</summary>
+    /// <summary>Which of slots 1..5 this material had a texture in at enrollment (bit s-1), plus slot 6, the
+    /// flow map, at bit 5 -- above the five, below <see cref="EnvSlot"/>. The live tid is still re-fetched
+    /// per frame like slot 0's; this only says which slots are worth asking for.</summary>
     private static readonly int[] _oSlots = new int[MaxOwned];
-    /// <summary>#123: this part's <see cref="ShaderFeature"/> and the three .mtr parameters that drive it,
+    /// <summary>This part's <see cref="ShaderFeature"/> and the three .mtr parameters that drive it,
     /// staged verbatim into the record's <c>feat</c> vec4. Which three depends on the feature -- sway
     /// speed/strength/tileset-Z for wind, roof offset/clip/interior for the toggles, slide speed for the
     /// flow map. Read once at enrollment: a .mtr does not animate.</summary>
     private static readonly float[] _oFeat = new float[MaxOwned * 4];
-    /// <summary>#126: this part's <see cref="AlloyClass"/> -- the pass it draws in. The most significant
+    /// <summary>This part's <see cref="AlloyClass"/> -- the pass it draws in. The most significant
     /// radix digit, so each class occupies a contiguous run of <see cref="_order"/> and each pass owns a
     /// contiguous run of batches.</summary>
     private static readonly byte[] _oCls = new byte[MaxOwned];
-    /// <summary>CX-189: a cutout part whose material asks for alpha-to-coverage. Routed to the tail of the
+    /// <summary>A cutout part whose material asks for alpha-to-coverage. Routed to the tail of the
     /// cutout run so <see cref="CoverageLayer"/> can take it as one batch range.</summary>
     private static readonly bool[] _oA2c = new bool[MaxOwned];
     /// <summary>The bucket this part was captured in, for the one-owner audit alone: an UNMATCHED part is
     /// one we drew that the engine's iterator never walked, and "which bucket did it come from" is the only
     /// question that separates a suppression gap from geometry the engine simply culled this frame.</summary>
     private static readonly byte[] _oBucket = new byte[MaxOwned];
-    /// <summary>#126: the material's Aurora blend pair, translated to GL at bind time. Only the blending
+    /// <summary>The material's Aurora blend pair, translated to GL at bind time. Only the blending
     /// classes read it.</summary>
     private static readonly byte[] _oSrc = new byte[MaxOwned], _oDst = new byte[MaxOwned];
     /// <summary><see cref="AlloyCandidate.Wash"/>: a cutout rerouted into the blended class for its graded
     /// fringe, and so drawn under a polygon offset (it is routinely a decal lying on an opaque surface).
     /// Batch key term. Its DEPTH is the class's own -- see <c>BlendLaysDepth</c>.</summary>
     internal static readonly byte[] _oWash = new byte[MaxOwned], _gWash = new byte[MaxOwned];
-    /// <summary>#292: this part's material said <c>twosided</c>, so it draws with face culling OFF. The
+    /// <summary>This part's material said <c>twosided</c>, so it draws with face culling OFF. The
     /// engine's default -- and what a part with no material gets -- is culling ON, which is why this is the
     /// exception flag rather than a cull flag.</summary>
     private static readonly bool[] _oNoCull = new bool[MaxOwned];
-    /// <summary>#126: the part's LOCAL bbox centre (part+0x64/+0x70, the pair
+    /// <summary>The part's LOCAL bbox centre (part+0x64/+0x70, the pair
     /// <c>Camera::GetCanKeyholeDissolve</c> and the caster cull both read). Run through the live model matrix
     /// each pass it gives the world-space sort key for the back-to-front blended order; captured at
     /// enrollment because a bbox does not move under a part.</summary>
     private static readonly float[] _oCx = new float[MaxOwned], _oCy = new float[MaxOwned],
                                     _oCz = new float[MaxOwned];
-    /// <summary>#152: the part's bbox RADIUS (half the diagonal), the colour LOD's size input. 0 = bbox
+    /// <summary>The part's bbox RADIUS (half the diagonal), the colour LOD's size input. 0 = bbox
     /// degenerate or unread -- such a part is never LOD-culled, unknown bounds are not "small".</summary>
     private static readonly float[] _oR = new float[MaxOwned];
-    /// <summary>The caster's bound in the part's OWN space -- the box of the vertices its model matrix draws, as
-    /// centre and half-diagonal, read off the VDO at enrollment. The engine's part bbox cannot be it: only a static
-    /// tile part's is filled (<c>ComputePartBBox</c> @0x461370, called from <c>ProcessStaticParts</c> alone, in parent
-    /// space), so a part on a node fell back to the farthest vertex from its origin -- true, but it swallowed offset
-    /// geometry's surroundings: a harbour ship's mast read 12.2 m about its waterline origin where its own box is
-    /// 4.9 m. 0 radius = unread.</summary>
+    /// <summary>The caster's bound in the part's OWN space -- the box of the vertices its model matrix draws,
+    /// as centre and half-diagonal, read off the VDO at enrollment. The engine's part bbox cannot be it: only a
+    /// static tile part's is filled (<c>ComputePartBBox</c> @0x461370, in parent space), and a farthest-vertex
+    /// fallback swallows offset geometry -- a ship's mast reads 12.2 m where its own box is 4.9 m. 0 r = unread.</summary>
     private static readonly float[] _oBx = new float[MaxOwned], _oBy = new float[MaxOwned],
                                     _oBz = new float[MaxOwned], _oBr = new float[MaxOwned];
     private static readonly int[] _order = new int[MaxOwned];
     private static readonly int[] _orderTmp = new int[MaxOwned];    // #84: LSD radix intermediate
-    /// <summary>CX-9: every live skinned slot, rebuilt with <see cref="_order"/> -- skin-ness is
+    /// <summary>Every live skinned slot, rebuilt with <see cref="_order"/> -- skin-ness is
     /// enrollment-static, so <c>PoseSkinned</c> walks this instead of the whole table.</summary>
     private static readonly int[] _skinOrder = new int[MaxOwned];
     private static int _skinCount;
-    /// <summary>#126: the third radix digit's buckets, and the [start, end) range each class occupies in
+    /// <summary>The third radix digit's buckets, and the [start, end) range each class occupies in
     /// <see cref="_order"/> afterwards. A pass draws its class's range and nothing else.</summary>
     private static readonly int[] _clsCount = new int[AlloyClasses.Count],
                                   _clsStart = new int[AlloyClasses.Count],
@@ -118,7 +114,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Entries in <see cref="_order"/>: <see cref="_ownCount"/> minus whatever the all-owned-or-none
     /// sweep dropped. The draw walks this, never the slot count.</summary>
     private static int _orderCount;
-    /// <summary>#659 diag: how many ownership slots hang off this gob, and how many of those read as tile gobs.</summary>
+    /// <summary>How many ownership slots hang off this gob, and how many of those read as tile gobs.</summary>
     internal static (int slots, int tile) SlotsOnGob(IntPtr gob)
     {
         int n = 0, t = 0;
@@ -130,7 +126,7 @@ public sealed unsafe partial class AlloyRenderer
     // built lazily inside the bracket (VAOs don't share across contexts; the buffers they reference do)
     private static readonly IntPtr[] _vVdo = new IntPtr[MaxVdos];
     private static readonly uint[] _vVao46 = new uint[MaxVdos];
-    /// <summary>#260: does Alloy own the pools this slot's VAO pulls from? There is only one VAO now -- the
+    /// <summary>Does Alloy own the pools this slot's VAO pulls from? There is only one VAO now -- the
     /// takeover uploads into the pool's OWN buffer, so "Alloy's copy" and "the engine's buffer" are the same
     /// name -- and this is what is left of the distinction: the acceptance signal
     /// (<see cref="AlloyRenderer.VaoName"/>), stamped once per slot build rather than probed per draw.</summary>
@@ -138,7 +134,7 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos];
     private static readonly VertexStream[] _vUv = new VertexStream[MaxVdos];
-    /// <summary>#294: the engine's UV location was DISABLED on this VDO's VAO, as opposed to enabled over no
+    /// <summary>The engine's UV location was DISABLED on this VDO's VAO, as opposed to enabled over no
     /// buffer. Both leave <c>_vUv</c> absent and both are owned, but only the first proves the engine's
     /// vertex stage reads the same generic (0,0,0,1) constant Alloy's does -- so this is a report, not a
     /// gate.</summary>
@@ -146,25 +142,21 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly VertexStream[] _vNrm = new VertexStream[MaxVdos];
     private static readonly bool[] _vLit = new bool[MaxVdos];       // #83: has a usable 3-float normal stream
     /// <summary>The VDO carries the BONE streams, i.e. it belongs to a true skinmesh (a cloak, a robe, a
-    /// tail). #128 refused such a part outright -- no skinning branch existed, so drawing one meant a BIND
-    /// pose at the node matrix, a misrender rather than a fallback. #137 gave the Alloy vertex stages that
-    /// branch, so the flag is now what SELECTS it: bone attributes bound in the Alloy VAO, a per-frame pose
+    /// tail). The flag SELECTS the skinning branch: bone attributes bound in the Alloy VAO, a per-frame pose
     /// forced out of the engine, a bone slot in the record. Both streams or neither -- a half-skinned VAO
     /// would skin some vertices and leave the rest at the origin.</summary>
     private static readonly bool[] _vSkin = new bool[MaxVdos];
-    /// <summary>#137: the two bone streams' formats, harvested from the same engine VAO as position and UV.
+    /// <summary>The two bone streams' formats, harvested from the same engine VAO as position and UV.
     /// Normalisation is carried (the weights ship as normalised shorts on some content) because
     /// <c>VertexAttribPointer</c> silently means something else without it.</summary>
     private static readonly VertexStream[] _vBi = new VertexStream[MaxVdos], _vBw = new VertexStream[MaxVdos];
     private static readonly bool[] _vStale = new bool[MaxVdos];     // slot recycled: rebuild the 4.6 VAO
     private static int _vdoCount;
 
-    /// <summary>#294: which live VDO slots carry NO UV stream, for the frame dump's header. A part on one of
-    /// these samples every texture at the generic constant (0,0) -- one texel of the diffuse, one texel of
-    /// each map -- so its whole material is a single sample stretched over the mesh. That is the engine's
-    /// input too, but it is the first thing to suspect when an owned part draws in the wrong COLOUR rather
-    /// than not at all, and no other column in the dump would say so. Slot indices, matching the <c>vao=</c>
-    /// field on the G lines.</summary>
+    /// <summary>Which live VDO slots carry NO UV stream, for the frame dump's header. A part on one of these
+    /// samples every texture at the generic constant (0,0), so its whole material is one sample stretched over
+    /// the mesh -- the first thing to suspect when an owned part draws in the wrong COLOUR rather than not at
+    /// all. Slot indices, matching the <c>vao=</c> field on the G lines.</summary>
     internal static string UvlessSlots()
     {
         string s = "";
@@ -179,15 +171,15 @@ public sealed unsafe partial class AlloyRenderer
         return s.Length == 0 ? "none" : s;
     }
     /// <summary>Counting-sort buckets. The draw order groups by (lit, no-cull, VDO) so the VAO, the PROGRAM
-    /// and (#292) the face-culling state each settle once per group -- lit slots are the upper half, and the
+    /// and the face-culling state each settle once per group -- lit slots are the upper half, and the
     /// two-sided slots the upper half of each of those. <see cref="SortKeyOf"/> says why lit outranks cull.
     /// </summary>
     private static readonly int[] _sortCount = new int[MaxVdos * 4];
-    /// <summary>#84 second radix digit: counting-sort buckets over the interned texture key. Sorting by it
+    /// <summary>The second radix digit's counting-sort buckets, over the interned texture key. Sorting by it
     /// FIRST and then stably by (lit, VDO) leaves the order grouped by (lit, VDO) with equal textures
     /// contiguous inside each group -- i.e. exactly the batch key, in one pass over the table.</summary>
     private static readonly int[] _texSortCount = new int[MaxMats];
-    /// <summary>#327: the third radix digit's buckets, over <see cref="FeatPrimKey"/>. The feature and the
+    /// <summary>The third radix digit's buckets, over <see cref="FeatPrimKey"/>. The feature and the
     /// primitive mode are both cut-key terms and neither was sorted, so a VDO's run cut on every interleave
     /// of them -- under bindless, most of what a lit batch could still cut on.</summary>
     private static readonly int[] _featPrimCount = new int[FeatPrimKeys];
@@ -195,45 +187,32 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _mVal = new int[MatHash];
     private static int _matCount;
 
-    /// <summary>#244 (AC1): the mesh-sharing census's scratch. One packed (VDO slot, matrix-class, item) key
+    /// <summary>The mesh-sharing census's scratch. One packed (VDO slot, matrix-class, item) key
     /// per live owned part, sorted in place at enrollment so equal meshes come out adjacent. Cold -- it runs
     /// on the enrollment cadence, never per frame.</summary>
     private static readonly long[] _msKey = new long[MaxOwned];
-    /// <summary>#244: the census key's layout -- VDO slot, then the matrix-class bit, then the item's INDEX
-    /// RANGE (first index, then element count) -- so a sort groups equal meshes and the bit can be read back
-    /// off the run's key. Named because the pack and the read-back are two sites that must agree.
-    /// <para>The range rather than the item INDEX, and that is the difference between two tiers of sharing:
-    /// two placements handed distinct item entries that name the same (offset, count) are the same mesh, and
-    /// a key on the index cannot see it. The entry is one dereference the enrollment can afford.</para>
-    /// <para>63 bits, so the key stays positive and sorts as an ordinary long: 12 for the VDO slot (capacity
-    /// <see cref="MaxVdos"/>), 1 for matrix-class, 32 for the first index and 18 for the count. ponytail: a
-    /// count past <see cref="MsCountMax"/> saturates rather than carrying into the offset field -- an item
-    /// of a quarter-million indices does not exist on NWN content, and a wrong SATURATION merges two meshes
-    /// that differ only above that size, which over-reports sharing rather than hiding it.</para></summary>
+    /// <summary>The census key: VDO slot, then the matrix-class bit, then the item's INDEX RANGE (first index, element count), so a sort
+    /// groups equal meshes and the bit reads back off the run's key. The range rather than the item index -- two placements with distinct
+    /// item entries naming the same (offset, count) are one mesh. 63 bits, positive: 12 VDO slot, 1 matrix-class, 32 first index, 18 count.
+    /// ponytail: a count past <see cref="MsCountMax"/> saturates rather than carrying into the offset field, which over-reports sharing.</summary>
     private const int MsVaoShift = 51, MsFirstShift = 18;
     private const long MsMxBit = 1L << 50;
     private const int MsCountMax = (1 << 18) - 1;
-    /// <summary>#244: the SHAPE key's layout -- element count in the low bits under the interned diffuse
+    /// <summary>The SHAPE key's layout -- element count in the low bits under the interned diffuse
     /// texture, the primitive mode and the gob bit. Same count field as the range key, so the clamp is
     /// shared. <see cref="MaxMats"/> is 2^14, which is the width reserved for the texture.</summary>
     private const int MsTexShift = 18, MsPrimShift = 32;
     private const long MsGobBit = 1L << 35;
-    /// <summary>#244: matrix-class, in the SHAPE key too. It is the collapsibility discriminator, not a
-    /// detail: an object-space part's vertices are the model's own, so two placements of one model hash
-    /// identically and could genuinely share them -- while a world-space part has its placement baked into
-    /// those vertices, so two placements differ by construction and no de-duplication can collapse them
-    /// without un-baking the transform first. The hash reporting them apart is the truth about what is
-    /// collapsible, not a miss.</summary>
+    /// <summary>Matrix-class, in the SHAPE key too: it is the collapsibility discriminator. An object-space
+    /// part's vertices are the model's own, so two placements of one model hash identically and could share
+    /// them; a world-space part has its placement baked into those vertices, so two placements differ by
+    /// construction and nothing can collapse them without un-baking the transform first.</summary>
     private const long MsShapeMxBit = 1L << 34;
-    /// <summary>#244: the shape census's scratch, parallel to <see cref="_msKey"/> and sorted the same way.
+    /// <summary>The shape census's scratch, parallel to <see cref="_msKey"/> and sorted the same way.
     /// A second array rather than a second walk: the guarded element-pool read that both keys need is the
     /// expensive half, and doing it once is what keeps this on the enrollment cadence.</summary>
     private static readonly long[] _msShape = new long[MaxOwned];
-    /// <summary>#244: what the last census found -- distinct meshes, the largest instance count on any one
-    /// mesh, how many parts sit on a mesh at least two parts share, and how many of THOSE are matrix-class.
-    /// The last number is the one the ticket turns on: a world-space part has an identity model matrix, so
-    /// "same mesh, different transform" is not even true of it and instancing it collapses nothing.</summary>
-    /// <summary>#674: what the lightmap bake keys an instance on -- the slot's VDO slot and item (the chart
+    /// <summary>What the lightmap bake keys an instance on -- the slot's VDO slot and item (the chart
     /// lookup) and its record's model matrix (the placement; identity for a world-space tile part). The
     /// bounds come from the chart, not from here: the engine's part bbox is unpopulated on tile parts.
     /// False for an empty slot.</summary>
@@ -241,7 +220,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         vao = item = 0; model = Matrix4x4.Identity;
         if ((uint)i >= (uint)MaxOwned || _oTri[i] == IntPtr.Zero) return false;
-        // CX-120: a DB slot's chart key is (MeshChart.DbSlot, arena range) -- its _oVao/_oItem are 0/-1, and a
+        // A DB slot's chart key is (MeshChart.DbSlot, arena range) -- its _oVao/_oItem are 0/-1, and a
         // slot the bake may not take (a mover, an unlit mesh) has no placement to offer it at all
         if (DbSlot(i))
         {
@@ -253,90 +232,75 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    // #84 multidraw submission: one entry per DRAW in _dCount/_dOff/_dBase + one staged SSBO record per draw,
+    // Multidraw submission: one entry per DRAW in _dCount/_dOff/_dBase + one staged SSBO record per draw,
     // sliced into batches by the _g* table. All static -- the hot path stages into them and allocates nothing.
     internal static readonly int[] _dCount = new int[MaxOwned];
     internal static readonly nint[] _dOff = new nint[MaxOwned];
     internal static readonly int[] _dBase = new int[MaxOwned];
     internal static readonly float[] _dData = new float[MaxRecords * DrawFloats];
-    /// <summary>#243: the world bounding sphere of each RECORD, parallel to <see cref="_dData"/> -- centre
-    /// in xyz, radius in w. Written on the same edges the record is (stable once at enrolment, again
-    /// whenever the part moves), because the sphere is a function of the same model matrix. A radius of
-    /// <see cref="NeverCull"/> means "do not cull me": the vertices move under a matrix that does not
-    /// (skinned, dangly, a displacing feature), or the bbox is degenerate. Unknown bounds mean VISIBLE --
-    /// the failure mode of a cull is invisible geometry.</summary>
+    /// <summary>The world bounding sphere of each RECORD, parallel to <see cref="_dData"/> -- centre in xyz,
+    /// radius in w, written on the same edges the record is because it is a function of the same model matrix.
+    /// A radius of <see cref="NeverCull"/> means "do not cull me": the vertices move under a matrix that does
+    /// not (skinned, dangly, a displacing feature), or the bbox is degenerate. Unknown bounds mean VISIBLE.</summary>
     private static readonly float[] _dSph = new float[MaxRecords * 4];
     /// <summary>The radius that exempts a record from the cull. Large enough to fail every plane test and
     /// finite, so it survives a matrix multiply without becoming a NaN.</summary>
     internal const float NeverCull = 1e30f;
-    /// <summary>#153: per-draw bindless handles, 8 per record (diffuse + material slots 1..7), parallel to
+    /// <summary>Per-draw bindless handles, 8 per record (diffuse + material slots 1..7), parallel to
     /// <see cref="_dData"/>. 0 = slot empty; the record's slot mask already forbids sampling those.</summary>
     internal static readonly ulong[] _dTexH = new ulong[MaxRecords * 8];
-    /// <summary>#242: the per-draw index array -- for draw <c>n</c> of this pass, the RECORD slot it reads.
-    /// The records themselves are indexed by ownership slot and persist across frames, while draw order is
-    /// per pass (a fading tile joins the blended run, and that run is sorted from this pass's eye), so the
-    /// two cannot be the same number. This is the only per-draw array the frame still uploads whole -- four
-    /// bytes each rather than a hundred and seventy-six.</summary>
+    /// <summary>The per-draw index array -- for draw <c>n</c> of this pass, the RECORD slot it reads. Records
+    /// are indexed by ownership slot and persist across frames, while draw order is per pass (a fading tile
+    /// joins the blended run, sorted from this pass's eye), so the two cannot be the same number. The only
+    /// per-draw array the frame uploads whole: four bytes each rather than a hundred and seventy-six.</summary>
     internal static readonly int[] _dSlot = new int[MaxOwned];
-    /// <summary>#242: which record slots were rewritten this frame, i.e. the movers. Uploaded one
+    /// <summary>Which record slots were rewritten this frame, i.e. the movers. Uploaded one
     /// <c>BufferSubData</c> each; past a quarter of the table the whole range goes up in one call instead.
     /// </summary>
     internal static readonly int[] _recDirty = new int[MaxRecords];
     internal static int _recDirtyN;
-    // BW7: the per-slot record stamps (epoch, verified frame, tenancy, texture staleness) are RouteGate's rows.
-    /// <summary>#242: the blanket invalidation counter. Bumped by anything that can make every persistent
+    // The per-slot record stamps (epoch, verified frame, tenancy, texture staleness) are RouteGate's rows.
+    /// <summary>The blanket invalidation counter. Bumped by anything that can make every persistent
     /// record wrong at once -- an enrollment (the slots reshuffle), a bindless handle wipe, a lost context,
     /// a debug toggle, an armed frame dump. See ADR 0017's "Step 2, as built".</summary>
     private static int _recEpoch = 1;
-    /// <summary>#242: the borrowed <c>CAurTexture*</c> this slot's record resolved its diffuse (and each
-    /// declared map slot) from, last rebuild. The pointer is the CHEAP half of the texture path -- a plain
-    /// field read off the material -- and the tid and bindless handle behind it are the expensive half, so
-    /// an unchanged pointer is what buys the whole re-fetch being skipped. An animated texture cycles engine
-    /// names, so its pointer changes every frame and it is a permanent mover; that is correct.</summary>
+    /// <summary>The borrowed <c>CAurTexture*</c> this slot's record resolved its diffuse (and each declared
+    /// map slot) from, last rebuild. The pointer is the CHEAP half -- a plain field read off the material --
+    /// and the tid and bindless handle behind it the expensive half, so an unchanged pointer is what buys
+    /// skipping the re-fetch. An animated texture cycles engine names, so it is a permanent mover.</summary>
     private static readonly IntPtr[] _recAur = new IntPtr[MaxOwned];
     private static readonly IntPtr[] _recAurS = new IntPtr[MaxOwned * MapSlots];
-    /// <summary>#242: the resolved tids and live slot mask behind <see cref="_recAur"/> -- still needed
+    /// <summary>The resolved tids and live slot mask behind <see cref="_recAur"/> -- still needed
     /// every frame by the batch key (a bind-path batch cuts on its textures) even when the record itself
     /// does not move.</summary>
     private static readonly int[] _recTid = new int[MaxOwned];
-    /// <summary>CX-188: the <see cref="TexRegistry.TableSerial"/> this slot's textures were last resolved
-    /// under; 0 is "never, or ask again". While it matches, <c>StageDbPart</c> serves the slot's eight
-    /// handles, its bind-path tid and its map-slot tids from the memos instead of re-resolving them.
-    /// <para>Two invalidation edges, both wired. (1) Anything in the registry that can change an answer bumps
-    /// <see cref="TexRegistry.TableSerial"/>, which busts every slot at once -- a retire, an arrival, a
-    /// dropped handle, a kind discovery, a failure, a context loss. (2) This part's own override column
-    /// (<c>SceneDb.PartTexId</c>, written by <c>Gob::ReplaceTexture</c> and the PLT swaps) only moves under a
-    /// <c>Dirty.Texture</c> fold, which calls <see cref="DbTexDirty"/>; a reseat or a recipe change goes
-    /// through <see cref="UnstampRecord"/>, which zeroes it with the rest of the slot's stamps. A resolve that
-    /// did not SETTLE (a white stand-in, a slot still loading) stamps 0 and is asked again next frame.</para>
-    /// <para>The LIVE check is <see cref="StaleAudit"/>, which already re-derives the env-map bit, the PLT
-    /// flag and the whole handle block from the database on a cadence and names the slot that disagrees -- so
-    /// a skip that ever hid a real change reports itself rather than flickering. Off device,
-    /// <c>TexRegistry.SelfCheck</c> asserts the serial's bump on each registry edge.</para></summary>
+    /// <summary>The <see cref="TexRegistry.TableSerial"/> this slot's textures were last resolved under; 0 is
+    /// "never, or ask again", which an unsettled resolve (a white stand-in, a slot still loading) stamps. While
+    /// it matches, <c>StageDbPart</c> serves the slot's eight handles and its tids from the memos. The registry
+    /// bumps the serial to bust every slot; this slot's own override column busts it via <see cref="DbTexDirty"/>.</summary>
     private static readonly int[] _recTexStamp = new int[MaxOwned];
-    /// <summary>CX-188: the registry serial the whole stage phase resolves against, read ONCE per phase --
+    /// <summary>The registry serial the whole stage phase resolves against, read ONCE per phase --
     /// the registry is quiet while the walk runs (its writers are the game thread and the bracket's Drain,
     /// and the pool's workers run with the game thread parked in <c>StagePool.Run</c>), so a per-part read
     /// would be 12,7k reads of one unchanging int.</summary>
     private static int _stageTexSerial;
-    /// <summary>CX-188: frames this period whose <see cref="_stageTexSerial"/> differed from the previous
+    /// <summary>Frames this period whose <see cref="_stageTexSerial"/> differed from the previous
     /// frame's, and the value it is compared against. The skip's own instrument: the serial is meant to move
     /// on a texture EVENT (a transcode drip, an area load), so a count near the frame count means something
     /// is bumping it per frame and every slot re-resolves anyway.</summary>
     private static long _texSerialMoves;
     private static int _texSerialWas;
-    /// <summary>CX-188: this slot's texture answers may have changed for a reason the registry serial cannot
+    /// <summary>This slot's texture answers may have changed for a reason the registry serial cannot
     /// see -- its part's own override column. Called from the record fold for every part carrying
     /// <c>Dirty.Texture</c> (or a create/tree/material mark, which can re-point the recipe under it).</summary>
     internal static void DbTexDirty(int slot)
     { if ((uint)slot < (uint)_recTexStamp.Length) _recTexStamp[slot] = 0; }
     /// <summary>This slot has a map slot whose texture had no GL id at its last resolve. NOT stale: the
-    /// texture is re-asked on the slot's colour cadence and the record rewritten only once it has an id. It
-    /// used to ride <see cref="RouteGate.TexStale"/>, and a map the engine never queues (nothing binds it under
-    /// Alloy, so nothing builds it) then rewrote, re-minted and force-routed its record EVERY frame -- 7,000
-    /// records a frame in an area with .mtr normal maps.</summary>
+    /// texture is re-asked on the slot's colour cadence and the record rewritten only once it has an id.
+    /// Riding <see cref="RouteGate.TexStale"/> instead would force-route the record EVERY frame for a map the
+    /// engine never queues -- 7,000 records a frame in an area with .mtr normal maps.</summary>
     private static readonly bool[] _recSlotQueued = new bool[MaxOwned];
-    /// <summary>CX-52: when this slot's diffuse replaced the white stand-in, on <see cref="TexStream.Clock"/>; 0 = it
+    /// <summary>When this slot's diffuse replaced the white stand-in, on <see cref="TexStream.Clock"/>; 0 = it
     /// never drew the stand-in. Staged into the record's <see cref="ArriveFloat"/> for the colour pass's fade.</summary>
     private static readonly float[] _recArrive = new float[MaxOwned];
 
@@ -405,7 +369,7 @@ public sealed unsafe partial class AlloyRenderer
         log.Info(ok ? "AlloyRenderer.SelfCheckNameRetired: passed" : "AlloyRenderer.SelfCheckNameRetired: FAILED -- a retired name did not mark exactly its records, or marked one without resetting its texture memo");
     }
 
-    /// <summary>#386: an owned name was REPLACED by another for the same content (the transcode swap, an
+    /// <summary>An owned name was REPLACED by another for the same content (the transcode swap, an
     /// engine re-upload). Re-staging every record on it was Restage 3,3-4,9ms against 1,1 in the hitch rows
     /// (a tileset texture sits on hundreds of parts); instead the records take the new name here and their
     /// handle block is rewritten in the next bracket by <see cref="ApplySwaps"/> -- no chase, no re-stage.</summary>
@@ -451,28 +415,17 @@ public sealed unsafe partial class AlloyRenderer
         _swapN = 0; _swapOverflow = false;
     }
 
-    /// <summary>CX-104 (review): a slot marked <see cref="RouteGate.TexStale"/> by a COLD path -- a retired or
-    /// swapped owned texture name, a dropped cycle controller, a zeroed bindless handle -- is re-resolved by
-    /// <c>RouteWanted</c>, which only ever sees the slots the visible set VISITED. The index-driven set holds
-    /// the gob slots and the grid's frustum hits, so an off-frustum static slot would keep a zeroed handle
-    /// block until an enrolment happened to rebuild the set wholesale: harmless on screen (nothing draws it)
-    /// but the caster bake samples that block for off-screen casters, and a zeroed one reads fully opaque
-    /// where the part's real diffuse is a cutout. This raises the next visible-set rebuild to a FULL walk,
-    /// which is all the re-resolve needs -- <c>RouteWanted</c> already routes a tex-stale slot regardless of
-    /// the frustum once it is visited. One O(live) scan per retire event, which is what the record-epoch bump
-    /// this replaced cost on every one of them.</summary>
+    /// <summary>Raise the next visible-set rebuild to a FULL walk. <c>RouteWanted</c> re-resolves a slot
+    /// marked <see cref="RouteGate.TexStale"/> only once the visible set VISITS it, and the index-driven set
+    /// holds just the gob slots and the grid's frustum hits -- so an off-frustum static slot would keep a
+    /// zeroed handle block the caster bake then samples as fully opaque. One O(live) scan per retire event.</summary>
     internal static void NoteTexStalePending() => _texStalePending = true;
     private static volatile bool _texStalePending;
 
-    /// <summary>CX-188: the texture MARK and the texture MEMO move together, always -- the one funnel every
-    /// setter of <see cref="RouteGate.TexStale"/> goes through.
-    /// <para>The mark is repaired by <c>StageDbPart</c>'s resolve, and that resolve is skipped while
-    /// <see cref="_recTexStamp"/> still holds the current <see cref="TexRegistry.TableSerial"/>. None of the
-    /// marking paths is a registry event -- the owned-texture retire drip, the engine-name handle cache's
-    /// <c>DropHandle</c> and the cycle-controller drop all bump no serial -- so marking without resetting the
-    /// stamp skips the block, never clears the mark, binds the retired name or the zeroed handle, and
-    /// force-routes the slot for the rest of the session. Exactly the fault the clear was added to end,
-    /// through a different door.</para></summary>
+    /// <summary>The one funnel every setter of <see cref="RouteGate.TexStale"/> goes through: the texture MARK
+    /// and the texture MEMO move together, always. None of the marking paths is a registry event, so marking
+    /// without zeroing <see cref="_recTexStamp"/> leaves <c>StageDbPart</c>'s resolve skipped -- the mark never
+    /// clears, the retired name or zeroed handle stays bound and the slot force-routes for the session.</summary>
     private static void MarkTexStale(int i) { _gate[i].TexStale = true; _recTexStamp[i] = 0; }
 
     /// <summary>Mark every record that minted a handle on <paramref name="name"/>. Cold (once per retired
@@ -488,10 +441,8 @@ public sealed unsafe partial class AlloyRenderer
                 if (_recTidS[i * MapSlots + s] == n) { MarkTexStale(i); break; }
         }
     }
-    /// <summary>The Drain-time form: every name about to lose its handle, marked in one scan. Replaces the
-    /// record-epoch bump <c>DropHandle</c> used to make -- which dirtied all 20k records, re-collected the
-    /// caster list and rebuilt the visible set on every owned-texture release (one every second or two in the
-    /// plaza under the texture cache). A swapped record already holds its new name, so it matches nothing here.
+    /// <summary>The Drain-time form: every name about to lose its handle, marked in one scan. A swapped
+    /// record already holds its new name, so it matches nothing here.
     /// ponytail: names past the mark table fall back to the epoch bump; GL names are small ints in practice.</summary>
     internal static void NoteOwnedNamesRetired(List<uint> names, HashSet<uint> handles)
     {
@@ -515,18 +466,9 @@ public sealed unsafe partial class AlloyRenderer
         foreach (uint n in handles) _nameMark[n] = 0;
     }
     /// <summary>A handle that just died must leave every record block NOW, not at the next colour build: the
-    /// caster bake samples the GPU handle table off a STANDING staging, and under single upload the engine
-    /// deletes the texture in its own context before any drain runs. On radeonsi a sample through a dead
-    /// handle is a GPU page fault and a hard reset (the Sencliff crash); NVIDIA reads garbage silently.
-    /// Cold: once per retired name, the same scan class as <see cref="NoteOwnedNamesRetired"/>. The zeroed
-    /// block reads opaque in the handle-masked depth stage until the colour side re-resolves the record.
-    /// <para>Reached by TWO funnels. The engine-name handle cache calls it straight, from
-    /// <see cref="DropHandle(uint, bool)"/>. The DB registry mints and drops its OWN handles
-    /// (<c>TexRegistry.DropHandle</c>) and used to tell nobody: a DB record copies slot 0..7's handle at
-    /// staging and holds it across frames, so a released or retired registry slot left every record on it
-    /// sampling a non-resident handle -- garbage on NVIDIA, a GPU page fault on radeonsi. The registry now
-    /// queues the dying VALUE and <c>TexRegistry.Drain</c> hands it here inside the bracket, which the colour
-    /// frame enters before it binds a target or draws anything.</para></summary>
+    /// caster bake samples the GPU handle table off a STANDING staging, and a sample through a dead handle is
+    /// a GPU page fault and a hard reset on radeonsi, silent garbage on NVIDIA. Reached from the engine-name
+    /// cache's <see cref="DropHandle(uint, bool)"/> and from <c>TexRegistry.Drain</c>, inside the bracket.</summary>
     internal static void ZeroHandle(ulong v)
     {
         if (v == 0) return;
@@ -552,37 +494,29 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly byte[] _nameMark = new byte[1 << 20];
     private static readonly int[] _recTidS = new int[MaxOwned * MapSlots];
     private static readonly int[] _recSlotMask = new int[MaxOwned];
-    /// <summary>#242: how many record slots the persistent GPU buffer holds for OWNED parts, the sky's
+    /// <summary>How many record slots the persistent GPU buffer holds for OWNED parts, the sky's
     /// reserved block sitting immediately above them. Grows to the high-water ownership count and never
     /// shrinks; a growth reallocates, so the whole range is re-sent on that frame.</summary>
     internal static int _recOwnCap;
-    /// <summary>#242: the dirty list overflowed (or the buffer was just reallocated) -- send the whole
+    /// <summary>The dirty list overflowed (or the buffer was just reallocated) -- send the whole
     /// range instead of naming slots. Correct, and merely more expensive than the incremental path.</summary>
     internal static bool _recDirtyAll = true;
-    /// <summary>#153/#220: GL texture NAME -&gt; resident bindless handle, open-addressed.
-    /// <para>#220 was this cache keyed on an ENGINE name. The engine deletes its textures and GL recycles
-    /// the names, so a handle could outlive the texture it was made for and a recycled name would hit the
-    /// stale entry -- a wall sampling a portrait. The wipe-every-enrollment this used to do was the bound on
-    /// that, and it was both too weak (the artifact was stable across wipes) and harmful: it forgot
-    /// residency it never gave up, so the next mint re-resided an already-resident handle, which is
-    /// GL_INVALID_OPERATION and the error burst the ticket recorded on transitions.</para>
-    /// <para>#211 removed the premise -- these are Alloy-OWNED names, and nothing but
-    /// <c>OwnedTextures</c> creates or destroys one. The cache is now invalidated EXACTLY when its texture
-    /// is retired (<c>OwnedTextures.Drain</c> -&gt; <c>DropHandle</c>), and the enrollment wipe is gone while
-    /// ownedtex is armed. Unarmed, engine names populate this again and the wipe is still the only heal.
-    /// </para></summary>
+    /// <summary>GL texture NAME -&gt; resident bindless handle, open-addressed. These are Alloy-OWNED names and
+    /// nothing but <c>OwnedTextures</c> creates or destroys one, so the cache is invalidated EXACTLY when its
+    /// texture is retired (<c>OwnedTextures.Drain</c> -&gt; <c>DropHandle</c>) and there is no enrollment wipe
+    /// while ownedtex is armed. Unarmed, engine names populate it again and the wipe is the only heal.</summary>
     internal const int HandleHashBits = 15;
     internal static readonly int[] _hTid = new int[1 << HandleHashBits];
     internal static readonly ulong[] _hVal = new ulong[1 << HandleHashBits];
-    /// <summary>#220: did WE make <see cref="_hVal"/>[i] resident? The driver cannot be asked, and guessing
+    /// <summary>Did WE make <see cref="_hVal"/>[i] resident? The driver cannot be asked, and guessing
     /// produces GL_INVALID_OPERATION in both directions -- residency is only ever ours to know.</summary>
     internal static readonly bool[] _hRes = new bool[1 << HandleHashBits];
-    /// <summary>#153: is the bindless path live? Extension present, entry points resolved, not vetoed by
+    /// <summary>Is the bindless path live? Extension present, entry points resolved, not vetoed by
     /// alloy.bindless=off, and the LIT program's actual sources carry the handle block. When false everything
     /// draws exactly as before -- per-batch texture binds.</summary>
     internal static bool _bindless;
     internal static bool _bindlessProbed, _limitsProbed;
-    /// <summary>#126: this pass's draw order, rebuilt every pass from <see cref="_order"/> -- the opaque set
+    /// <summary>This pass's draw order, rebuilt every pass from <see cref="_order"/> -- the opaque set
     /// first, then the blended members sorted back-to-front, then additive. It is a separate array from
     /// _order because the membership is per FRAME (a fading tile joins the blended run for the frames it
     /// fades) and the blended order is per PASS (it depends on the camera).</summary>
@@ -591,19 +525,16 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>_oCls[i]</c> alone once the fade overlay applies.</summary>
     private static readonly byte[] _passCls = new byte[MaxOwned];
     private static readonly float[] _passAlpha = new float[MaxOwned];
-    /// <summary>#327: ...and, for the opaque classes only, whether the keyhole dissolves the entry this
+    /// <summary>...and, for the opaque classes only, whether the keyhole dissolves the entry this
     /// frame -- chased at route so the class run can be partitioned on it (see <see cref="RouteParts"/>).</summary>
     private static readonly bool[] _passDis = new bool[MaxOwned];
-    /// <summary>CX-189: the route's alpha-to-coverage cutouts and their dissolve bit, held until the cutout run is out.</summary>
+    /// <summary>The route's alpha-to-coverage cutouts and their dissolve bit, held until the cutout run is out.</summary>
     private static readonly int[] _a2cTmp = new int[MaxOwned];
     private static readonly bool[] _a2cDis = new bool[MaxOwned];
-    /// <summary>#322: the draw-arg cache -- index count, byte offset and base vertex as read off the VDO
-    /// item tables the last time this slot staged. Valid while stamped with the live epoch AND the stamp
-    /// survives <c>UnstampRecord</c>, which fires on every re-tenant and drifted keep -- the only edges that
-    /// re-point <c>_oVdo</c>/<c>_oItem</c>; Repack revokes before the tables move, and a freed VDO kills its
-    /// parts through the identity check first. Measured 2026-08-31: cutting these
-    /// (plus the duplicate identity compare) did NOT move the Restage bracket -- its bulk is elsewhere in
-    /// the staging loop. The cache stays because it is correct and strictly cheaper, not because it won.</summary>
+    /// <summary>The draw-arg cache -- index count, byte offset and base vertex as read off the VDO item
+    /// tables the last time this slot staged. Valid while stamped with the live epoch AND the stamp survives
+    /// <c>UnstampRecord</c>, which fires on every re-tenant and drifted keep -- the only edges that re-point
+    /// <c>_oVdo</c>/<c>_oItem</c>. Repack revokes before the tables move; a freed VDO kills its parts first.</summary>
     private static readonly int[] _cIdx = new int[MaxOwned];
     private static readonly nint[] _cOff = new nint[MaxOwned];
     private static readonly int[] _cBase = new int[MaxOwned];
@@ -615,68 +546,66 @@ public sealed unsafe partial class AlloyRenderer
     internal static readonly int[] _gLen = new int[MaxOwned];
     internal static readonly int[] _gVao = new int[MaxOwned];
     internal static readonly int[] _gTex = new int[MaxOwned];
-    /// <summary>#120: the live tids of slots 1..5 for this batch (0 = nothing bound there). Part of the batch
+    /// <summary>The live tids of slots 1..5 for this batch (0 = nothing bound there). Part of the batch
     /// KEY, not just of the bind set -- a batch that grouped on the diffuse alone would render every member
     /// under the first member's normal and specular maps.</summary>
     internal static readonly int[] _gTexN = new int[MaxOwned * MapSlots];
     internal static readonly uint[] _gMode = new uint[MaxOwned];
     internal static readonly bool[] _gLit = new bool[MaxOwned];
-    /// <summary>#123: the batch's <see cref="ShaderFeature"/>. Read by the depth prepass, which skips a batch
+    /// <summary>The batch's <see cref="ShaderFeature"/>. Read by the depth prepass, which skips a batch
     /// whose feature displaces vertices.</summary>
     internal static readonly int[] _gFeat = new int[MaxOwned];
-    /// <summary>#124: does this batch camera-dissolve? A key term for one reason only -- the keyhole
+    /// <summary>Does this batch camera-dissolve? A key term for one reason only -- the keyhole
     /// fragment stage <c>discard</c>s, and the depth prepass has no per-draw granularity, so a dissolving
     /// batch has to be droppable whole. Prepass depth for a wall the colour pass punches through would cull
     /// the room behind it.</summary>
     internal static readonly bool[] _gDis = new bool[MaxOwned];
-    /// <summary>CX-189: the batch is an alpha-to-coverage cutout (<see cref="_oA2c"/>); these close the cutout range.</summary>
+    /// <summary>The batch is an alpha-to-coverage cutout (<see cref="_oA2c"/>); these close the cutout range.</summary>
     internal static readonly bool[] _gA2c = new bool[MaxOwned];
-    /// <summary>#379 follow-up: did the depth prepass ACTUALLY draw this batch? Set by
+    /// <summary>Did the depth prepass ACTUALLY draw this batch? Set by
     /// <c>DepthPrepassPass</c> as it walks, not predicted from the class -- the SSAO consumer gate was a
     /// second copy of the prepass's skip conditions and drifted from it (a door read "in the depth" while
     /// the buffer plainly saw through it). The prepass is the only thing that knows.</summary>
     internal static readonly bool[] _gPrepassed = new bool[MaxOwned];
-    /// <summary>#126: the batch's class and blend pair. In the key because they ARE the GL state a multidraw
+    /// <summary>The batch's class and blend pair. In the key because they ARE the GL state a multidraw
     /// cannot vary inside: depth mask, blend function and the alpha-discard threshold.</summary>
     internal static readonly byte[] _gCls = new byte[MaxOwned];
     internal static readonly byte[] _gSrc = new byte[MaxOwned], _gDst = new byte[MaxOwned];
-    /// <summary>#292: this batch draws with face culling off. A batch key term rather than a per-draw one:
+    /// <summary>This batch draws with face culling off. A batch key term rather than a per-draw one:
     /// culling is fixed-function GL state and one multidraw cannot vary it.</summary>
     internal static readonly bool[] _gNoCull = new bool[MaxOwned];
     /// <summary>The run gob of a blended batch (zero for gobless geometry): consecutive batches with the same
     /// non-zero tag are one creature, prepassed and coloured together so its parts read at one alpha while
     /// two creatures still composite through each other.</summary>
     internal static readonly IntPtr[] _gGob = new IntPtr[MaxOwned];
-    /// <summary>#126: where the opaque set ends and where the blended run ends, in batch indices. Each pass
+    /// <summary>Where the opaque set ends and where the blended run ends, in batch indices. Each pass
     /// draws exactly its own range -- the depth prepass and the probe capture take the opaque prefix.</summary>
     internal static int _gOpaqueEnd, _gBlendEnd, _gWaterEnd;
-    /// <summary>#325: where the cutout run begins inside the opaque set, so the opaque pass can time the two
+    /// <summary>Where the cutout run begins inside the opaque set, so the opaque pass can time the two
     /// classes apart. Equals <see cref="_gOpaqueEnd"/> when nothing staged as cutout.</summary>
     private static int _gCutoutStart;
-    /// <summary>CX-189: where the alpha-to-coverage batches begin inside the cutout run; <see cref="_gOpaqueEnd"/> when none.</summary>
+    /// <summary>Where the alpha-to-coverage batches begin inside the cutout run; <see cref="_gOpaqueEnd"/> when none.</summary>
     internal static int _gA2cStart;
     internal static int _drawN;
     // #125: the sky's own draw list, staged after the batch records and issued one draw at a time -- a
     // skybox is a handful of parts and each carries its own captured matrix, so there is nothing to group.
     internal const int MaxSkyDraws = 1024;
     private static readonly int[] _skVao = new int[MaxSkyDraws];
-    /// <summary>CX-120: the GL VAO NAME a DB sky draw binds, 0 when the draw is the engine path's and
+    /// <summary>The GL VAO NAME a DB sky draw binds, 0 when the draw is the engine path's and
     /// <see cref="_skVao"/>'s index into the harvest cache is the answer. The arena hands out a name
     /// directly, exactly as <c>Beams.EnrollDb</c> takes one.</summary>
     private static readonly uint[] _skVaoName = new uint[MaxSkyDraws];
     private static readonly uint[] _skMode = new uint[MaxSkyDraws];
     private static readonly int[] _skSrc = new int[MaxSkyDraws], _skDst = new int[MaxSkyDraws];
-    /// <summary>#222: the constant colour <c>PartTriMesh::Mat</c> would have set for this sky part -- white,
+    /// <summary>The constant colour <c>PartTriMesh::Mat</c> would have set for this sky part -- white,
     /// or the scene's fog colour where the gob carries the +0x19 tint byte. Three floats per draw.</summary>
     private static readonly float[] _skTint = new float[MaxSkyDraws * 3];
     /// <summary>The role's alpha, as the engine's <c>SetColor4f</c> fourth component: the plain unlit stage
     /// reads it off the draw record, a hosted stage from <c>globalColor</c>, so it is carried here once for
     /// both.</summary>
     private static readonly float[] _skAlpha = new float[MaxSkyDraws];
-    /// <summary>CX-88: the program this sky draw is issued with -- 0 for the plain unlit stage, else the
-    /// Alloy program <see cref="SkyStage"/> compiled from the material's own custom fragment stage. #136 held
-    /// the ENGINE's compiled program here and needed a second draw list for it; a program of our own is just
-    /// a program, so the two lists are one.</summary>
+    /// <summary>The program this sky draw is issued with -- 0 for the plain unlit stage, else the Alloy
+    /// program <see cref="SkyStage"/> compiled from the material's own custom fragment stage.</summary>
     private static readonly uint[] _skProg = new uint[MaxSkyDraws];
     /// <summary>The material's texture objects on units 0..<see cref="MaxEngTex"/>-1: what a stock fragment
     /// stage declares before the maps an unlit sky cannot use. Unit 0 always, the rest only for a hosted
@@ -685,26 +614,25 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _skTex = new int[MaxSkyDraws * MaxEngTex];
     private static int _skyFirst, _skyN;
     internal static uint _drawBuf;
-    /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>
+    /// <summary>The per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>
     internal static uint _texHBuf;
-    /// <summary>#242: how many records the GPU side of <see cref="_drawBuf"/>/<see cref="_texHBuf"/> currently
+    /// <summary>How many records the GPU side of <see cref="_drawBuf"/>/<see cref="_texHBuf"/> currently
     /// holds. A capacity growth reallocates both, which is why it forces a wholesale re-send.</summary>
     internal static int _recCapGpu;
-    /// <summary>#137's bone block and the CPU stage behind it. One region, rewritten every colour pass.
-    /// #262: the stage is native and GROWS (<c>EnsureBoneSlots</c>) rather than turning a crowd past the
-    /// budget into dropped creatures; <c>Counters._boneHigh</c> is the per-report high-water mark that keeps the
-    /// ceiling counted rather than silent.</summary>
+    /// <summary>The bone block and the CPU stage behind it. One region, rewritten every colour pass. The
+    /// stage is native and GROWS (<c>EnsureBoneSlots</c>) rather than dropping a crowd past the budget;
+    /// <c>Counters._boneHigh</c> is the per-report high-water mark that keeps the ceiling counted.</summary>
     internal static uint _boneBuf;
     internal static float* _boneStage;
     internal static int _boneSlots, _boneCap;
-    /// <summary>CX-26: last frame's palette, slot for slot beside <see cref="_boneStage"/> (the two swap
+    /// <summary>Last frame's palette, slot for slot beside <see cref="_boneStage"/> (the two swap
     /// once a frame), for the mover sweep's previous clip position. Streamed only when a skinned mover draws.</summary>
     internal static float* _bonePrevStage;
-    /// <summary>CX-26: the frame a posed record's palette last differed from the one before it -- the
+    /// <summary>The frame a posed record's palette last differed from the one before it -- the
     /// skinned twin of <c>_recMovedAt</c>, read by the mover pick.</summary>
     private static readonly int[] _poseMovedAt = new int[MaxOwned];
     private static int _poseRollSeq = -1;
-    /// <summary>#137 armed: <c>ownskin</c> not 0. False refuses the skinmesh class at enrollment -- which
-    /// since #264 means every cloak, robe and tail is NOT DRAWN, not drawn by the engine (#285).</summary>
+    /// <summary><c>ownskin</c> not 0. False refuses the skinmesh class at enrollment, which means every
+    /// cloak, robe and tail is NOT DRAWN -- not drawn by the engine either.</summary>
     internal static bool _skinning;
 }

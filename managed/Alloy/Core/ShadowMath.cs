@@ -5,21 +5,16 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// Pure light-space matrix math for the shadow-map pipeline (#65). No engine/GL deps -- exercised
-/// headless by <see cref="SelfCheck"/>. Built with System.Numerics (row-vector, row-major, RH). NWN's
-/// world is Z-up; the GL-facing layout/handedness reconciliation happens where these feed a shader
-/// (slice 3, empirical against the depth-map debug view -- research doc §6.5).
+/// Pure light-space matrix math for the shadow-map pipeline. No engine or GL deps -- exercised headless by
+/// <see cref="SelfCheck"/>. Built with System.Numerics (row-vector, row-major, RH); NWN's world is Z-up, and
+/// the GL-facing layout and handedness reconciliation happens where these feed a shader.
 /// </summary>
 public static partial class ShadowMath
 {
     /// <summary>
-    /// Light view-projection for a directional light travelling along unit <paramref name="lightDir"/>,
-    /// fitted to the world-space sphere (<paramref name="center"/>, <paramref name="radius"/>).
-    /// <paramref name="upstreamMargin"/> extends the frustum *toward the light* so casters standing between
-    /// the light and the fitted sphere still fall inside the near plane (a tall object just outside the fit is
-    /// the classic near-clip miss). The eye steps back by <c>radius + upstreamMargin</c>, near sits at the eye
-    /// (0), far reaches the sphere's far tangent (<c>2*radius + upstreamMargin</c>). Maps world points into
-    /// light clip space -- the transform the depth pass renders with and the receiver samples.
+    /// Light view-projection for a directional light along unit <paramref name="lightDir"/>, fitted to the
+    /// sphere (<paramref name="center"/>, <paramref name="radius"/>). <paramref name="upstreamMargin"/>
+    /// extends the frustum TOWARD the light, so a caster between light and sphere clears the near plane.
     /// </summary>
     /// <param name="upX">the caller's <see cref="LatchUpX"/> verdict; null picks by the bare threshold.</param>
     public static Matrix4x4 DirectionalLightViewProj(Vector3 lightDir, Vector3 center, float radius, float upstreamMargin, int mapSize = 0,
@@ -54,20 +49,9 @@ public static partial class ShadowMath
 
     /// <summary>
     /// Half-extent of sun cascade <paramref name="i"/> of <paramref name="count"/>, out to
-    /// <paramref name="maxDist"/> world units (#94). The cascades are CONCENTRIC on the shadow focus rather
-    /// than fitted to camera-frustum corners: NWN's chase camera always looks at the focus, so a disc around
-    /// it is very nearly the visible region, and a fit that does not depend on camera orientation cannot
-    /// re-shape as the camera orbits -- which is what keeps the texel snap locked to the world and the shadow
-    /// edges still (a crawling map centre reads as "banding").
-    /// <para>Measured, not assumed (#99): the chase camera sits 12-25u BEHIND the PC, so a frustum-split
-    /// cascade 0 covers the ground between camera and player while concentric centres it on the player.
-    /// Across fov 45-65deg the split fit is 1.5-3x COARSER at the player's feet at every focus depth past
-    /// ~8u, tight AABB included; <c>CasterPass.FitReadout</c> prints the live pair that would re-open it. What
-    /// <see cref="SphereInCameraFrustum"/> refuses is narrower still: the CAPTURED QUATERNION at present time,
-    /// which belongs to whichever pass set the view last, a UI/ortho one as often as the scene's.</para>
-    /// <para>Radii halve inward, so cascade 0 is <c>maxDist / 2^(count-1)</c> -- a 15u half-extent at the
-    /// shipped 4 x 120, i.e. ~0.015 world units per texel across a 2048 map. Halving is what makes the texel
-    /// density ratio between neighbours constant, so no one cascade is the blurry one.</para>
+    /// <paramref name="maxDist"/> world units. The cascades are CONCENTRIC on the shadow focus, not fitted to
+    /// camera-frustum corners: a fit that does not depend on camera orientation cannot re-shape as the camera
+    /// orbits, which is what keeps the texel snap locked to the world. Radii halve inward.
     /// </summary>
     public static float CascadeRadius(int i, int count, float maxDist)
     {
@@ -77,12 +61,10 @@ public static partial class ShadowMath
     }
 
     /// <summary>
-    /// One face of a point light's depth cube (slice 6): a 90&deg; perspective from <paramref name="lightPos"/>
-    /// along cube face <paramref name="face"/> (0..5 = +X,-X,+Y,-Y,+Z,-Z), fitted to [<paramref name="near"/>,
-    /// <paramref name="far"/>]. Uses the standard GL cube-map face look/up basis, so the rendered face round-trips
-    /// with a <c>samplerCube</c> sampled by <c>fragWorld - lightPos</c> (the basis is world-coordinate-agnostic --
-    /// render and sample use the same raw vector, so NWN's Z-up world needs no special-casing). Same convention as
-    /// <see cref="DirectionalLightViewProj"/>: RH lookAt * D3D [0,1] perspective * GL clip-z remap.
+    /// One face of a point light's depth cube: a 90&deg; perspective from <paramref name="lightPos"/> along
+    /// face <paramref name="face"/> (0..5 = +X,-X,+Y,-Y,+Z,-Z), fitted to [<paramref name="near"/>,
+    /// <paramref name="far"/>]. The standard GL cube-map face basis, so the face round-trips with a
+    /// <c>samplerCube</c> sampled by <c>fragWorld - lightPos</c>. RH lookAt * D3D [0,1] * GL clip-z remap.
     /// </summary>
     public static Matrix4x4 PointLightFaceViewProj(Vector3 lightPos, int face, float near, float far)
     {
@@ -106,14 +88,10 @@ public static partial class ShadowMath
     /// closer than that takes no shadow from the lamp.</summary>
     public const float ConeMaxSin = 0.85f;
 
-    /// <summary>CX-188 step 4: one (static light, mover) PAIR view -- a perspective from
-    /// <paramref name="lightPos"/> framed on the sphere (<paramref name="at"/>, <paramref name="radius"/>) and
-    /// fitted to [<paramref name="near"/>, <paramref name="far"/>], where far is the light's own reach so the
-    /// mover's shadow is recorded all the way out. Same convention as <see cref="PointLightFaceViewProj"/> --
-    /// RH lookAt * D3D [0,1] perspective * the GL clip-z remap -- so a receiver compares
-    /// <c>clip.z / clip.w * 0.5 + 0.5</c> against the stored depth with no linearisation of its own.
-    /// <para>False = the sphere subtends more than <see cref="ConeMaxSin"/> (or engulfs the light): no pair view
-    /// exists for it and the caller must leave that light its dynamic cube page.</para></summary>
+    /// <summary>One (static light, mover) PAIR view -- a perspective from <paramref name="lightPos"/> framed
+    /// on the sphere (<paramref name="at"/>, <paramref name="radius"/>) and fitted out to the light's own
+    /// reach, same convention as <see cref="PointLightFaceViewProj"/>. False = the sphere subtends more than
+    /// <see cref="ConeMaxSin"/> or engulfs the light, so the caller leaves it its dynamic cube page.</summary>
     public static bool PairViewProj(Vector3 lightPos, Vector3 at, float radius, float near, float far,
                                     out Matrix4x4 vp, out float halfSin)
     {
@@ -131,14 +109,13 @@ public static partial class ShadowMath
     }
 
     /// <summary>Inverse of the point-light face projection's stored depth: a device depth <paramref name="sd"/>
-    /// (sampled from the cube, [0,1]) -&gt; the view-space distance along that face's major axis. <c>sd=0</c> maps to
-    /// <paramref name="near"/>, <c>sd=1</c> to <paramref name="far"/>. The receiver uses the SAME formula to compare
-    /// against the fragment's major-axis distance (<c>max(|dx|,|dy|,|dz|)</c> of <c>fragWorld-lightPos</c>) in linear,
-    /// precision-flat space -- raw device depth is nearly all ~1.0 for a perspective frustum and compares badly.</summary>
+    /// -&gt; the view-space distance along that face's major axis (<c>sd=0</c> near, <c>sd=1</c> far). The
+    /// receiver compares with the SAME formula against <c>max(|dx|,|dy|,|dz|)</c> of
+    /// <c>fragWorld-lightPos</c>: raw device depth is nearly all ~1.0 and compares badly.</summary>
     public static float LinearizeFaceDepth(float sd, float near, float far)
         => near * far / (far - sd * (far - near));
 
-    /// <summary>The VIEW half of <see cref="PointLightFaceViewProj"/> alone -- what #121's probe capture
+    /// <summary>The VIEW half of <see cref="PointLightFaceViewProj"/> alone -- what the probe capture
     /// hands the cluster build, which needs the face's view without its projection. Shares the one face
     /// basis rather than restating it: a duplicated up vector would mis-bin exactly one face's lights.</summary>
     public static Matrix4x4 CubeFaceView(Vector3 eye, int face)
@@ -164,18 +141,16 @@ public static partial class ShadowMath
         _ => (new Vector3(0f, 0f, -1f), new Vector3(0f, -1f, 0f)),
     };
 
-    /// <summary>Sphere-vs-camera-frustum visibility (conservative: per-plane tests never cull a visible
-    /// sphere, may keep a corner-outside one). The camera basis is built from a LOOK-AT point (NWN's chase
-    /// camera has no roll; world is Z-up) -- deliberately NOT from the captured view quaternion, whose
-    /// component order/convention was never live-verified and mis-culled everything when wrong.
-    /// <paramref name="fovy"/> is degrees as SetPerspective delivers it (values &lt;= 3.2 = radians,
-    /// defensively). A degenerate look-at (at the camera) keeps the sphere.</summary>
     /// <summary>Radius slack every caller of <see cref="SphereInCameraFrustum"/> applies: covers the
     /// mirrored reflection-subframe camera and one frame of camera-turn latency without re-introducing pop.
-    /// One constant on purpose (#322 review) -- the light cull and the cube-bake cull must give the same
-    /// answer to "is this light visible", or a light one keeps is starved by the other.</summary>
+    /// One constant on purpose -- the light cull and the cube-bake cull must give the same answer to "is this
+    /// light visible", or a light one keeps is starved by the other.</summary>
     public const float FrustumCullSlack = 1.25f;
 
+    /// <summary>Sphere-vs-camera-frustum visibility (conservative: the per-plane tests never cull a visible
+    /// sphere, and may keep a corner-outside one). The camera basis is built from a LOOK-AT point (the chase
+    /// camera has no roll; world is Z-up), deliberately NOT from the captured view quaternion.
+    /// <paramref name="fovy"/> is degrees as SetPerspective delivers it; a degenerate look-at keeps it.</summary>
     public static bool SphereInCameraFrustum(Vector3 p, float r, Vector3 camPos, Vector3 lookAt,
                                              float fovy, float aspect, float near, float far)
     {
@@ -207,11 +182,10 @@ public static partial class ShadowMath
         tanX = tanY * aspect;
     }
 
-    /// <summary>#488: the camera frustum as six inward-facing planes (xyz = unit normal, w = offset, so
+    /// <summary>The camera frustum as six inward-facing planes (xyz = unit normal, w = offset, so
     /// <c>dot(n, p) + w</c> is the signed distance) from the same roll-free basis
     /// <see cref="SphereInCameraFrustum"/> builds, each pushed OUT by <paramref name="slack"/> world units.
-    /// Order: near, far, left, right, bottom, top. A degenerate forward writes a frustum that keeps
-    /// everything (all w = +inf).</summary>
+    /// Order: near, far, left, right, bottom, top. A degenerate forward keeps everything (all w = +inf).</summary>
     public static void ReceiverPlanes(Vector3 camPos, Vector3 camFwd, float fovy, float aspect, float near,
                                       float far, float slack, Span<float> planes)
     {
@@ -233,12 +207,10 @@ public static partial class ShadowMath
     private static void Put(Span<float> planes, int i, Vector3 n, float w)
     { planes[i * 4] = n.X; planes[i * 4 + 1] = n.Y; planes[i * 4 + 2] = n.Z; planes[i * 4 + 3] = w; }
 
-    /// <summary>#488: can a caster's shadow reach the receiver frustum? The C# twin of the gather
-    /// dispatch's test, term for term: the shadow volume is bounded by the convex hull of two spheres --
-    /// the caster's own at <paramref name="p0"/>/<paramref name="r0"/> and the extrusion's end at
-    /// <paramref name="p1"/>/<paramref name="r1"/> -- and that hull misses the frustum only if BOTH spheres
-    /// sit wholly outside ONE plane. Conservative: a caster this rejects casts on no visible pixel; one it
-    /// keeps may still not.</summary>
+    /// <summary>Can a caster's shadow reach the receiver frustum? The C# twin of the gather dispatch's test,
+    /// term for term: the shadow volume is bounded by the convex hull of two spheres -- the caster's own and
+    /// the extrusion's end -- and that hull misses the frustum only if BOTH spheres sit wholly outside ONE
+    /// plane. Conservative: a caster this rejects casts on no visible pixel; one it keeps may still not.</summary>
     public static bool ShadowReaches(ReadOnlySpan<float> planes, Vector3 p0, float r0, Vector3 p1, float r1)
     {
         for (int i = 0; i < 6; i++)
@@ -250,7 +222,7 @@ public static partial class ShadowMath
         return true;
     }
 
-    /// <summary>#488: the sun extrusion -- the caster swept along the light to the fit's far extent
+    /// <summary>The sun extrusion -- the caster swept along the light to the fit's far extent
     /// (<paramref name="along"/> from <paramref name="focus"/>), radius unchanged.</summary>
     public static bool SunShadowReaches(ReadOnlySpan<float> planes, Vector3 c, float r, Vector3 dir, Vector3 focus, float along)
     {
@@ -258,7 +230,7 @@ public static partial class ShadowMath
         return ShadowReaches(planes, c, r, c + dir * MathF.Max(0f, along - t), r);
     }
 
-    /// <summary>#488: the local-light extrusion -- the tangent cone from the light through the caster, out
+    /// <summary>The local-light extrusion -- the tangent cone from the light through the caster, out
     /// to the light's reach. The cone is wider than the caster at the caster's own depth
     /// (<c>dist * tan(a) &gt; r</c>), so both end radii are inflated by <c>dist / (dist - r)</c>; a light
     /// inside the caster keeps it.</summary>
@@ -272,11 +244,9 @@ public static partial class ShadowMath
     }
 
     /// <summary>A ground-ish focus point for the shadow map: march from the camera along its forward until it
-    /// has descended <paramref name="dist"/> world units toward the ground, so the map centres on what the
-    /// player is looking at (the visible ground), not on the elevated camera position. Camera forward is the
-    /// view-space -Z axis (GL convention, pinned by the SelfCheck) rotated into world by the camera quaternion
-    /// (which SetViewTransform treats as camera->world). <paramref name="dist"/>&lt;=0 returns the camera pos
-    /// unchanged (feature off).</summary>
+    /// has descended <paramref name="dist"/> world units, so the map centres on the visible ground rather
+    /// than on the elevated camera position. Camera forward is the view-space -Z axis rotated into world by
+    /// the camera quaternion (SetViewTransform treats it as camera-&gt;world); <paramref name="dist"/>&lt;=0 = off.</summary>
     public static Vector3 CameraGroundFocus(Vector3 camPos, Quaternion camRot, float dist)
     {
         if (dist <= 0f) return camPos;

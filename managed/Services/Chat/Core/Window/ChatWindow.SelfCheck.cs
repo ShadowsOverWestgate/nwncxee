@@ -34,7 +34,7 @@ public sealed partial class ChatWindow
         small.MouseMove(-500, -500);
         check.Expect(small.W == MinW && small.H == MinH, "resize clamped to minimum");
 
-        // tab switch: click the second tab region -> switches, drag only after threshold (#42)
+        // tab switch: click the second tab region -> switches, drag only after threshold
         check.Expect(win.MouseDown(win.X + win.TabW + 5, win.Y + 5), "down on tab 1");
         check.Expect(win.ActiveTab == 1 && !win.TabDragActive, "tab press switches but does not start drag yet");
         win.MouseMove(win.X + win.TabW + 5 + TabDragThreshold + 1, win.Y + 5);
@@ -71,7 +71,7 @@ public sealed partial class ChatWindow
         check.Expect(!win.ThumbRect(out _, out _), "no thumb when content fits");
         win.ContentH = 0f; win.ViewH = 0f; win.Active.ScrollPx = 0f;   // leave state clean
 
-        // channel dropdown (#25): strip lives below the frame, only while typing.
+        // channel dropdown: strip lives below the frame, only while typing.
         win.FooterVisible = true;
         float sy = win.StripTop;                                  // top of the pop-out strip
         check.Expect(win.MouseDown(win.X + 5, sy + 5), "click dropdown button consumes");
@@ -101,7 +101,7 @@ public sealed partial class ChatWindow
 
         // Gear/options moved to SettingsWindow (its own SelfCheck); the gear press is claimed by the shell.
 
-        // Tab list mutation (#36/#37): add/remove, the always->=1-tab guard, and active-tab identity.
+        // Tab list mutation: add/remove, the always->=1-tab guard, and active-tab identity.
         var tw = new ChatWindow(0, 0, 400, 300, new[] { new Tab("A", 1u), new Tab("B", 1u), new Tab("C", 1u) });
         tw.AddTab(new Tab("D", 1u)); check.Expect(tw.Tabs.Count == 4, "AddTab appends");
         tw.ActiveTab = 2; Tab wasActive = tw.Active;               // C active
@@ -119,7 +119,7 @@ public sealed partial class ChatWindow
         try { _ = new ChatWindow(0, 0, 400, 300, new Tab[0]); } catch (System.ArgumentException) { threw = true; }
         check.Expect(threw, "constructing a window with no tabs is rejected");
 
-        // Tab drag reorder (#42): down on tab, exceed threshold, drag across boundaries.
+        // Tab drag reorder: down on tab, exceed threshold, drag across boundaries.
         var dw = new ChatWindow(0, 0, 400, 300, new[] { new Tab("A", 1u), new Tab("B", 2u), new Tab("C", 4u) });
         float dtw = dw.TabWFor(3);
         check.Expect(dw.MouseDown(dtw * 0.5f, 5), "drag: down on tab A");
@@ -164,7 +164,7 @@ public sealed partial class ChatWindow
         win.MouseDown(win.X - 50, win.Y - 50);
         check.Expect(!win.MouseUp(win.X + 5, win.Y + 5), "release after outside press not consumed");
 
-        // Send-channel constraint (#40 / ADR 0003): Bit mapping, CanSend, HasSendable, clamp, hit-test.
+        // Send-channel constraint (ADR 0003): Bit mapping, CanSend, HasSendable, clamp, hit-test.
         check.Expect(Bit(Channel.Talk) == 0x001 && Bit(Channel.Tell) == 0x002 && Bit(Channel.Shout) == 0x004
           && Bit(Channel.Whisper) == 0x008 && Bit(Channel.Party) == 0x040 && Bit(Channel.DM) == 0x400,
           "Bit maps each Channel to its FilterChannel flag");
@@ -192,7 +192,7 @@ public sealed partial class ChatWindow
         check.Expect(sw.ActiveTab == 1 && sw.SendChannel == Channel.DM, "tab switch clamps SendChannel to tab's mask");
         sw.MouseUp(0, 0);
 
-        // CX-59: each tab keeps its own channel. The reporter's layout -- All, and a Server/Combat/DM tab whose only
+        // each tab keeps its own channel. The reporter's layout -- All, and a Server/Combat/DM tab whose only
         // sendable is DM -- must not leave All on DM, and a channel picked on All survives a trip to a narrow tab.
         void Click(ChatWindow w, int tab) { w.MouseDown(w.X + tab * w.TabW + 5, w.Y + 5); w.MouseUp(0, 0); }
         var rt = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff), new Tab("Srv/Cbt/DM", 0x020 | 0x010 | 0x400), new Tab("Party", 0x040), new Tab("Fresh", 0xffffffff) });
@@ -280,7 +280,7 @@ public sealed partial class ChatWindow
         check.Expect(dst.X == 50 && dst.W == 300, "copy: rect untouched");
         check.Expect(dst.Tabs.Count == 1 && dst.Tabs[0].Label == "Combat", "copy: tabs untouched");
 
-        // Lock (#43): prevents move, resize, and tab drag; scroll + tab switch still work.
+        // Lock: prevents move, resize, and tab drag; scroll + tab switch still work.
         var lw = new ChatWindow(100, 100, 400, 300, new[] { new Tab("A", 1u), new Tab("B", 2u) });
         lw.Locked = true;
         check.Expect(lw.MouseDown(100 + lw.TabW * 2 + 5, 105), "locked: move-handle press consumed");
@@ -365,7 +365,7 @@ public sealed partial class ChatWindow
         SnapToRects(ref fx, ref fy, 400f, 300f, obst);
         check.Expect(fx == 50f && fy == 600f, "winsnap: distant window does not pull");
 
-        // Ephemeral (#46): Tell-only tab is structurally ephemeral.
+        // Ephemeral: Tell-only tab is structurally ephemeral.
         var ew = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff), new Tab("Tell:X", 0x002) });
         check.Expect(ew.Tabs[1].Ephemeral, "Tell-only tab is ephemeral");
         check.Expect(!ew.Tabs[0].Ephemeral, "non-Tell tab is not ephemeral");
@@ -379,7 +379,7 @@ public sealed partial class ChatWindow
         ew.MouseUp(0, 0);
         ew.Tabs[1].Kept = false;
 
-        // Ephemeral close-X (#46): clicking the right edge removes the tab.
+        // Ephemeral close-X: clicking the right edge removes the tab.
         var xw = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff), new Tab("Tell:Y", 0x002) });
         float xTabRight = xw.TabW * 2;
         check.Expect(xw.MouseDown(xTabRight - 2, 5), "close-X press consumed");

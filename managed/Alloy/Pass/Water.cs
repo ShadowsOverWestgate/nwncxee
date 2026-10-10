@@ -3,8 +3,8 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>water</c> group (spec §4.3): the storage <see cref="FrameSnapshot"/> reads. <see cref="Diag"/>
-/// is a BUDGET of readbacks the pass counts down, not a switch. The master is ChatOnly (ADR 0030): since
-/// CX-111 off means no water anywhere, which is nobody's setting. Touched from
+/// is a BUDGET of readbacks the pass counts down, not a switch. The master is ChatOnly (ADR 0030): off means
+/// no water anywhere, which is nobody's setting. Touched from
 /// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.</summary>
 internal static class Water
 {

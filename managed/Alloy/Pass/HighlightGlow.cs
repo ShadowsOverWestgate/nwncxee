@@ -7,14 +7,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-82: the selection GLOW, a port of <c>Scene::DoHighlightGob</c> @0x470fc0 and
-/// <c>WritePartHighlightVertices</c> @0x45fe40 over the scene database -- the "glow" highlight mode, and whatever
-/// the outline pass cannot cover in "outline" mode (an unclaimed source channel, a root with no Alloy draw records).
-/// <para>Per highlighted root, and per attached object that propagates the highlight: every enabled non-skin
-/// mesh part (<see cref="PartGate"/>'s <c>Part+0x34</c>, inherited down the tree as the engine's recursion does)
-/// emits three textured quads through its node's bounding-box centre, one per box plane, scaled about that
-/// centre by the pulse, placed by <see cref="SceneDb.PartWorld"/>. Additive over the finished display-space
-/// frame, depth-tested against the scene, unfogged -- the state the engine drew them in.</para></summary>
+/// <summary>The selection GLOW, a port of <c>Scene::DoHighlightGob</c> @0x470fc0 over the scene database --
+/// the "glow" highlight mode, and whatever the outline pass cannot cover in "outline" mode. Per highlighted
+/// root and per propagating attachment, every enabled non-skin mesh part emits three textured quads through
+/// its node's box centre, scaled by the pulse. Additive over the finished frame, depth-tested, unfogged.</summary>
 internal static unsafe class HighlightGlow
 {
     /// <summary>Four vec4 per quad: (centre, alpha), (half-axis U, 0), (half-axis V, 0), (rgb, 0).</summary>

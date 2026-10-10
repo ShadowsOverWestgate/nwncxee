@@ -2,12 +2,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118: wires the scene database's hit test -- the off-device checks (which run in the stub host
-/// before any symbol gate, because the cast is pure logic over the DB columns and that is the only place it
-/// is ever checked), and, when <c>alloy.hitcheck</c> asks for it, the live instrument on the engine's own
-/// <c>Scene::HitCheck</c>.
-/// <para>No frame work of its own: a cast runs when the game asks for one, through the Aurora seam
-/// (CX-120).</para></summary>
+/// <summary>Wires the scene database's hit test: the off-device checks (which run in the stub host before any
+/// symbol gate, because the cast is pure logic over the DB columns) and, when <c>alloy.hitcheck</c> asks for
+/// it, the live instrument on the engine's own <c>Scene::HitCheck</c>. No frame work of its own -- a cast runs
+/// when the game asks for one, through the Aurora seam.</summary>
 public sealed class HitTestService : IExtenderService
 {
     /// <summary>Frames between <c>[hitprobe]</c> lines -- the same 900 the other Alloy period lines use.</summary>

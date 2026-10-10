@@ -6,38 +6,10 @@ using CX.Ui;
 
 namespace CX.Alloy;
 
-/// <summary>
-/// CX-98: the engine's debug string layer -- <c>AurPostString</c> / <c>AurPostStringEx</c> (NWScript
-/// <c>PostString</c>) and <c>AurPrintString</c>, drawn by <c>AurRenderStrings</c> @0x436480 after
-/// <c>CGuiMan</c> -- redrawn by CX's own 2D text. One hook, on <c>AurPrintString</c> @0x435f30: in Alloy mode
-/// the call is swallowed and the string is captured; every captured string is drawn at the present by
-/// <see cref="TextRig"/>, on the engine's own 10x14 character grid.
-/// </summary>
-/// <remarks>
-/// <para><b>Why the draw primitive and not <c>AurRenderStrings</c>.</b> The decompile
-/// (<c>~/nwn-decomp/8193.37-17</c>) shows <c>AurRenderStrings</c> to be three things: <c>PostTraceStrings</c>,
-/// one <c>RenderInterface::LoadMatrixIdentity</c>, and <c>PostedString::Post</c> @0x4362d0 per entry of the
-/// <c>posts</c> list. <b>Expiry lives inside <c>Post</c></b>: it decrements <c>PostedString+0x404</c> by
-/// <c>DeltaT</c> and, past the lifetime, runs <c>~PostedString</c> (which splices the entry out of
-/// <c>posts</c>) and <c>operator delete</c>. Skipping <c>AurRenderStrings</c> therefore means reimplementing
-/// the engine's own allocation lifetime from managed code, for no visible gain -- and any slip there is a
-/// leak or a double free. Swallowing <c>AurPrintString</c> instead leaves the list, the ordering, the
-/// same-id replacement and the expiry exactly the engine's, and removes strictly MORE drawing: the console
-/// cursor (<c>Update</c> @0x430030) and <c>CGuiCGModelViewer::Update</c> print through the same primitive
-/// without going through <c>AurRenderStrings</c> at all.</para>
-/// <para>What still runs engine-side on an Alloy frame is <c>PostTraceStrings</c> (nothing calls
-/// <c>trace(char*)</c> @0x435600 in this build, so the list is empty and it does nothing),
-/// <c>RenderInterface::LoadMatrixIdentity</c> and <c>RenderInterface::SetColor4f</c>. Both of those are
-/// CPU-side state caches -- <c>GLRender::LoadMatrixIdentity</c> touches <c>m_aurMtxStack</c> and a dirty
-/// flag, <c>GLRender::SetColor4f</c> a global colour -- so the layer issues no GL call at all, let alone a
-/// draw. CX-109 gave that first one a second job: it is the once-per-frame write that leaves the MODEL stack
-/// at the identity (it carries no <c>SetMatrixMode</c>, and the mode the frame leaves selected is 2), which is
-/// the evidence behind <see cref="AlloyCamera.ModelBase"/>.</para>
-/// <para><b>The layer is player-visible, so retiring it was not an option.</b>
-/// <c>CNWCMessage::HandleServerToPlayerCCMessage</c> case 0x16 reads (text, id, x, y, anchor, colour,
-/// fadeColour, life, font) off the wire and calls <c>AurPostStringEx</c>: that is NWScript
-/// <c>PostString</c>, which any module can call on any release client.</para>
-/// </remarks>
+/// <summary>The engine's debug string layer (<c>AurPostString</c>, NWScript <c>PostString</c>) redrawn by CX's
+/// own 2D text. One hook, on the <c>AurPrintString</c> @0x435f30 primitive -- not <c>AurRenderStrings</c>,
+/// since expiry lives inside <c>PostedString::Post</c>, which frees its own entry: the call is swallowed, the
+/// string captured, and <see cref="TextRig"/> draws it at the present on the engine's 10x14 character grid.</summary>
 public sealed unsafe class DebugStringService : IExtenderService
 {
     /// <summary>The engine's character cell, in logical px before the GUI scale (<c>AurPrintString</c>:
@@ -109,7 +81,7 @@ public sealed unsafe class DebugStringService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnAurPrintString(byte* text, int col, int row, float r, float g, float b, float a, byte* font)
     {
-        // CX-95: the GUI is Alloy's at the menus too, where the world verdict is Idle -- the strings follow the GUI.
+        // The GUI is Alloy's at the menus too, where the world verdict is Idle -- the strings follow the GUI.
         if (!_armed || !(AlloyGate.Alloy || GuiPass.Capturing))
         {
             if (_orig != null) _orig(text, col, row, r, g, b, a, font);

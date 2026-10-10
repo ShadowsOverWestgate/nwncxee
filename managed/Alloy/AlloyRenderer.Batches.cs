@@ -9,26 +9,15 @@ using CX.Services.Camera;
 
 namespace CX.Alloy;
 
-/// <summary>#173: BATCH BUILDING. Revalidating every Alloy part against the live scene, routing it to this pass's class, sorting the blended remainder back-to-front, and staging the per-draw records and multidraw commands the issue phase submits. Hot: nothing on this path allocates.</summary>
+/// <summary>BATCH BUILDING. Revalidating every Alloy part against the live scene, routing it to this pass's
+/// class, sorting the blended remainder back-to-front, and staging the per-draw records and multidraw
+/// commands the issue phase submits. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>#126: this pass's draw ORDER, ahead of the staging walk. Three things it settles that the
-    /// enrollment order cannot: a tile that started fading since the last enrollment leaves the opaque set
-    /// for the blended one (bucket 8 is a per-frame fact, not a material one), the blended run is sorted
-    /// back-to-front from THIS pass's eye, and every entry carries the alpha multiplier its draw needs.
-    /// <para>The sort is the only one in the frame, and it is paid by the blended remainder alone -- which is
-    /// the whole point of the cutout/blended split: the cutout majority is order-independent and stays in the
-    /// texture-grouped opaque order.</para>
-    /// <para>#327: ...order-independent is also why each opaque class is PARTITIONED on the keyhole dissolve
-    /// bit here. It is the one cut-key term the enrollment radix cannot sort (camera state, thousands of
-    /// parts at once under a roof), and CullPass compacts a batch with an atomic, so staging order is not
-    /// draw order: the dissolving members go after the rest of their class, so the dissolve term cuts once
-    /// per class and the tail re-cuts only on the sorted static key -- at most twice the distinct static
-    /// keys, rather than once per interleave.</para>
-    /// <para>ponytail: insertion sort, i.e. O(n^2) in the blended count. That count is the small minority of
-    /// a scene by construction, and the alternative (a radix over quantised depth) is a bucket table to size
-    /// and clear per pass. If a scene ever lands enough blended parts to show on the [alloy] line's colour
-    /// time, that is the upgrade.</para></summary>
+    /// <summary>This pass's draw ORDER, ahead of the staging walk: a tile that started fading leaves the
+    /// opaque set for the blended one, the blended run is sorted back-to-front from THIS pass's eye, each
+    /// entry carries its alpha, and each opaque class is PARTITIONED on the keyhole dissolve bit -- camera
+    /// state the enrollment radix cannot sort. ponytail: insertion sort, O(n^2) in the small blended count.</summary>
     private static int RouteParts()
     {
         int n = 0, nb = 0, na = 0;
@@ -132,17 +121,13 @@ public sealed unsafe partial class AlloyRenderer
         return n;
     }
 
-    /// <summary>#322: the route-time validation contract, shared by all four class runs -- resolve the
-    /// ordered slot, skip a vacated one, and REVOKE a failed identity (a recycled or freed pointer; every
-    /// dereference the frame makes from here on sits behind this verdict, so the staging walk does not
-    /// re-check). Sound across the walk because both walks run inside one bracket on one thread, exactly
-    /// as the blended sort's route-time <see cref="EyeDist2"/> chase already assumes.</summary>
-    /// <para>#330: ...and behind the FRUSTUM GATE, which runs before the first dereference of the part. A
-    /// slot the engine did not visit and this pass cannot see keeps last frame's record untouched: nothing
-    /// the engine does to an off-screen part reaches it (see <see cref="RouteWanted"/>).</para>
+    /// <summary>The route-time validation contract, shared by all four class runs -- resolve the ordered slot,
+    /// skip a vacated one, and REVOKE a failed identity, so every dereference the frame makes from here on
+    /// sits behind one verdict and the staging walk does not re-check. Behind the FRUSTUM GATE too: a slot
+    /// this pass cannot see keeps last frame's record untouched (see <see cref="RouteWanted"/>).</summary>
     private static bool RouteLive(int slot, int k, float* sph, out int i, out IntPtr tri)
     {
-        // #336: the Route sample -- taken on the slots the gate rejects, which is the walk's O(world) half
+        // The Route sample -- taken on the slots the gate rejects, which is the walk's O(world) half
         bool samp = (k & (ChaseEvery - 1)) == 0;
         long t0 = samp ? FrameZones.Now : 0;
         i = slot;
@@ -172,18 +157,12 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    /// <summary>#287: the cull's source list, one <see cref="CullPass.SrcUints"/>-uint record per DRAW of
-    /// this pass, staged beside <c>_dCount/_dOff/_dBase/_dSlot</c> by the walk that already writes them.
-    /// <para>It used to be rebuilt by a second walk inside <see cref="CullPass.Begin"/>. The four draw-args
-    /// columns cannot leave the CPU -- <c>/alloy cull 0</c> has to fall back to
-    /// <c>glMultiDrawElementsBaseVertex</c>, which takes CPU pointers -- but writing them twice can, and the
-    /// two columns the second walk existed for (the draw's batch and that batch's output base) are both known
-    /// at this store, because the cut has just placed the draw.</para></summary>
+    /// <summary>The cull's source list, one <see cref="CullPass.SrcUints"/>-uint record per DRAW of this pass,
+    /// staged beside <c>_dCount/_dOff/_dBase/_dSlot</c> by the walk that already writes them: the draw's batch
+    /// and that batch's output base are both known at this store, because the cut has just placed the draw.
+    /// The four draw-args columns stay on the CPU -- <c>/alloy cull 0</c> falls back to CPU pointers.</summary>
     private static readonly uint[] _dSrc = new uint[MaxOwned * CullPass.SrcUints];
 
-    /// <summary>#126: order the blended run back to front -- the farthest key first, so nearer surfaces
-    /// composite over what is already behind them. Stable, which is what keeps parts at equal distance in
-    /// their texture-grouped enrollment order rather than shuffling them from pass to pass.</summary>
     /// <summary>Off-device: the sort really is back-to-front, really is stable, and really carries each
     /// entry's alpha with its index -- a permutation that lost the alpha pairing would draw every blended
     /// part at its neighbour's transparency, which reads as "the sort is wrong" and is not.</summary>
@@ -199,17 +178,15 @@ public sealed unsafe partial class AlloyRenderer
         return ok;
     }
 
-    /// <summary>#292: the middle radix digit's buckets and the rank of its two bits. Both halves matter and
-    /// they fail differently: a key wider than <see cref="_sortCount"/> throws out of the enrollment sweep
-    /// (loudly, but only on content that happens to reach the top bucket), and a wrong RANK costs nothing
-    /// visible at all -- it just re-sends the lighting rig once more per class forever. So the width is
-    /// asserted against the array itself rather than against the constant it was sized from.</summary>
+    /// <summary>Off-device: the middle radix digit's buckets and the rank of its two bits. A key wider than
+    /// <see cref="_sortCount"/> throws out of the enrollment sweep; a wrong RANK costs nothing visible, only
+    /// one more lighting-rig re-send per class forever. The width is asserted against the array itself rather
+    /// than against the constant it was sized from.</summary>
     private static bool CullSortSelfCheck(ExtenderLog log)
     {
         int unlitCulled = SortKeyOf(false, false, 0), unlitFree = SortKeyOf(true, false, MaxVdos - 1);
         int litCulled = SortKeyOf(false, true, 0), litMax = SortKeyOf(true, true, MaxVdos - 1);
-        bool ok = _sortCount.Length == MaxVdos * 4 && litMax == MaxVdos * 4 - 1
-                  && unlitCulled == 0 && unlitFree < litCulled;
+        bool ok = litMax == _sortCount.Length - 1 && unlitCulled == 0 && unlitFree < litCulled;
         // #327: the (feature, primitive) digit fills its buckets exactly, and an out-of-table prim clamps.
         ok &= (int)FeatCeiling == ShaderFeatures.VsNames.Length - 1
               && FeatPrimKeyOf((int)FeatCeiling, PrimTypes - 1) == _featPrimCount.Length - 1
@@ -222,25 +199,20 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>The packing <see cref="SortKey"/> applies, spelled without the tables so the check above can
-    /// exercise it. LIT is the senior bit: a program switch re-sends the whole lighting rig (cascades, local
-    /// cubes, the probe -- see <see cref="Issue.IssueBatchesInner"/>), and face culling is one <c>glEnable</c>. So
-    /// the order inside a class is (unlit culled, unlit two-sided, lit culled, lit two-sided): one program
-    /// bind per class as before, and at most two cull toggles.</summary>
+    /// exercise it. LIT is the senior bit -- a program switch re-sends the whole lighting rig where face
+    /// culling is one <c>glEnable</c> -- so a class orders (unlit culled, unlit two-sided, lit culled, lit
+    /// two-sided): one program bind per class, at most two cull toggles.</summary>
     private static int SortKeyOf(bool noCull, bool lit, int vao)
         => ((lit ? 2 : 0) + (noCull ? 1 : 0)) * MaxVdos + vao;
 
-    /// <summary>#327: entries in the engine's <c>primTypeTranslationTable</c> -- 0x1c bytes of uint per
+    /// <summary>Entries in the engine's <c>primTypeTranslationTable</c> -- 0x1c bytes of uint per
     /// <c>nm -S</c>, indexed by the mdl node's prim type. The key clamps rather than trusts the index: the
     /// draw path reads the table unguarded, but a sort bucket must not.</summary>
     private const int PrimTypes = 7;
-    /// <summary><see cref="ShaderFeature"/>'s last member. Named here because the sort table below is sized
-    /// from it: #348 (NoirWet/NoirGloss) and #556 (GroundWeather) appended above what was then the ceiling
-    /// and this const kept naming <see cref="ShaderFeature.Skin"/>, so the first part carrying one of them
-    /// walked <c>_featPrimCount</c> off its end and the enrollment threw IndexOutOfRange mid-frame -- and
-    /// #556 alone is most of the outdoor tileset, so that was every rainy street.
-    /// <see cref="CullSortSelfCheck"/> now ties it to <see cref="ShaderFeatures.VsNames"/>, which any
-    /// appended feature has to extend anyway -- the old check compared Skin against a table sized from Skin
-    /// and was therefore true by construction.</summary>
+    /// <summary><see cref="ShaderFeature"/>'s last member, named here because the sort table below is sized
+    /// from it. A feature appended above this ceiling walks <c>_featPrimCount</c> off its end and throws
+    /// mid-frame, so <see cref="CullSortSelfCheck"/> ties it to <see cref="ShaderFeatures.VsNames"/>, which
+    /// any appended feature has to extend anyway.</summary>
     private const ShaderFeature FeatCeiling = ShaderFeature.GroundWeather;
     /// <summary>Buckets for the (feature, primitive) digit.</summary>
     private const int FeatPrimKeys = ((int)FeatCeiling + 1) * PrimTypes;
@@ -250,6 +222,9 @@ public sealed unsafe partial class AlloyRenderer
     private static int FeatPrimKeyOf(int feat, int prim)
         => Math.Clamp(feat, 0, (int)FeatCeiling) * PrimTypes + Math.Clamp(prim, 0, PrimTypes - 1);
 
+    /// <summary>Order the blended run back to front -- the farthest key first, so nearer surfaces composite
+    /// over what is already behind them. Stable, which keeps parts at equal distance in their texture-grouped
+    /// enrollment order rather than shuffling them from pass to pass.</summary>
     private static void SortBlended(int[] idx, float[] key, float[] alpha, int n)
     {
         for (int a = 1; a < n; a++)
@@ -266,34 +241,29 @@ public sealed unsafe partial class AlloyRenderer
     /// state.</summary>
     private static float PartAlpha(IntPtr tri) => new PartRef(tri).Alpha;
 
-    /// <summary>CX-120: the scene this pass is drawing. Set by the DB world pass before the route walk; a
-    /// DB slot of any other scene is skipped, which is what keeps one view from drawing another's objects.</summary>
+    /// <summary>The scene this pass is drawing. Set by the world pass before the route walk; a slot of any
+    /// other scene is skipped, which is what keeps one view from drawing another's objects.</summary>
     internal static DbId _dbPassScene;
 
-    /// <summary>CX-120: the object-wide alpha multiplier the engine path read by chasing the gob's fade
-    /// owner (<c>AlloyCensus.GobAlphaMul</c>). One column load: the tint's w.</summary>
+    /// <summary>The object-wide alpha multiplier, which the engine reaches by chasing the gob's fade owner.
+    /// One column load: the tint's w.</summary>
     private static float DbObjAlpha(int part) => SceneDb.ObjTint[SceneDb.PartObj[part].Index].W;
 
-    /// <summary>#336: the part's own alpha, read off the part every frame for a gob part or a matrix-class
-    /// part (the animated ones) and every <see cref="ColourCadence"/> frames for a still gobless part --
-    /// the tile geometry that is the routed majority, whose +0xa0 only an MDL alpha controller writes.
-    /// Under <c>/alloy poll 1</c> every frame reads and audits the cache.</summary>
+    /// <summary>The part's own alpha, read off the part every frame for a gob or matrix-class part (the
+    /// animated ones) and every <see cref="ColourCadence"/> frames for a still gobless part -- the tile
+    /// geometry that is the routed majority, whose <c>+0xa0</c> only an MDL alpha controller writes.
+    /// <c>/alloy poll 1</c> reads and audits the cache every frame.</summary>
     private static float PartAlphaCached(int i, IntPtr tri) => SceneDb.PartAlpha[_oDbPart[i]];
 
-    /// <summary>#128: this frame's whole alpha multiplier for a part -- its own animated alpha, the fade
-    /// factor of the tile it stands on, and the instance's two multiplies. Every term is read live and none
-    /// is cached at capture, which is what the creature case demands: a gob can fade a whole creature into
-    /// the transparent run for a single frame and out again.</summary>
+    /// <summary>This frame's whole alpha multiplier for a part -- its own animated alpha, the fade factor of
+    /// the tile it stands on, and the instance's two multiplies. Every term read live, none cached at
+    /// capture: a gob can fade a whole creature into the transparent run for a single frame and out again.</summary>
     private static float LiveAlpha(int i, IntPtr tri)
         => SceneDb.PartAlpha[_oDbPart[i]] * SceneDb.PartFade[_oDbPart[i]] * DbObjAlpha(_oDbPart[i]);
 
-    /// <summary>Squared distance from THIS pass's eye to the part's world centre -- the blended sort key.
-    /// Derived exactly as the caster cull derives it and for the same reason (live-verified there): a
-    /// matrix-class part's centre is its model matrix translation, and everything else is world-space
-    /// geometry whose bbox centre already is the answer.</summary>
-    /// <summary>The blended sort key: a gob part sorts by its RUN gob's distance (see <see cref="RunGob"/>),
-    /// so every part of one creature carries the same key and the stable sort lands them contiguous -- one
-    /// run the frame can depth-prepass and colour as a unit. A gobless part keeps its own centre.</summary>
+    /// <summary>The blended sort key: a part sorts by its RUN ROOT's distance, so every part of one creature
+    /// carries the same key and the stable sort lands them contiguous -- one run the frame can depth-prepass
+    /// and colour as a unit. A part with no run root keeps its own centre.</summary>
     private static float BlendKey(int i)
     {
         // CX-120: a part sorts by its RUN ROOT's world position -- the object a fade and a blended run apply to,
@@ -305,22 +275,15 @@ public sealed unsafe partial class AlloyRenderer
         return dx * dx + dy * dy + dz * dz;
     }
 
-    /// <summary>The gob a blended part composites WITH: its fade owner when it has one (an attached weapon
-    /// or shield rides its creature), else its own gob. Zero for tile geometry.</summary>
-    /// <summary>The gob a blended part composites WITH: its fade owner, else the root of its attachment chain
-    /// (#490: a creature's body parts and held items are gobs attached to the creature's, and one ghosted
-    /// creature is one layer, not one per part). Bounded climb; a cycle is not a shape the engine builds.</summary>
-    /// <summary>CX-120: the blended batch key's run identity -- the DB run root as an opaque value for a DB
-    /// slot, the engine's chased gob for an engine one. Compared, never dereferenced, by every reader.</summary>
+    /// <summary>The blended batch key's run identity -- the run root as an opaque value, compared and never
+    /// dereferenced by every reader. A creature's body parts and held items share one root, so one ghosted
+    /// creature is one layer rather than one per part.</summary>
     private static IntPtr RunKey(int i)
         => (IntPtr)(long)SceneDb.ObjRunRoot[SceneDb.PartObj[_oDbPart[i]].Index].Value;
 
-    /// <summary>#618: is this part a creature's? Its own gob, or any gob up its attachment chain, carries
-    /// <see cref="EngineLayout.GobKindCreature"/> (a hat or a held weapon is its own gob hanging off the body's).
-    /// NOT <see cref="RunGob"/>: that returns the fade-owner NODE (gob+0x68) as a composite key, and a node
-    /// read as a gob has no type -- which is how every character first painted as an object.</summary>
-    /// <summary>The caster pass's read of <see cref="CreaturePart"/>: a player character is RIGID parts under
-    /// bone-driven nodes (pfh0_legl004...), not a skinmesh, so nothing else names it a creature.</summary>
+    /// <summary>Is this part a creature's? Its own object, or any object up its attachment chain, carries the
+    /// creature flag -- a hat or a held weapon is its own object hanging off the body's. A player character is
+    /// RIGID parts under bone-driven nodes, not a skinmesh, so nothing else names it a creature.</summary>
     internal static bool SlotCreature(int i) => SlotCreatureObj(i) >= 0;
     private static bool CreaturePart(int i) => CreatureObj(i) >= 0;
     /// <summary>The creature object slot <paramref name="i"/> is a part of (its <see cref="SceneDb"/> index), or
@@ -348,9 +311,9 @@ public sealed unsafe partial class AlloyRenderer
         return dx * dx + dy * dy + dz * dz;
     }
 
-    /// <summary>#242: store <paramref name="v"/> and say whether that changed anything. The whole
-    /// persistent-record scheme is this compare: a field written every frame with the value it already held
-    /// is not a mover, and the record it sits in does not need re-sending.</summary>
+    /// <summary>Store <paramref name="v"/> and say whether that changed anything. The whole persistent-record
+    /// scheme is this compare: a field written every frame with the value it already held is not a mover, and
+    /// the record it sits in does not need re-sending.</summary>
     private static bool St(float* p, float v)
     {
         if (*p == v) return false;
@@ -358,21 +321,17 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    /// <summary>#242: the cached slot tids of a record that did not move. Still needed every frame -- a
-    /// bind-path batch cuts on its textures, so the batch key reads them even when the record does not.
-    /// </summary>
+    /// <summary>The cached slot tids of a record that did not move. Still needed every frame -- a bind-path
+    /// batch cuts on its textures, so the batch key reads them even when the record does not.</summary>
     private static void LoadSlotTids(int i, int* slotTid)
     {
         for (int s = 0; s < MapSlots; s++) slotTid[s] = _recTidS[i * MapSlots + s];
     }
 
-    /// <summary>#242: the record fields ADR 0017's split table calls PER-FRAME, gathered off the live scene
-    /// by the staging walk and handed to <see cref="WritePerFrame"/>. A plain value struct on the stack --
-    /// no engine pointer reaches this far, which is what makes the split checkable off-device.
-    /// <para>Everything NOT here is stable at enrolment and written once, by <see cref="WriteStable"/>.
-    /// Moving a field from this struct into that one is the exact mistake the ticket describes: it does not
-    /// read as a perf bug, it reads as a frozen animated texture or a tile stuck at full opacity months
-    /// later. <see cref="SplitSelfCheck"/> is what makes that move go red.</para></summary>
+    /// <summary>The record fields ADR 0017's split table calls PER-FRAME, gathered off the live scene by the
+    /// staging walk and handed to <see cref="WritePerFrame"/>. A plain value struct, so no engine pointer
+    /// reaches this far and the split is checkable off-device. Move a field into the stable half
+    /// (<see cref="WriteStable"/>) and it reads as a frozen texture; <see cref="SplitSelfCheck"/> goes red.</summary>
     internal struct RecordFrameState
     {
         /// <summary>Matrix-class parts only -- creatures, doors, dangly, anything on a node. A part whose
@@ -385,19 +344,10 @@ public sealed unsafe partial class AlloyRenderer
         internal float FeatX, FeatY;
     }
 
-    /// <summary>#243: this record's world bounding sphere, for the cull. The local radius is
-    /// enrolment-stable (<c>_oR</c>); what moves is the model matrix, so a matrix-class sphere is centred on
-    /// its translation (the node origin the radius is measured about) and its radius is scaled by
-    /// <see cref="GobXform.ScaleOf"/> -- the whole scale chain, the gob's visual transform included. Without
-    /// that factor a placeable scaled k times culled as one k times smaller about its pivot: the vanilla
-    /// "big placeable vanishes when its base leaves the screen" (the engine files a gob by its unscaled model
-    /// radius, <c>SceneBSPUpdateGob</c> @0x47c380, and tests it about an unscaled centre, <c>GobOutside</c>), in
-    /// every Alloy cull at once.
-    /// <para>Three kinds of part are EXEMPTED with <see cref="NeverCull"/> rather than bounded: a posed
-    /// skinmesh (its vertices are placed by 64 bone matrices, not by this one), a dangly mesh (its vertices
-    /// move under a matrix that does not -- #241's standing observation), and a displacing feature (wind
-    /// sway leaves the rest bbox by construction). Each would otherwise be culled at a silhouette it is no
-    /// longer standing in, and a cull's bug is invisible geometry.</para></summary>
+    /// <summary>This record's world bounding sphere, for the cull. The local radius is enrolment-stable; what
+    /// moves is the model matrix, so a matrix-class sphere is centred on its translation and its radius scaled
+    /// by the WHOLE scale chain, or a placeable scaled k times culls as one k times smaller about its pivot.
+    /// A posed skinmesh, a dangly mesh and a displacing feature are <see cref="NeverCull"/>: they leave it.</summary>
     private static void WriteSphere(int i, in RecordFrameState f, IntPtr tri, int feat)
     {
         fixed (float* sp = _dSph)
@@ -418,7 +368,7 @@ public sealed unsafe partial class AlloyRenderer
     /// diagonal (tiles are 10u square; WaterBodies.TileHalf is the same convention's other half).</summary>
     private const float DegenerateCasterRadius = 7.1f;
 
-    /// <summary>#302: the same sphere, GEOMETRIC even for the three exempted kinds, and scaled the same way.
+    /// <summary>The same sphere, GEOMETRIC even for the three exempted kinds, and scaled the same way.
     /// See <c>_dCastSph</c> for why the shadow pass cannot use a <see cref="NeverCull"/> one.</summary>
     private static void WriteCasterSphere(int i, in RecordFrameState f)
     {
@@ -448,19 +398,10 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>#242: the per-frame half of the record, compared into place. Returns whether anything
-    /// actually moved -- which is the whole scheme: a field rewritten with the value it already held does
-    /// not make its record a mover, and only movers are re-sent.</summary>
-    /// <para>#392: <c>prev</c> (floats 44..59) is LAST FRAME's model. <paramref name="roll"/> is "this is the
-    /// record's first build this frame": the old model rolls into prev when the model moved, and prev catches
-    /// up to the model the frame after a mover stops (one extra re-send, so a closed door does not report
-    /// motion forever). <paramref name="fresh"/> seeds prev = model, so a new tenant never carries the last
-    /// tenant's matrix as its history.</para></summary>
     /// <summary>Did a model matrix move, to a tenth of a millimetre? The engine rebuilds a placed gob's matrix
-    /// from its quaternion, and bit-exact inequality read 60-156 still barrels a frame as movers in a static
-    /// area (run 13): each a record re-send, a moving-caster page under its light, and a hot light on every
-    /// baked fragment in reach. ponytail: a drift slower than the step accumulates against the record and
-    /// is written once it crosses it, so nothing is lost, only sent later.</summary>
+    /// from its quaternion, so bit-exact inequality reports a static area's parts as movers every frame --
+    /// each a record re-send, a moving-caster page under its light, a hot light on every baked fragment in
+    /// reach. ponytail: a slower drift accumulates and is written once it crosses the step, never lost.</summary>
     private const float MoveStep = 1e-4f;
     /// <summary>The caster's step: 1 cm of translation, or 0.01 of a rotation element (0.6 degrees). ponytail: the
     /// compare is against the record, which follows at the finer step, so a creep under 1 cm a frame never
@@ -476,6 +417,10 @@ public sealed unsafe partial class AlloyRenderer
         return false;
     }
 
+    /// <summary>The per-frame half of the record, compared into place; returns whether anything actually
+    /// moved, which is the whole scheme. <c>prev</c> (floats 44..59) is LAST FRAME's model:
+    /// <paramref name="roll"/> says this is the record's first build this frame, and <paramref name="fresh"/>
+    /// seeds prev = model so a new tenant never carries the last tenant's matrix as its history.</summary>
     private static bool WritePerFrame(float* r, in RecordFrameState f, bool roll = true, bool fresh = false)
     {
         bool m = false;
@@ -502,13 +447,13 @@ public sealed unsafe partial class AlloyRenderer
         return m;
     }
 
-    /// <summary>#242: the stable half -- written when the slot is built and never again while it holds the
-    /// same part. The texture rotation cannot change without failing <c>IdentityOk</c> (which revokes), a
-    /// .mtr does not animate, and the three alpha ones are literal constants. An identity model matrix is
-    /// here too: a part whose class does not stage a node has no live matrix to re-read.</summary>
     /// <summary>Stable-record writes by emi.w class since arming (creature / object / tileset), for the weather line.</summary>
     internal static int RecCreature, RecObject, RecTile;
 
+    /// <summary>The stable half -- written when the slot is built and never again while it holds the same
+    /// part. The texture rotation cannot change without failing <c>IdentityOk</c> (which revokes), a .mtr does
+    /// not animate, and the alpha ones are literal constants. An identity model matrix is here too: a part
+    /// whose class does not stage a node has no live matrix to re-read.</summary>
     private static void WriteStable(float* r, int i, bool lit)
     {
         if (!_oMx[i]) { *(Matrix4x4*)r = Matrix4x4.Identity; *(Matrix4x4*)(r + PrevFloat) = Matrix4x4.Identity; }
@@ -574,13 +519,10 @@ public sealed unsafe partial class AlloyRenderer
         return inside && tight;
     }
 
-    /// <summary>#242 (AC5): off-device, the split itself. Every field of
-    /// <see cref="RecordFrameState"/> is perturbed on its own and must make the record a mover; a record
-    /// re-written with the values it already holds must not. Move any one of them out of
-    /// <see cref="WritePerFrame"/> and into <see cref="WriteStable"/> -- the mistake the ticket is about --
-    /// and its perturbation stops being seen, which is this check going red.
-    /// <para>Verified red during development by moving <c>Alpha</c> into the stable half: a fading tile then
-    /// stands at full opacity for as long as it is owned, and nothing else says so.</para></summary>
+    /// <summary>Off-device, the split itself: every field of <see cref="RecordFrameState"/> is perturbed on
+    /// its own and must make the record a mover, and a record re-written with the values it already holds must
+    /// not. Move one out of <see cref="WritePerFrame"/> into <see cref="WriteStable"/> and its perturbation
+    /// stops being seen -- a fading tile stuck at full opacity, with nothing else to say so.</summary>
     private static bool SplitSelfCheck(ExtenderLog log)
     {
         float[] rec = new float[DrawFloats];
@@ -652,13 +594,10 @@ public sealed unsafe partial class AlloyRenderer
         return seen;
     }
 
-    /// <summary>#242: this slot's texture caches advanced but its record never did -- the walk skipped out
-    /// between the two. Un-stamp it, so the part rebuilds from scratch when it comes back rather than being
-    /// served as clean against caches its record does not match.
-    /// <para>Without this the failure is the nastiest shape there is: the diffuse pointer moves, the resolve
-    /// updates the cache, a transient range or VAO skip drops the part, and on its return the pointer
-    /// compares EQUAL to the cache -- so the record keeps the previous texture's handles for as long as the
-    /// part is owned. That is #220 again, with a longer fuse and nothing in the log.</para></summary>
+    /// <summary>This slot's texture caches advanced but its record never did -- the walk skipped out between
+    /// the two. Un-stamp it, so the part rebuilds from scratch when it comes back: otherwise the diffuse
+    /// pointer compares EQUAL to the cache on its return and the record keeps the previous texture's handles
+    /// for as long as the part is owned, with nothing in the log.</summary>
     private static void UnstampRecord(int i)
     {
         _gate[i].RecGen = 0;   // 0 = never built; the epoch starts at 1
@@ -668,22 +607,14 @@ public sealed unsafe partial class AlloyRenderer
         UnstampChase(i);
     }
 
-    /// <summary>#242: this record moved and has to reach the GPU again. Overflow is not a silent drop -- it
-    /// promotes the frame to a wholesale upload, which is correct and merely more expensive.</summary>
+    /// <summary>This record moved and has to reach the GPU again. Overflow is not a silent drop -- it promotes
+    /// the frame to a wholesale upload, which is correct and merely more expensive.</summary>
     private static void MarkRecordDirty(int slot) => MarkRecordDirty(slot, ref _stageCounters[0]);
 
-    /// <summary>#331: advance every cycle texture the engine is animating. Main thread, before the batch build.
-    /// <para>CX-188 (review): the per-record controller COLUMN is gone. <c>_recCtl</c> was written by the
-    /// engine-path stage, which the scene database replaced, and <c>CycleTextures.Register</c> -- the only
-    /// thing that ever produced a controller for a record -- has no caller left in the tree: a DB part
-    /// resolves its textures through <see cref="TexRegistry"/> by <c>TexId</c> and holds no
-    /// <c>CAurTexture*</c> to register. So the drop scan was testing an array that can only hold zeros, and
-    /// #331's "re-resolve the records behind a dropped controller" had quietly stopped existing. Deleted
-    /// rather than left as a no-op loop over the whole table.</para>
-    /// <para>The tick itself STAYS: it is the engine's own animated-texture advance and the
-    /// <c>[alloy]</c> line reports its count and steps. If anything ever re-arms <c>Register</c>, the drop
-    /// funnel has to come back with it -- so a drop that nothing can act on is said out loud rather than
-    /// swallowed, because the symptom otherwise is a frozen animated texture with nothing in the log.</para></summary>
+    /// <summary>Advance every cycle texture the engine is animating. Main thread, before the batch build. No
+    /// record holds a controller any more -- a part resolves its textures through <see cref="TexRegistry"/> --
+    /// so a dropped one is said out loud rather than swallowed: whatever re-arms
+    /// <c>CycleTextures.Register</c> must restore the re-resolve funnel, or the textures behind it freeze.</summary>
     private static void TickCycleTextures()
     {
         CycleTextures.Tick();
@@ -705,33 +636,26 @@ public sealed unsafe partial class AlloyRenderer
         else _recDirtyAll = true;
     }
 
-    /// <summary>#242: every persistent record is suspect -- rebuild them all on the next frame that draws.
-    /// The edges that need it are the ones no per-part compare can see: any bindless handle wipe or context
-    /// loss (a record holding a dead handle is #220's wall-sampling-a-portrait), and the debug toggles that
-    /// change what a record means. Enrolment is NOT one of them (#322 review corrected this doc): #308's
-    /// stable slots mean a re-tenant is a per-slot event, and <see cref="UnstampRecord"/> at the enroll
-    /// walk is what invalidates it. See ADR 0017's "Step 2, as built".</summary>
+    /// <summary>Every persistent record is suspect -- rebuild them all on the next frame that draws. The edges
+    /// that need it are the ones no per-part compare can see: a bindless handle wipe or context loss (a record
+    /// holding a dead handle samples whatever took its name), and the debug toggles that change what a record
+    /// means. Enrolment is NOT one of them: <see cref="UnstampRecord"/> invalidates a re-tenanted slot.</summary>
     internal static void InvalidateRecords() => System.Threading.Interlocked.Increment(ref _recEpoch);
                                               // Interlocked: /alloy runs on the input thread
 
-    /// <summary>Phase A of the Alloy block: walk this pass's order (<see cref="RouteParts"/>), revalidate
-    /// every part, and stage the survivors into the multidraw argument arrays plus one per-draw SSBO record
-    /// each -- cutting a batch whenever the (class, program, VDO, texture, primitive, blend) key changes.
-    /// Primitive mode is in the key because one multidraw carries a single mode; the sort does not group by
-    /// it, so a mixed-mode VDO just yields more batches. Returns the batch count, leaving the draw count in
-    /// <see cref="_drawN"/> and the per-class batch ranges in <see cref="_gOpaqueEnd"/>/<see cref="_gBlendEnd"/>.
-    /// <para>OwnGen is stamped here, which is only honest because the issue phase cannot fail per part: the
-    /// entry-point guard ran in <see cref="DrawOwned"/> and EnsureVao ran here.</para></summary>
-    /// <summary>#322: how many frames apart each slot re-reads its slow-drift colour state (mdl colour
-    /// triples, self-illum, gob colour folds, non-animated slot-map pointers). Power of two; the stagger by
-    /// slot index spreads the reads evenly, so the per-frame cost is 1/N of the population and the worst
-    /// staleness is N frames of a drift that moves over seconds. Fast-visible state (alpha, fade, matrix,
-    /// the diffuse pointer, dissolve) never rides this.</summary>
+    /// <summary>How many frames apart each slot re-reads its slow-drift colour state (mdl colour triples,
+    /// self-illum, gob colour folds, non-animated slot-map pointers). Power of two; the stagger by slot index
+    /// spreads the reads evenly, so the per-frame cost is 1/N of the population and the worst staleness is N
+    /// frames of a drift that moves over seconds. Fast-visible state never rides this.</summary>
     private const int ColourCadence = 8;
 
-    /// <summary>#324: one routed part in this many carries the <c>Zone.Chase</c> timestamps. Power of two.</summary>
+    /// <summary>One routed part in this many carries the <c>Zone.Chase</c> timestamps. Power of two.</summary>
     internal const int ChaseEvery = 16;
 
+    /// <summary>Phase A of the Alloy block: walk this pass's order (<see cref="RouteParts"/>), revalidate every
+    /// part, and stage the survivors into the multidraw argument arrays plus one per-draw SSBO record each,
+    /// cutting a batch whenever the (class, program, VDO, texture, primitive, blend) key changes. Primitive
+    /// mode is in the key because one multidraw carries a single mode. Returns the batch count.</summary>
     private static int BuildBatches(bool lightingOn)
     {
         int groups = 0, n = 0;
@@ -961,15 +885,10 @@ public sealed unsafe partial class AlloyRenderer
         return groups;
     }
 
-    /// <summary>BW2: everything the serial batch-cut walk needs about ONE staged draw, in rank order. The cut
-    /// used to gather it from ~20 per-slot columns at a scattered ownership index <c>i</c> while walking rank
-    /// <c>k</c>, which is one cache miss per column per draw; <see cref="StagePart"/> already visits the slot
-    /// (and in parallel), so it writes the row and the cut streams it.
-    /// <para>Every field is the same expression the cut used to evaluate, at the same point in the frame -- the
-    /// row is written at the END of StagePart, after the record block that can move <c>_recMovedAt</c>. What is
-    /// NOT here is what the cut cannot move off the main thread: <see cref="MeshChart.Range"/> and
-    /// <see cref="MeshLod.Range"/> (a dictionary and a shared counter each), and the <c>FrameDump</c> row.
-    /// <see cref="AuditBatchRows"/> rebuilds every field the old way on a cadence and counts disagreements.</para></summary>
+    /// <summary>Everything the serial batch-cut walk needs about ONE staged draw, in rank order:
+    /// <see cref="StagePart"/> already visits the slot (and in parallel), so it writes the row and the cut
+    /// streams it rather than gathering ~20 columns at a scattered index. Written at the END of StagePart,
+    /// after the record block; <see cref="AuditBatchRows"/> rebuilds every field the old way on a cadence.</summary>
     private struct BatchRow
     {
         public int Slot, Entry, IdxCount, BaseVertex, Vao, Item, Tid, Slots, Feat, Blend, Lvl;
@@ -1156,58 +1075,31 @@ public sealed unsafe partial class AlloyRenderer
     private static int _stageThreads => Renderer.Threads.V;
     private static long _stageDeferred, _stageFrames;
     private static readonly byte[] _pkVerdict = new byte[MaxOwned], _pkDis = new byte[MaxOwned];
-    /// <summary>The per-part half of <see cref="BuildBatches"/>: chase the engine state a routed part depends on
-    /// and write its record, sphere and cast admission -- everything that touches ONLY this slot's arrays. The
-    /// batching half reads the result back off those arrays in routed order. Split so the two can run on
-    /// different threads: this half is per-slot and order-free, the batch walk is neither.
-    /// <para>The worker rule (ADR 0022): off the main thread (<paramref name="main"/> false) a part may take
-    /// only paths whose side effects are this slot's arrays and <paramref name="c"/>. Anything that mints a GL
-    /// object, logs, allocates or touches a shared collection returns <see cref="Deferred"/> with the counters
-    /// rolled back, and the main thread re-runs the part after the join.</para></summary>
+    /// <summary>The per-part half of <see cref="BuildBatches"/>: chase the state a routed part depends on and
+    /// write its record, sphere and cast admission -- everything that touches ONLY this slot's arrays, so it
+    /// is order-free where the batch walk is not. The worker rule (ADR 0022): off the main thread, a path that
+    /// mints a GL object, logs, allocates or touches a shared collection returns <see cref="Deferred"/>.</summary>
     private static byte StagePart(int k, float* data, int* slotTid, bool lightingOn, ref StageCounters c, bool main)
         => StageDbPart(k, _pass[k], data, lightingOn, ref c, main);
 
-    /// <summary>#125: stage the sky's draws behind the batch records, in the engine's own order -- current
-    /// sky, then the one fading in over it, then the cross-fade gob. One record per part, carrying the model
-    /// matrix <see cref="SkyBox"/> composed off the engine's matrix stack and the role's alpha in
-    /// <c>rot.w</c>, which is the per-draw alpha multiplier the fullbright stage applies.
-    /// <para>CX-88: ONE list for both kinds of sky part. A material that names its own custom fragment stage
-    /// is drawn with the Alloy program <see cref="SkyStage"/> compiled from it; everything else takes the
-    /// plain unlit stage. Both carry the same draw record, so the difference is which program the pass binds
-    /// -- where #136 needed a second list because the program it bound was the ENGINE's and brought its own
-    /// matrices with it.</para>
-    /// <para>Every term is re-read live: a part whose texture, index range, VAO or sky program does not
-    /// resolve this frame is not staged, and the role hands the whole sky back.</para></summary>
+    /// <summary>Stage the sky's draws behind the batch records, in the engine's own order -- current sky, then
+    /// the one fading in over it, then the cross-fade gob. One record per part, carrying the model matrix
+    /// <see cref="SkyBox"/> composed off the engine's matrix stack and the role's alpha in <c>rot.w</c>. Every
+    /// term is re-read live: a part that does not resolve this frame hands the whole sky back.</summary>
     private static void StageSky()
     {
         _skyN = 0; _skyFirst = _drawN;
         StageDbSky(_dbPassScene);
     }
 
-    /// <summary>The skybox, after the opaque set and before the blended one (ADR 0011 step 3, #125).
-    /// <para><c>glDepthRange(1,1)</c> is what makes "after opaque" mean anything. The dome sits AT the
-    /// camera, so its own depth is NEAR and it would pass the test everywhere -- which is why vanilla paints
-    /// over bucket 0. Forced to the far plane and tested LEQUAL (the value <see cref="OpaqueOwnedPass"/>
-    /// leaves bound), it survives only where nothing has written depth. <c>GL_DEPTH_CLAMP</c> because the
-    /// matrices were composed under the ENGINE's sky projection (far 1000.0, <c>RenderSkyBoxes</c>) and are
-    /// drawn under the world's: clipped, the dome would read as a hole at the horizon with nothing in the
-    /// log. Depth range and clamp are 4.6-CONTEXT state the later passes share, so both are restored here.</para>
-    /// <para>CX-88: one loop over one list, switching program where a part's material names its own fragment
-    /// stage. Every draw is an Alloy program reading an Alloy draw record, so the pass renders correctly into
-    /// any view -- including the environment probe's six cube faces, which #136's engine-program replay could
-    /// not (its matrices were the main view's, which is why the probe used to take the owned dome alone).</para>
-    /// <para>ponytail: the roles composite in LINEAR (ADR 0018: "there is no strand 3"). The settled sky is
-    /// unaffected -- its role is <c>(SRC_ALPHA, ZERO)</c>, which never reads the destination -- but the
-    /// cross-fade and the skyfade gob are genuine over-blends, and at partial alpha a linear over composites
-    /// brighter than the engine's display-space one by <c>alpha^(1/2.2)/alpha</c> (1.5x at 0.5). Deliberate:
-    /// the sky is Alloy's to author and the frame it lands in is linear. The three alphas are on the period
-    /// line (<see cref="SkyBox.NoteRoles"/>); if the horizon band ever reads wrong, the upgrade is a per-role
-    /// alpha correction, not a display-space scratch target (#261).</para>
-    /// </summary>
     /// <summary>The main view's inverse view-projection, noted at the sky pass for the resolve's horizon band
     /// (<see cref="PostChain"/>): a far-depth pixel below the band is fog, not sky. Default = none this view.</summary>
     internal static Matrix4x4 SkyInvVp;
 
+    /// <summary>The skybox, after the opaque set and before the blended one (ADR 0011 step 3). The dome sits AT
+    /// the camera, so <c>glDepthRange(1,1)</c> plus the opaque pass's LEQUAL is what makes "after opaque" mean
+    /// anything: it survives only where nothing wrote depth. Depth range and clamp are 4.6-CONTEXT state later
+    /// passes share, so both are restored here. ponytail: the roles composite in LINEAR, not display space.</summary>
     private static void SkyOwnedPass(Matrix4x4* vp, int* viewport)
     {
         if (_skyN == 0 || Gl.DepthRange == null) return;
@@ -1296,12 +1188,10 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1f(Programs._locSkyFog, SceneFog.SkyBand);
     }
 
-    /// <summary>CX-120: pick this DB slot's charted range, or offer its mesh to the charter if it has none.
-    /// A chart is the same arena section in the same format with the chart lane filled, so picking it is
-    /// three integers -- and <see cref="LightmapBake.Enrol"/> on the back of it is the whole of baked
-    /// lighting in DB mode: nothing else mints a rect.
-    /// <para>Main thread (the batch build's). Offers are budgeted per frame because each one takes the arena
-    /// lock and allocates the job's arrays, and an area's whole tile set would otherwise go in one pass.</para></summary>
+    /// <summary>Pick this slot's charted range, or offer its mesh to the charter if it has none. A chart is the
+    /// same arena section with the chart lane filled, so picking it is three integers, and
+    /// <see cref="LightmapBake.Enrol"/> on the back of it is the whole of baked lighting -- nothing else mints
+    /// a rect. Main thread; offers are budgeted, since each takes the arena lock and allocates the job.</summary>
     private static void DbChart(int i, int lvl, ref nint idxOff, ref int baseVertex, ref int idxCount)
     {
         int recipe = _oDbRecipe[i];

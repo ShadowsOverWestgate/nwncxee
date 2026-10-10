@@ -8,32 +8,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Diagonal moves, a <see cref="PoseService"/> module (<c>anim.diagonal</c>). The engine drives a diagonal as
-/// forward (or back) plus the perpendicular, normalized: 45° off the facing, at the walk or run rate
-/// (<c>CClientExoAppInternal::DrivePlayer</c> @0x65f230, <c>CNWSCreature::AIActionDrive</c> @0xa98fd0). Forward it
-/// plays the side-stepping <c>pausewalkfl/fr</c> / <c>runfl/fr</c> (0x54..0x57); backward it has none and plays
-/// the plain walk-back (3, the walk cycle at negative speed) drifting sideways.
-/// <para>Here a forward diagonal plays the straight walk (2) or run (4) instead, swapped by id inside
-/// <c>CNWCAnimBase::GetAnimationName</c> so the length, the pacing (<c>WalkUpdateLocation</c> reads both through it)
-/// and a module's <c>ReplaceObjectAnimation</c> all follow; <c>Gob::PlayAnimation</c> keeps a run whose name
-/// matches, so the cycle never restarts. The hips (<c>pelvis_g</c>, which carries the legs and is the torso's
-/// sibling under <c>rootdummy</c>) are then turned toward the travel -- a walk-back points its heels along it --
-/// by a quick critically damped spring, and the chest takes only <see cref="UpperShare"/> of the turn, so the upper
-/// body keeps facing forward. The turn happens over a planted foot: while it runs (<see cref="Pivoting"/>) a foot on
-/// the ground is pinned where it stands until the animation lifts it (<see cref="Stride.Foot"/>), so it pivots in
-/// place while the swinging foot comes round and lands on the new line. The creature's own anim id
-/// (<c>CNWCObject+0x5c</c>) is untouched: it says which way to turn.</para>
-/// <para>With <c>anim.pivot</c> a change of facing is the same turn: the hips keep their world heading as the
-/// facing turns (<see cref="Lag"/>, never past <see cref="MaxTwist"/>) and the spring brings them round over a
-/// planted foot. A turn on the spot (<see cref="OnTheSpot"/>) steps its feet in place, so the foot lock holds
-/// the planted one through it as it does while walking. A body walking or running goes round a turn it can walk
-/// -- up to <see cref="WalkTurn"/> -- with its legs, and only what outpaces that (the snap to a new heading as a
-/// drive sets off) is left on the hips to pivot over (<see cref="Walked"/>): trailing every bend of a steady turn
-/// pinned each planted foot until it lifted, however far the turn pulled it, and the legs stuttered through every
-/// mouse turn (live feedback, 2026-09-29).</para>
-/// <para>Only a body the pose layer corrects is swapped (<see cref="PoseService.Swaps"/>), and the turn follows the
-/// slot's last swap decision -- the name the gob is playing -- so a turned sidestep or an unturned swapped walk never
-/// shows: at first sight the hips turn in as the cycles crossfade.</para>
+/// Diagonal moves and turns, a <see cref="PoseService"/> module (<c>anim.diagonal</c>, <c>anim.pivot</c>). A forward
+/// diagonal (<c>pausewalkfl/fr</c>, <c>runfl/fr</c>, 0x54..0x57) plays the straight walk or run instead, swapped by id
+/// inside <c>CNWCAnimBase::GetAnimationName</c> so the length, the pacing and a module's <c>ReplaceObjectAnimation</c>
+/// all follow; the hips (<c>pelvis_g</c>) then spring toward the travel over a planted foot, the chest taking <see cref="UpperShare"/>.
 /// </summary>
 internal static unsafe class Diagonal
 {
@@ -105,11 +83,10 @@ internal static unsafe class Diagonal
     /// still to go: a foot planted now is the one they turn over (<see cref="Stride.Foot"/>).</summary>
     internal static bool Pivoting(float turn, float target) => MathF.Abs(target - turn) > PivotLeft;
 
-    /// <summary>The body's turn off the facing, radians, positive = left, for anim id <paramref name="anim"/>, whether
-    /// its name was <paramref name="swapped"/> for the straight cycle, and the measured travel along the facing's
-    /// forward (<paramref name="fwd"/>) and right (<paramref name="side"/>): a swapped forward diagonal faces its
-    /// travel, a walk-back drifting sideways past <see cref="BackSide"/> points its back along it, and everything
-    /// else is straight.</summary>
+    /// <summary>The body's turn off the facing, radians, positive = left, from the anim id, whether its name was
+    /// <paramref name="swapped"/>, and the travel along the facing's forward (<paramref name="fwd"/>) and right
+    /// (<paramref name="side"/>): a swapped forward diagonal faces its travel, a walk-back drifting sideways past
+    /// <see cref="BackSide"/> points its back along it, everything else straight.</summary>
     internal static float Target(int anim, bool swapped, float fwd, float side) => anim switch
     {
         WalkFl or RunFl when swapped => Quarter,
@@ -139,10 +116,9 @@ internal static unsafe class Diagonal
     }
 
     /// <summary>This frame's hip turn for a body playing <paramref name="anim"/>, facing <paramref name="fwdH"/> /
-    /// <paramref name="right"/>; true when there is one to write (<see cref="Write"/>). With <c>anim.pivot</c>, a
-    /// movement's change of facing since the last <paramref name="tracked"/> frame, less what a moving body walks
-    /// round (<see cref="Walked"/>), is left behind on the hips (<see cref="Lag"/>) for the spring to bring round.
-    /// What the legs did go round with is <see cref="PoseService.Slot.Walked"/>, for the foot lock.</summary>
+    /// <paramref name="right"/>; true when there is one to write (<see cref="Write"/>). With <c>anim.pivot</c> the
+    /// change of facing since the last <paramref name="tracked"/> frame, less what a moving body walks round
+    /// (<see cref="Walked"/>), is left on the hips (<see cref="Lag"/>); the legs' share is <see cref="PoseService.Slot.Walked"/>, for the foot lock.</summary>
     internal static bool Step(ref PoseService.Slot s, int anim, Vector3 fwdH, Vector3 right, bool snap, bool tracked, float dt)
     {
         float target = AnimKnobs.Diagonal.V && _name != null && s.Hips

@@ -9,35 +9,18 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-55 step 3(b): a disk cache of ENGINE-COMPILED binary models for ASCII sources. SoW content is
-/// mostly ASCII <c>.mdl</c>, and an ASCII model costs the main thread a line-at-a-time interpreter plus the
-/// whole per-mesh post-process (normals, neighbour lists, tangents, surface area) that a binary file stores
-/// precomputed -- measured at 131-137 ms for one area's 70 tile models and 309 ms for 15 creature models after
-/// it. The binary parse of the same content is two <c>memcpy</c>s plus per-node allocation.
-/// <para><b>Nothing here writes an MDL.</b> The compiler is the engine's own
-/// (<see cref="SymbolMap.CompileModels"/>, <c>CX-55</c>): reader and writer are a
-/// pair in one engine source file, so the round trip is the engine's to guarantee, and the two things an
-/// ASCII-parsed model can be missing -- already binary, an uninitialized skinmesh -- are refusals the engine
-/// implements and this only counts.</para>
-/// <para><b>Three edges.</b> (1) The compile, on the main thread at a cold point (<see cref="TexStream.ColdPoint"/>)
-/// under a millisecond budget, NEVER inside <c>LoadArea</c> -- a compile there is paid out of the very load the
-/// cache exists to shorten. (2) The worker serve: <see cref="Worker"/> runs on a model-read worker (<c>cx-mdl</c> or <c>cx-model</c>), so a prefetched
-/// model's cache hit costs the main thread nothing at all. (3) The main-thread serve: this chains
-/// <c>CAuroraInterface::GetResource</c> ABOVE <see cref="ModelLoad"/>'s link, so it sees whatever bytes are
-/// about to reach the engine whether ModelLoad served them or not, and works with <c>alloy.modelload=0</c>.</para>
-/// <para>The ASCII path reads a model TWICE (<c>ReadSync</c>'s 4-byte peek, then <c>dofile</c>). Serving binary
-/// on the first ask sends <c>ReadSync</c> down its binary branch, so the second read never happens.</para></summary>
+/// <summary>A disk cache of ENGINE-COMPILED binary models for ASCII sources: an ASCII <c>.mdl</c> costs the main
+/// thread a line-at-a-time interpreter plus the per-mesh post-process a binary file stores precomputed.
+/// Nothing here writes an MDL -- the compiler is the engine's own (<see cref="SymbolMap.CompileModels"/>), so the
+/// round trip and its refusals (already binary, uninitialized skinmesh) are the engine's and this only counts.</summary>
 internal static unsafe class MdlCache
 {
     /// <summary>"CXMD" little-endian.</summary>
     private const uint Magic = 0x444D5843;   // not-an-offset: the file's first four bytes
-    /// <summary>Bumped with the header layout or with what a cached payload means. The client build is a
-    /// separate header word: the payload is the ENGINE's serialisation, so a new <c>nwmain</c> invalidates
-    /// every file here whatever its key.
-    /// <para>2 (CX-113, parser review A1): every version-1 payload was serialised from a model the engine had
-    /// already INSTANTIATED, so it carries that session's <c>CombineParts</c> radius growth and
-    /// <c>SetPartTextureRotate</c> flag (<see cref="MdlCachePristine"/>). They are not repairable, only
-    /// discarded.</para></summary>
+    /// <summary>Bumped with the header layout or with what a cached payload means. The client build is a separate
+    /// header word: the payload is the ENGINE's serialisation, so a new <c>nwmain</c> invalidates every file here
+    /// whatever its key. Version 1 payloads were serialised from models the engine had already INSTANTIATED, so
+    /// they carry that session's radius growth and texture-rotate flag -- not repairable, only discarded.</summary>
     private const int Version = 2;
     /// <summary>magic, version, build, source hash, source length, payload length, resref.</summary>
     internal const int HeaderBytes = 4 + 4 + 8 + 8 + 4 + 4 + ResRefChars;
@@ -129,9 +112,8 @@ internal static unsafe class MdlCache
         if (!MdlCachePristine.Attach(log)) return;
         _getSlot = hooks.ChainAuroraGetResource(&OnGetResource, ServePriority);
         _relSlot = hooks.ChainAuroraReleaseResource(&OnReleaseResource, ServePriority);
-        // CX-113 (review A1): the ONE point a model is provably pristine -- the parse is complete and nothing
-        // has instantiated it, because the caller that will has not been returned to yet. 43 calls on a real
-        // area, against the 1730 FindModel calls behind it.
+        // the ONE point a model is provably pristine: the parse is complete and nothing has instantiated it,
+        // because the caller that will has not been returned to yet
         _readSlot = hooks.ChainIoReadSync(&OnReadSync, ServePriority);
         if (_getSlot == null || _relSlot == null || _readSlot == null)
         {
@@ -173,11 +155,10 @@ internal static unsafe class MdlCache
         return z;
     }
 
-    /// <summary>A 64-bit hash of the source bytes, eight at a time -- the whole identity of a cache entry, so
-    /// container, hak order, NWSync generation and a builder's edit are all one question. ~100 KiB in a few
-    /// microseconds, which is what makes the main-thread path (b) cheaper than the parse it replaces.
-    /// <para>A collision would serve the wrong model, so the filename carries the resref and the header repeats
-    /// the source length: only same-resref, same-length, different-content bytes could ever reach it.</para></summary>
+    /// <summary>A 64-bit hash of the source bytes -- the whole identity of a cache entry, so container, hak order,
+    /// NWSync generation and a builder's edit are all one question. A collision would serve the wrong model, so the
+    /// filename carries the resref and the header repeats the source length: only same-resref, same-length,
+    /// different-content bytes could ever reach it.</summary>
     internal static ulong Hash(ReadOnlySpan<byte> src)
     {
         ulong h = Seed ^ (ulong)(uint)src.Length;
@@ -260,9 +241,10 @@ internal static unsafe class MdlCache
 
     // ---- the worker serve (path a): zero main-thread cost ----
 
-    /// <summary>On a model-read worker (<c>cx-mdl</c> or <c>cx-model</c>), with an <c>.mdl</c> just read: the compiled bytes for an ASCII source that is
-    /// already cached, else <paramref name="raw"/> unchanged plus an offer to compile it. The returned span is
-    /// the caller's to copy before it returns.</summary>
+    /// <summary>On a model-read worker (<c>cx-mdl</c>/<c>cx-model</c>) with an <c>.mdl</c> just read: the compiled
+    /// bytes for an already-cached ASCII source, else <paramref name="raw"/> unchanged plus an offer to compile it.
+    /// The returned span is the caller's to copy before it returns. Serving binary on this first ask sends the
+    /// ASCII path's second, <c>dofile</c> read down its binary branch, so that read never happens.</summary>
     internal static ReadOnlySpan<byte> Worker(byte[] name, ReadOnlySpan<byte> raw)
     {
         if (!_armed || raw.Length == 0 || raw[0] == 0) return raw;   // empty, or already binary
@@ -383,9 +365,8 @@ internal static unsafe class MdlCache
         int n = 0;
         for (; n < resref.Length && n < ResRefChars; n++) name[n] = (byte)resref[n];
         name[n] = 0;
-        // Review A1: nothing is cached from a model this did not see pristine. A model whose snapshot is
-        // missing (queued before the hook armed) or stale (freed and re-read) is left for the next session,
-        // not serialised with another session's render state baked into it.
+        // nothing is cached from a model this did not see pristine: a missing or stale snapshot is left for the
+        // next session rather than serialised with this session's render state baked into it
         IntPtr live = EngineFn.BinaryFindModel == null ? IntPtr.Zero : EngineFn.BinaryFindModel(name);
         if (!MdlCachePristine.Begin(resref, live, out float[] saved))
         {
@@ -499,7 +480,7 @@ internal static unsafe class MdlCache
 
     /// <summary>Where <c>IODispatcher::Write</c> drops its output: the engine's own <c>MODELCOMPILER</c> alias,
     /// asked once. An empty alias means the writer returns false without writing anything, so the whole compile
-    /// half stands down loudly rather than compiling into nowhere every frame (CX-45).</summary>
+    /// half stands down loudly rather than compiling into nowhere every frame.</summary>
     private static string? CompileDir()
     {
         if (_outDirAsked) return _outDir;
@@ -549,7 +530,7 @@ internal static unsafe class MdlCache
         return false;
     }
 
-    /// <summary>Loud (CX-45) but capped: a cache that cannot write says so, it does not fail a load.</summary>
+    /// <summary>Loud but capped: a cache that cannot write says so, it does not fail a load.</summary>
     private static void Say(string line)
     {
         if (System.Threading.Interlocked.Increment(ref _said) <= LogCap) _log?.Always(line);
@@ -558,7 +539,10 @@ internal static unsafe class MdlCache
     // ---- self-check ----
 
     /// <summary>Off-device: the key, the header's five refusals, the wrapper assertion and the prune's ordering
-    /// rule -- everything about this that can be wrong without a running engine.</summary>
+    /// rule -- everything about this that can be wrong without a running engine. Oracle for the key: golden
+    /// digests pinned as literals. It names files on the player's disk, so a change to it is a change of
+    /// identity that silently invalidates every cached model, and that has to be a deliberate edit here.
+    /// </summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "MdlCache.SelfCheck");
@@ -566,10 +550,12 @@ internal static unsafe class MdlCache
         for (int i = 0; i < a.Length; i++) a[i] = b[i] = (byte)(i * 7 + 1);
         b[999] ^= 1;
         ulong ha = Hash(a), hb = Hash(b);
-        check.Expect(ha == Hash(a), "the hash is not stable over the same bytes");
+        check.Expect(ha == 0x0DC6D5A465B1D8ADUL, $"the key for the golden 1000 bytes is {ha:x16}, not 0dc6d5a465b1d8ad");
+        check.Expect(Hash(ReadOnlySpan<byte>.Empty) == 0x9353DFC8A195F3E2UL,
+                     $"the key for no bytes at all is {Hash(ReadOnlySpan<byte>.Empty):x16}, not 9353dfc8a195f3e2");
+        check.Expect(Hash("abc"u8) == 0x78F9BC69A6845B7BUL, $"the key for a 3-byte tail is {Hash("abc"u8):x16}, not 78f9bc69a6845b7b");
         check.Expect(ha != hb, "one flipped bit in the last byte did not change the hash");
         check.Expect(Hash(a.AsSpan(0, 999)) != ha, "a shorter prefix hashes the same as the whole");
-        check.Expect(Hash(ReadOnlySpan<byte>.Empty) == Hash(ReadOnlySpan<byte>.Empty), "the empty hash is not stable");
         check.Expect(FileName("tcn01_a01_01", 0x0123456789abcdefUL) == "tcn01_a01_01.0123456789abcdef.mdl",
                      $"the cache file is named {FileName("tcn01_a01_01", 0x0123456789abcdefUL)}");
 

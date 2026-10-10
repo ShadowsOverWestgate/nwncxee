@@ -7,29 +7,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>
-/// Geometry RESIDENCY (ADR 0018 M5 strand 1 step 5, #260): Alloy mints the GL buffer behind every engine
-/// vertex/index pool and uploads it from the pool's host shadow; the engine's own upload is suppressed. One
-/// buffer, one upload, no copy -- the hook IS the upload, so there is no ordering against an engine commit
-/// for a copy to get wrong (#227).
-/// <para><b>Keyed on the POOL TOKEN.</b> The token is the engine's own identity for the resource --
-/// <c>GLRender::RequestPool</c> @0x4d1ec0 hands one out, <c>DeletePool</c> @0x4d1d80 returns it to a free
-/// list, and every pool call takes one. The GL name is a FIELD of the pool, minted here, so it is an index
-/// onto the table rather than the key: <see cref="Owns"/> and <see cref="DirtySince"/> are asked in terms of
-/// a name because that is all a harvested VAO carries. Both edges that change what a name means -- this
-/// upload funnel and the engine's delete funnel -- rewrite the index.</para>
-/// <para><b>Why the takeover is safe even when Alloy never draws.</b> The bytes uploaded are the bytes the
-/// engine would have uploaded, into the buffer the engine's own pool descriptor names, so a mid-session
-/// stand down (no 4.6 context, a vanilla verdict, a refused frame) degrades to vanilla, not to an empty
-/// world. It is also why the world-vs-UI pool question is an instrument (<see cref="NoteEngineDraw"/>) and
-/// not a gate: a pool the UI draws from holds correct bytes whoever put them there. For the same reason it
-/// covers EVERY pool, wider than ADR 0018's world-only scope -- a per-pool gate would be machinery guarding
-/// nothing.</para>
-/// <para>Residency supersedes ADR 0016's "upload on enroll, free on revoke" for geometry: upload on the
-/// engine's commit, freed by the engine's own <c>DeletePool</c>, <b>no budget and no LRU</b>, with a VRAM
-/// high-water mark reported beside the engine's own host-shadow total. A budget before a measurement is
-/// #149's mistake in a new costume.</para>
-/// </summary>
+/// <summary>Geometry RESIDENCY: Alloy mints the GL buffer behind every engine vertex/index pool and uploads
+/// it from the pool's host shadow, the engine's own upload suppressed -- one buffer, one upload, no copy, so
+/// there is no ordering for a copy to get wrong. Keyed on the engine's POOL TOKEN, the GL name an index onto
+/// the table (all a harvested VAO carries). No budget and no LRU: the engine's <c>DeletePool</c> frees.</summary>
 internal static unsafe class OwnedBuffers
 {
     /// <summary>One pool Alloy has uploaded. <see cref="Name"/> is the GL buffer minted for it (or adopted,
@@ -49,12 +30,9 @@ internal static unsafe class OwnedBuffers
     }
 
     /// <summary>Capacity for the two tables and the dirty list. Pools are engine-wide (world VDOs, UI
-    /// primitives, the global element stream), so unlike #212's <c>MaxVdos * 3</c> there is no construction
-    /// that bounds them -- <c>RequestPool</c> @0x4d1ec0 doubles its descriptor table on demand.
-    /// <para>ponytail: a number, not a derivation. Past it a rehash allocates on the render thread, once,
-    /// and the tables keep working. Upgrade path if an area is ever seen past it: the descriptor count is
-    /// readable as <c>_table.Count</c>, so <see cref="Install"/> could size from the live figure
-    /// and <see cref="HighWater"/> could report crossing it.</para></summary>
+    /// primitives, the global element stream) and <c>RequestPool</c> @0x4d1ec0 doubles its descriptor table on
+    /// demand, so nothing bounds them. ponytail: a number, not a derivation -- past it a rehash allocates on
+    /// the render thread once and the tables keep working; size from <c>_table.Count</c> if one is ever seen.</summary>
     private const int PoolCeiling = 1024;
     private static readonly Dictionary<uint, Entry> _byToken = new(PoolCeiling);
     /// <summary>GL name -> pool token. The index the harvested-VAO callers ask through.</summary>
@@ -67,14 +45,13 @@ internal static unsafe class OwnedBuffers
     /// <summary>Is the geometry takeover live? False leaves every upload to the engine, which is vanilla
     /// residency -- the stand-down, not a second code path.</summary>
     internal static bool Armed => _armed;
-    /// <summary>Buffers Alloy DRAWS from and did not upload -- asked at every VAO build, so this is the
-    /// geometry twin of <c>OwnedTextures.Borrowed</c> and what #218's exit bar reads. Distinct from
-    /// <see cref="_refused"/>, which counts pools handed back to the engine whether or not Alloy ever draws
-    /// them: the menu's pools are resident before Alloy's GL entry points exist and are never world
-    /// geometry, so counting those on the bar would fail it every session for nothing.</summary>
+    /// <summary>Buffers Alloy DRAWS from and did not upload -- asked at every VAO build, the geometry twin of
+    /// <c>OwnedTextures.Borrowed</c> and what the exit bar reads. Distinct from <see cref="_refused"/>, which
+    /// counts pools handed back whether or not Alloy ever draws them: the menu's pools are resident before
+    /// Alloy's GL entry points exist and are never world geometry.</summary>
     internal static int Borrowed => _borrowed;
     private static long _bytes, _peakBytes;
-    /// <summary>The high-water figure the <c>/knobs</c> residency line reports, in MiB (#259).</summary>
+    /// <summary>The high-water figure the <c>/knobs</c> residency line reports, in MiB.</summary>
     internal static long PeakMib => _peakBytes / OneMiB;
     private static int _minted, _adopted, _refused, _borrowed, _retired, _peakCount;
     private static long _uploads, _subUploads, _grows, _repacks, _wholePool;
@@ -146,15 +123,10 @@ internal static unsafe class OwnedBuffers
     private static byte* _orphan;
     private static int* _totalMemPool;
 
-    /// <summary>The engine is pushing a pool's host shadow into GL. Alloy does it instead, and the original
-    /// never runs for a pool it took -- that is the suppression, and it is what makes the copy unnecessary.
-    /// <para>Hot-adjacent: dynamic pools (UI primitives, particle streams) unlock every frame. In the steady
-    /// state nothing here allocates and nothing logs -- both dictionaries are pre-sized (see
-    /// <see cref="PoolCeiling"/>, whose ceiling is the one exception) and the high-water mark is recorded
-    /// here but REPORTED from the frame, where a string interpolation is affordable.</para>
-    /// <para>Runs wherever the engine happened to be, which is its own 3.3 context. That is fine and in fact
-    /// preferable: buffers are share-listed (#70), so the name is visible from Alloy's bracket, and the
-    /// upload never touches ARRAY_BUFFER or ELEMENT_ARRAY_BUFFER -- see <see cref="Upload"/>.</para></summary>
+    /// <summary>The engine is pushing a pool's host shadow into GL; Alloy does it instead, and the original
+    /// never runs for a pool it took -- that is the suppression. Hot-adjacent (dynamic pools unlock every
+    /// frame): in the steady state nothing here allocates or logs. Runs in the engine's own 3.3 context, which
+    /// is safe because buffers are share-listed and the upload binds nothing (see <see cref="Upload"/>).</summary>
     [UnmanagedCallersOnly]
     private static void OnUnlockPool(uint token, uint size, uint offset)
     {
@@ -196,20 +168,13 @@ internal static unsafe class OwnedBuffers
     }
 
     /// <summary>The engine's upload, byte for byte, aimed at the pool's buffer. Three branches, chosen by the
-    /// <c>RequestPool</c> usage word at pool+0x14, exactly as <c>GLRender::UnlockPool</c> @0x4cfc80 chooses
-    /// them: bit 8 = allocate once then sub-data the named range; bit 1 alone = allocate once from the host
-    /// base, thereafter sub-data the whole prefix from offset 0 (the offset argument is IGNORED on that
-    /// branch, which is the engine's behaviour and not a simplification); neither bit = a static pool,
-    /// uploaded exactly once and silent forever after.
-    /// <para>Every upload is by name and binds nothing, which is the one place the takeover is deliberately
-    /// NOT byte-identical: the engine's <c>UnlockPool</c> ends with <c>RenderInterface::BindBuffer(target, name)</c>
-    /// and leaves the pool bound. No consumer relies on that residue: <c>GLRender::SetVertexDataObject</c>
-    /// @0x4cff30 and <c>SetVertexStreamDataObject</c> both re-read the pool's name out of the descriptor at
-    /// +0x0c and bind it explicitly, and <c>GLRender::BindBuffer</c> @0x4d04a0's ARRAY_BUFFER shadow and the
-    /// real state both stay unmoved. It also keeps an ELEMENT_ARRAY_BUFFER bind -- VAO state -- out of
-    /// whatever VAO the engine happened to have current.</para></summary>
+    /// <c>RequestPool</c> usage word at pool+0x14 exactly as <c>GLRender::UnlockPool</c> @0x4cfc80 chooses
+    /// them: sub-data bit = allocate once then sub-data the named range; dynamic alone = allocate once, then
+    /// sub-data the whole prefix from 0 (the offset is IGNORED there, as in the engine); neither = once.</summary>
     private static void Upload(GlPool p, uint name, byte* host, int bytes, uint size, uint offset)
     {
+        // By NAME, binding nothing: no consumer relies on UnlockPool's residual bind, and an
+        // ELEMENT_ARRAY_BUFFER bind here would be VAO state landing in whatever VAO the engine has current.
         uint usage = p.Usage;
         bool dynamic = (usage & UsageDynamic) != 0;
         uint hint = dynamic ? Gl.DYNAMIC_DRAW : Gl.STATIC_DRAW;
@@ -261,11 +226,9 @@ internal static unsafe class OwnedBuffers
         }
         if (e.Bytes != bytes)
         {
-            // #260 owes the grow rate: a pool whose size moved under a live row was reallocated by
-            // ResizePool @0x4cfbc0 (AddItem @0x45ca70 doubles capacity), which is the event a VRAM arena
-            // would turn into a sub-allocation. Repacks are counted separately -- see NoteRepack, because a
-            // Repack that compacts to the same byte count is invisible here. Session totals, never reset;
-            // sizing the arena argument is a separate ticket's job.
+            // A pool whose size moved under a live row was reallocated by ResizePool @0x4cfbc0 (AddItem
+            // @0x45ca70 doubles capacity). Repacks are counted separately: one that compacts to the same byte
+            // count is invisible here. Session totals, never reset.
             if (e.Bytes != 0) _grows++;
             _bytes += bytes - e.Bytes;
             e.Bytes = bytes;
@@ -287,8 +250,8 @@ internal static unsafe class OwnedBuffers
         return table[(int)token];
     }
 
-    /// <summary>The host shadow of the pool this token names, or null. #144 retry: the normal weld reads
-    /// and rewrites vertex bytes here, the same block <see cref="Upload"/> pushes, so nothing is read back.</summary>
+    /// <summary>The host shadow of the pool this token names, or null. The normal weld reads and rewrites
+    /// vertex bytes here, the same block <see cref="Upload"/> pushes, so nothing is read back.</summary>
     internal static byte* PoolHost(uint token)
     {
         GlPool p = Pool(token);
@@ -306,10 +269,9 @@ internal static unsafe class OwnedBuffers
     }
 
     /// <summary>The engine is deleting this GL buffer name -- <c>DeletePool</c> @0x4d1d80 routes here for
-    /// every named pool it releases, which is the pool's death and ours. The name and the token both go back
-    /// into circulation, so the row must go with them.
-    /// <para>Nothing is deleted by Alloy: the buffer is the pool's, the engine frees it here, and a second
-    /// <c>glDeleteBuffers</c> on a recycled name would take out the pool that inherited it.</para></summary>
+    /// every named pool it releases. The name and the token both go back into circulation, so the row goes
+    /// with them. Nothing is deleted by Alloy: the buffer is the pool's, the engine frees it here, and a
+    /// second <c>glDeleteBuffers</c> on a recycled name would take out the pool that inherited it.</summary>
     [UnmanagedCallersOnly]
     private static void OnDeleteBuffer(uint name)
     {
@@ -337,18 +299,16 @@ internal static unsafe class OwnedBuffers
         return true;
     }
 
-    /// <summary>#241: has the engine written into this buffer since the last <see cref="ClearDirty"/>? The
+    /// <summary>Has the engine written into this buffer since the last <see cref="ClearDirty"/>? The
     /// re-bake predicate's VERTEX-motion signal -- dangly and morph-animated nodes both commit through
     /// <c>CommitItemDynamicData</c>, so both land in the dirty set with no per-class test.</summary>
     internal static bool DirtySince(uint engineBuf)
         => engineBuf != 0 && _byName.TryGetValue((int)engineBuf, out uint token)
            && _byToken.TryGetValue(token, out Entry e) && e.Dirty;
 
-    /// <summary>Close the dirty window. Called from inside the 4.6 bracket where <c>Refresh</c> used to
-    /// re-copy; there is nothing to copy any more, because the upload already happened at the engine's own
-    /// commit. What survives is the SIGNAL, and the readers of <see cref="DirtySince"/> run before this.
-    /// <para>That the upload moved to the commit also closes #213's one-frame window: a write landing after
-    /// the bracket used to be one frame stale on screen. It no longer can be.</para></summary>
+    /// <summary>Close the dirty window, from inside the 4.6 bracket. There is nothing to copy -- the upload
+    /// happened at the engine's own commit -- so what survives is the SIGNAL, and the readers of
+    /// <see cref="DirtySince"/> run before this.</summary>
     internal static void ClearDirty()
     {
         if (_dirty.Count == 0) return;
@@ -358,13 +318,10 @@ internal static unsafe class OwnedBuffers
         _dirty.Clear();
     }
 
-    /// <summary>The ticket's gate, shipped as an instrument. An engine draw reaching a funnel while the Alloy
-    /// window is CLOSED is the UI, the menu or a GUI 3D panel drawing for itself; the VDO it names owns up to
-    /// three pool tokens (<c>VertexDataObject::Build</c> @0x45bac0 requests them into +0x18 element, +0x24
-    /// static vertex, +0x30 dynamic vertex, and no fourth). Tagging them answers "which pools does the UI
-    /// draw from" against the pools Alloy binds, which is what #254 left unverified.
-    /// <para>Recorded, not acted on -- see the class remarks on why the takeover does not need the answer.
-    /// Costs three dictionary probes per engine-phase draw and allocates nothing.</para></summary>
+    /// <summary>An instrument, not a gate: an engine draw reaching a funnel while the Alloy window is CLOSED
+    /// is the UI, the menu or a GUI 3D panel drawing for itself. The VDO it names owns up to three pool tokens
+    /// (<c>VertexDataObject::Build</c> @0x45bac0 requests element at +0x18, static vertex at +0x24, dynamic at
+    /// +0x30, and no fourth). Recorded, not acted on: three dictionary probes, allocating nothing.</summary>
     internal static void NoteEngineDraw(IntPtr vdo)
     {
         if (!_armed || vdo == IntPtr.Zero) return;
@@ -413,8 +370,7 @@ internal static unsafe class OwnedBuffers
     private static long _lastReported;
 
     /// <summary>What the engine still holds in HOST memory for the same geometry -- <c>totalmempool</c>
-    /// @0x19ad058, its own running total, which #254 listed as unmeasured. The second of the two copies;
-    /// there is no third any more.</summary>
+    /// @0x19ad058, its own running total. The second of the two copies; there is no third.</summary>
     private static long EngineMib => _totalMemPool == null ? 0 : (long)*_totalMemPool / OneMiB;
 
     /// <summary>The WORLD edge. Nothing to do: a pool's life is the ENGINE's, and the area transition that
@@ -436,10 +392,9 @@ internal static unsafe class OwnedBuffers
                    $"{_bytes / OneMiB}MiB in VRAM against {EngineMib}MiB of engine host shadow");
     }
 
-    /// <summary>The GL-NAME edge: the objects went with the context. Rows are dropped, nothing is deleted --
-    /// deleting into a dead context is what #209 calls the terminal edge. The engine's pool descriptors still
-    /// hold the dead names, which is true of the engine's own buffers as well; context loss is terminal for
-    /// both.</summary>
+    /// <summary>The GL-NAME edge: the objects went with the context. Rows are dropped and nothing is deleted
+    /// -- deleting into a dead context is the terminal edge. The engine's pool descriptors still hold the dead
+    /// names, as they do for its own buffers; context loss is terminal for both.</summary>
     internal static void ContextLost()
     {
         _byToken.Clear();
@@ -455,12 +410,9 @@ internal static unsafe class OwnedBuffers
             $"{_refused}, borrowed {_borrowed}, retired {_retired})";
 
     /// <summary>Off-device: the takeover contract, with no GL. A stood-down table takes nothing; a pool the
-    /// engine refuses is refused here too; a taken-over pool is indexed by BOTH its token and its name; the
-    /// dirty signal opens on the upload and closes on the frame; the delete funnel drops the row without
-    /// deleting anything; and the UI tag lands on the tokens a VDO names.
-    /// <para>The upload itself is not exercised -- <see cref="Take"/> refuses before it when the GL entry
-    /// points are absent, which IS the headless case, so the refusal path runs for real rather than by
-    /// injection. What is exercised is everything that decides.</para></summary>
+    /// engine refuses is refused here too; a taken pool is indexed by BOTH its token and its name; the dirty
+    /// signal opens on the upload and closes on the frame; the delete funnel drops the row without deleting;
+    /// the UI tag lands on the tokens a VDO names. The upload is the headless refusal path, run for real.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool wasArmed = _armed;

@@ -169,8 +169,8 @@ would grade rungs the run never reached.
 - **The UI quit path is pixel coordinates** at the harness's fixed window size, against a UI whose
   scale comes from the copied `settings.tml`. A user whose UI scale is unusual gets the SIGKILL path
   instead; nothing else changes.
-- **Module choice is not free.** A module that needs haks, NWSync or a server (SoW's own
-  `ShadowsOverWestgate.mod`) will not come up this way. Stock modules under `data/mod/` do.
+- **Module choice is not free.** A module that needs haks, NWSync or a server (a persistent world's own
+  module) will not come up this way. Stock modules under `data/mod/` do.
 - **It is a single-player local-server session.** Anything that only happens against a real server --
   packet handling, server-driven NUI, area transitions on a hop -- is not covered. The ladder's two
   transitions are local `JumpToLocation`s between areas of one hosted module, not a server hop.

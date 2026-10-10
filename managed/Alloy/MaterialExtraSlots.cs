@@ -6,23 +6,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#275: <c>.mtr</c> texture slots past the engine's ceiling. <c>SharedMaterial::ParseField</c>
-/// @0x4c6760 is a flat strcasecmp chain ending at <c>texture10</c>, and the storage behind it is inline and
-/// fixed (eleven 17-byte names at shared+0x18, eleven SafePointers at shared+0xd8) -- a <c>texture11</c> line
-/// is parsed, matches nothing and is dropped. So the slots live BESIDE the object: a table keyed on the
-/// <c>SharedMaterial*</c>, filled by a hook under ParseField, loaded after <c>Init</c> (where the engine
-/// loads its own eleven), evicted by the destructor.
-/// <para>Why: the community uses texture6..texture10 per model; Alloy's own conventions (the AO map) must sit
-/// where a pre-Alloy model cannot already have put something, and where a stock client sees nothing at all.
-/// The flow map stays on texture6 -- that is the flowmap SHADER's contract (its header says so), vanilla reads
-/// it too, and a part only opts in by naming the shader.</para>
-/// <para>Lifetime: <c>LoadTexture</c> @0x4c50f0 is <c>AurTextureGetReference</c>, an ADDREF'd reference the
-/// engine's own slots release with <c>AurTextureRelease</c> in <c>~SharedMaterial</c> @0x4c5260 -- so does this
-/// table, on the same edge. The engine's SafePointers are additionally nulled when a texture dies out from
-/// under them; a raw pointer here is not, so a read goes through <see cref="AurTex"/>'s vtable guard and a
-/// release is skipped for a pointer that is no longer a texture.</para>
-/// <para>ponytail: one global lock. ParseField/Init/dtor are load-edge cold; the read is per owned part per
-/// colour-cadence frame off the stage workers (ADR 0022), uncontended in practice.</para></summary>
+/// <summary>
+/// <c>.mtr</c> texture slots past the engine's ceiling: <c>SharedMaterial::ParseField</c> ends at
+/// <c>texture10</c> and the storage behind it is inline and fixed, so a <c>texture11</c> line is parsed and
+/// dropped. The extra slots therefore live BESIDE the object -- a table keyed on the <c>SharedMaterial*</c>,
+/// filled under ParseField, loaded after <c>Init</c>, evicted by the destructor. The flow map stays on texture6.
+/// </summary>
 public sealed unsafe class MaterialExtraSlots : IExtenderService
 {
     /// <summary>First extender-owned slot: <c>texture11</c>, the one past the engine's <c>texture10</c>.</summary>
@@ -40,8 +29,12 @@ public sealed unsafe class MaterialExtraSlots : IExtenderService
         public fixed long Tex[Count];
     }
 
-    /// <summary>Native, so the fixed buffers are addressable; freed by <see cref="Forget"/>.</summary>
+    /// <summary>Native, so the fixed buffers are addressable; freed by <see cref="Forget"/>. Every texture in it
+    /// is an ADDREF'd reference -- <c>LoadTexture</c> is <c>AurTextureGetReference</c> -- released on
+    /// <c>~SharedMaterial</c>, the same edge the engine releases its own eleven on.</summary>
     private static readonly Dictionary<IntPtr, IntPtr> _table = new();
+    /// <summary>ponytail: one global lock. ParseField/Init/dtor are load-edge cold and the read is per owned part
+    /// per colour-cadence frame off the stage workers -- uncontended in practice.</summary>
     private static readonly object _lock = new();
     private static SharedMaterialParseFieldFn _origParse;
     private static SharedMaterialInitFn _origInit;
@@ -163,6 +156,9 @@ public sealed unsafe class MaterialExtraSlots : IExtenderService
     }
 
     /// <summary>The death notice: drop the entry and the references it holds. True if there was one.</summary>
+    /// <summary>Evict one material's slots, releasing each texture it holds. The engine nulls its own
+    /// SafePointers when a texture dies out from under them; a raw pointer here is not, so the release is skipped
+    /// for a pointer that is no longer a texture (and a read goes through <see cref="AurTex"/>'s vtable guard).</summary>
     internal static bool Forget(IntPtr shared)
     {
         IntPtr ep;

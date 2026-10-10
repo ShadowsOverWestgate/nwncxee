@@ -4,28 +4,28 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#389: temporal anti-aliasing as a post-stack stage. The projection is jittered by a sub-pixel
-/// Halton(2,3) offset every frame (<see cref="PostChain.Jitter"/>, applied at the one site Alloy reads it),
-/// and this stage averages the jittered frames: the display-space history is reprojected through the
-/// DILATED velocity target (#388/#392), variance-clipped in YCoCg against the 3x3 neighbourhood of the
-/// current frame so stale history is rejected rather than ghosted, and blended in with
-/// <see cref="PostChain.TaaBlend"/> of the current frame under inverse-luma weights.
-/// The resolve happens in <see cref="Prepare"/> into an owned RGBA16F history pair; the stage draw itself
-/// copies the new history out with the <c>post.taasharp</c> unsharp mask -- when TAA is on it is the LAST
-/// stage (SMAA stands aside), so that copy is the dithered write to the engine's target, and the history
-/// never carries either the dither or the sharpen.
-/// <para>ON by default: TAA is the default anti-aliaser and <c>/post taa 0</c> hands the option back to
-/// SMAA. Jitter and accumulation toggle together.</para></summary>
+/// <summary>Temporal anti-aliasing as a post-stack stage. The projection is jittered by a sub-pixel
+/// Halton(2,3) offset every frame (<see cref="PostChain.Jitter"/>, applied at the one site Alloy reads it)
+/// and this stage averages the jittered frames, resolving in <see cref="Prepare"/>; the stage draw copies the
+/// new history out with the <c>post.taasharp</c> unsharp mask, so the history carries neither it nor dither.</summary>
 internal static unsafe class TaaStage
 {
     private static ExtenderLog? _log;
-    private static uint _fbo, _hist0, _hist1, _prog, _sampler, _stageProg;
-    private static int _locCur, _locHist, _locVel, _locDepth, _locBlend, _locStageHist, _locJitterPx, _locUpsample;
-    private static int _w, _h, _cur;
-    private static bool _failed, _built, _valid;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name or
+    /// uniform location from the dead context survives as a field nobody remembered to zero. The history's
+    /// validity rides here because the world edge clears that one field by itself.</summary>
+    private sealed class TaaState
+    {
+        public uint Fbo, Hist0, Hist1, Prog, Sampler, StageProg;
+        public int LocCur, LocHist, LocVel, LocDepth, LocBlend, LocStageHist, LocJitterPx, LocUpsample;
+        public int W, H, Cur;
+        public bool Failed, Built, Valid;
+    }
+
+    private static TaaState _gl = new();
 
     /// <summary>Latched: a program or target failed on this context; the jitter stands down with the stage.</summary>
-    internal static bool Failed => _failed;
+    internal static bool Failed => _gl.Failed;
     /// <summary>The stage's fragment text: the new history, with the post-resolve sharpen (display space in,
     /// display space out). A temporal average is softer at an edge than a spatial filter is, which is the one
     /// thing TAA gets held against SMAA for; <c>post.taasharp</c> is a cross-tap unsharp mask that puts the
@@ -36,55 +36,55 @@ internal static unsafe class TaaStage
 
     /// <summary>History invalid: the next resolve takes the current frame whole. World edge (area transition)
     /// and every /post taa 1.</summary>
-    internal static void Reset() => _valid = false;
+    internal static void Reset() => _gl.Valid = false;
 
     /// <summary>Context loss: forget every GL name.</summary>
     internal static void Forget()
-    { _fbo = 0; _hist0 = 0; _hist1 = 0; _prog = 0; _sampler = 0; _stageProg = 0; _w = 0; _h = 0; _built = false; _failed = false; _valid = false; }
+    => _gl = new TaaState();
 
     /// <summary>From <see cref="PostStack.Begin"/>: can the stage run at this size this frame? Needs the
     /// velocity target to have painted (the first frame after arming has none, and resolves plain).</summary>
     internal static bool Ready(int w, int h)
     {
-        if (_failed) return false;
-        if (Gl.GenSamplers == null) { _failed = true; _log?.Info("TaaStage: no sampler objects on this context -- the taa stage is DROPPED"); return false; }
+        if (_gl.Failed) return false;
+        if (Gl.GenSamplers == null) { _gl.Failed = true; _log?.Info("TaaStage: no sampler objects on this context -- the taa stage is DROPPED"); return false; }
         if (!MotionVectors.Painted) return false;
-        if (!_built && !Build()) return false;
-        return w == _w && h == _h || Size(w, h);
+        if (!_gl.Built && !Build()) return false;
+        return w == _gl.W && h == _gl.H || Size(w, h);
     }
 
     private static bool Build()
     {
-        _built = true;
-        _prog = GlProgram.Graphics(PostChain.FullscreenVs, TaaFs, _log, "TAA resolve");
-        if (_prog == 0) { _failed = true; _log?.Info("TaaStage: the resolve did not build -- the taa stage is DROPPED; SMAA serves the aa option"); return false; }
-        _locCur = GlProgram.Loc(_prog, "uCur"); _locHist = GlProgram.Loc(_prog, "uHist");
-        _locVel = GlProgram.Loc(_prog, "uVel"); _locBlend = GlProgram.Loc(_prog, "uBlend");
-        _locDepth = GlProgram.Loc(_prog, "uDepth");
-        _locJitterPx = GlProgram.Loc(_prog, "uJitterPx"); _locUpsample = GlProgram.Loc(_prog, "uUpsample");
+        _gl.Built = true;
+        _gl.Prog = GlProgram.Graphics(PostChain.FullscreenVs, TaaFs, _log, "TAA resolve");
+        if (_gl.Prog == 0) { _gl.Failed = true; _log?.Info("TaaStage: the resolve did not build -- the taa stage is DROPPED; SMAA serves the aa option"); return false; }
+        _gl.LocCur = GlProgram.Loc(_gl.Prog, "uCur"); _gl.LocHist = GlProgram.Loc(_gl.Prog, "uHist");
+        _gl.LocVel = GlProgram.Loc(_gl.Prog, "uVel"); _gl.LocBlend = GlProgram.Loc(_gl.Prog, "uBlend");
+        _gl.LocDepth = GlProgram.Loc(_gl.Prog, "uDepth");
+        _gl.LocJitterPx = GlProgram.Loc(_gl.Prog, "uJitterPx"); _gl.LocUpsample = GlProgram.Loc(_gl.Prog, "uUpsample");
         return true;
     }
 
     private static bool Size(int w, int h)
     {
         if (w <= 0 || h <= 0) return false;
-        if (_fbo == 0)
+        if (_gl.Fbo == 0)
         {
-            uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-            _sampler = Gl.LinearClampSampler();
+            uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f;
+            _gl.Sampler = Gl.LinearClampSampler();
         }
-        RenderTarget.AllocColor(ref _hist0, true, w, h, Gl.NEAREST);
-        RenderTarget.AllocColor(ref _hist1, true, w, h, Gl.NEAREST);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _hist0, 0);
+        RenderTarget.AllocColor(ref _gl.Hist0, true, w, h, Gl.NEAREST);
+        RenderTarget.AllocColor(ref _gl.Hist1, true, w, h, Gl.NEAREST);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.Hist0, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
-            _failed = true;
+            _gl.Failed = true;
             _log?.Info($"TaaStage: the history target is incomplete (0x{status:x}) -- the taa stage is DROPPED");
             return false;
         }
-        _w = w; _h = h; _valid = false;
+        _gl.W = w; _gl.H = h; _gl.Valid = false;
         _log?.Info($"TaaStage: history pair {w}x{h} RGBA16F");
         return true;
     }
@@ -95,52 +95,46 @@ internal static unsafe class TaaStage
     /// target and viewport after. Hot: allocates nothing.</summary>
     internal static void Prepare(uint src, uint stageProg, int* viewport)
     {
-        uint read = _cur == 0 ? _hist0 : _hist1, write = _cur == 0 ? _hist1 : _hist0;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        uint read = _gl.Cur == 0 ? _gl.Hist0 : _gl.Hist1, write = _gl.Cur == 0 ? _gl.Hist1 : _gl.Hist0;
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, write, 0);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.PostHdr); Gl.BindTexture(Gl.TEXTURE_2D, src);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaEdges); Gl.BindTexture(Gl.TEXTURE_2D, read);
-        Gl.BindSampler(TextureSlots.AaEdges, _sampler);
+        Gl.BindSampler(TextureSlots.AaEdges, _gl.Sampler);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaArea); Gl.BindTexture(Gl.TEXTURE_2D, MotionVectors.Tex);
-        Gl.BindSampler(TextureSlots.AaArea, _sampler);
-        Gl.UseProgram(_prog);
-        Gl.Uniform1i(_locCur, (int)TextureSlots.PostHdr);
-        Gl.Uniform1i(_locHist, (int)TextureSlots.AaEdges);
-        Gl.Uniform1i(_locVel, (int)TextureSlots.AaArea);
+        Gl.BindSampler(TextureSlots.AaArea, _gl.Sampler);
+        Gl.UseProgram(_gl.Prog);
+        Gl.Uniform1i(_gl.LocCur, (int)TextureSlots.PostHdr);
+        Gl.Uniform1i(_gl.LocHist, (int)TextureSlots.AaEdges);
+        Gl.Uniform1i(_gl.LocVel, (int)TextureSlots.AaArea);
         // PostStack.Run bound the frame depth on this unit before the stage loop; it is the velocity
         // target's own size, which is what the dilation walks in.
-        Gl.Uniform1i(_locDepth, (int)TextureSlots.PostBloom);
-        Gl.Uniform1f(_locBlend, _valid ? PostChain.TaaBlend : 1f);
+        Gl.Uniform1i(_gl.LocDepth, (int)TextureSlots.PostBloom);
+        Gl.Uniform1f(_gl.LocBlend, _gl.Valid ? PostChain.TaaBlend : 1f);
         // Upsampling: the current frame is render-sized and read bilinearly at the jitter-shifted position
         // of each display pixel, so it takes the history's LINEAR sampler for this draw (Run unbinds it).
         bool up = PostStack.Upsampling;
-        if (up) Gl.BindSampler(TextureSlots.PostHdr, _sampler);
-        Gl.Uniform1i(_locUpsample, up ? 1 : 0);
+        if (up) Gl.BindSampler(TextureSlots.PostHdr, _gl.Sampler);
+        Gl.Uniform1i(_gl.LocUpsample, up ? 1 : 0);
         // NDC jitter to render pixels: +j in NDC moved the image +j * size/2 pixels (Frame.cs, proj.M31)
-        Gl.Uniform2f(_locJitterPx, PostChain.JitterX * 0.5f * PostStack.Width, PostChain.JitterY * 0.5f * PostStack.Height);
+        Gl.Uniform2f(_gl.LocJitterPx, PostChain.JitterX * 0.5f * PostStack.Width, PostChain.JitterY * 0.5f * PostStack.Height);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindSampler(TextureSlots.AaEdges, 0);
         Gl.BindSampler(TextureSlots.AaArea, 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaArea); Gl.BindTexture(Gl.TEXTURE_2D, 0);
         // the new history on the stage's unit -- same size as the target, so its NEAREST read is exact
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaEdges); Gl.BindTexture(Gl.TEXTURE_2D, write);
-        if (stageProg != _stageProg) { _stageProg = stageProg; _locStageHist = GlProgram.Loc(stageProg, "uHist"); }
+        if (stageProg != _gl.StageProg) { _gl.StageProg = stageProg; _gl.LocStageHist = GlProgram.Loc(stageProg, "uHist"); }
         Gl.UseProgram(stageProg);
-        Gl.Uniform1i(_locStageHist, (int)TextureSlots.AaEdges);
-        _cur ^= 1; _valid = true;
+        Gl.Uniform1i(_gl.LocStageHist, (int)TextureSlots.AaEdges);
+        _gl.Cur ^= 1; _gl.Valid = true;
     }
 
-    /// <summary>The accumulator. Velocity is <c>prev - cur</c> in RENDER pixels (the target may be smaller
-    /// than this display-sized frame, #391), so it is turned into uv through ITS OWN size, and it is DILATED
-    /// -- the closest depth in the 3x3 names the velocity the whole neighbourhood reprojects with, so a thin
-    /// silhouette carries its own motion instead of the background's. The history is fetched Catmull-Rom and
-    /// VARIANCE-CLIPPED in YCoCg (mean +- gamma * stddev over the current 3x3, clipped along the line to the
-    /// current sample): a min/max box over the same nine texels is wide enough to pass the ghost that made it,
-    /// and clipping in a luma/chroma basis keeps the clamp off the hue. The blend is inverse-luma weighted
-    /// (Karis), so one firefly texel cannot outvote ten frames of history, and a moving pixel takes a little
-    /// more of the current frame per pixel of motion, so disocclusions resolve in a few frames instead of the
-    /// full history length. An off-screen reprojection takes the current frame whole.</summary>
+    /// <summary>The accumulator. Velocity is <c>prev - cur</c> in RENDER pixels, so it is turned into uv
+    /// through ITS OWN size, and it is DILATED -- the closest depth in the 3x3 names the velocity the whole
+    /// neighbourhood reprojects with. The history is fetched Catmull-Rom and VARIANCE-CLIPPED in YCoCg, and
+    /// the blend is inverse-luma weighted, so one firefly texel cannot outvote ten frames of history.</summary>
     internal static string TaaFs => ShaderSource.Get("cx_taa_f.glsl");
 
     /// <summary>Off-device: the stage composes under the stack's contract, the resolve dilates and reprojects
@@ -180,7 +174,7 @@ internal static unsafe class TaaStage
           "the blend is inverse-luma weighted: a one-frame firefly cannot outvote the history");
         check.Expect(TaaFs.Contains("a = 1.0;") && TaaFs.Contains("(c.rgb * wc + h * wh) / max(wc + wh, 1e-5)"),
           "an off-screen history sample takes the current frame whole");
-        _valid = true; Reset(); check.Expect(!_valid, "Reset drops the history");
+        _gl.Valid = true; Reset(); check.Expect(!_gl.Valid, "Reset drops the history");
         log.Info(check.Ok ? "TaaStage.SelfCheck: passed" : "TaaStage.SelfCheck: FAILED");
         return check.Ok;
     }

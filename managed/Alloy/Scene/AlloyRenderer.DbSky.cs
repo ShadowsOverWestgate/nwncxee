@@ -6,17 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120 seam-feed: <b><c>StageSky</c> for the scene database.</b> The engine path reads the sky off
-/// <c>Scene+0x18..</c> and walks each sky gob's part tree (<see cref="SkyBox"/>); DB mode has neither, so this
-/// stages the same draw list out of <see cref="DbSky.Roles"/> and the sky objects' own part ranges.
-/// <para>A sky object is NOT in the ordinary draw: <c>Scene::SetSkyBox</c> marks it (<c>obj+0x18</c>, the DB's
-/// <see cref="ObjFlag.Sky"/>) and the engine's bucket walk skips it, which is why the records the feed writes
-/// for its parts are never routed. Nothing else drew them in DB mode, so the sky was simply absent -- a black
-/// dome wherever no geometry wrote depth, and with it no sky colour for the fog to converge to.</para>
-/// <para>Everything after the two inputs is <c>StageSky</c>'s, term for term: one draw record per part with
-/// the composed model matrix and the role's alpha in <c>rot.w</c>, the fog tint branch, and the
-/// all-owned-or-none refusal -- a role that cannot stage every part would leave a permanent hole in the
-/// sky.</para></summary>
+/// <summary><b><c>StageSky</c> for the scene database.</b> A sky object carries <see cref="ObjFlag.Sky"/> and
+/// so is never in the ordinary draw; this stages it out of <see cref="DbSky.Roles"/> and the sky objects' own
+/// part ranges -- one draw record per part with the composed model matrix and the role's alpha in
+/// <c>rot.w</c>, the fog tint branch, and all-owned-or-none so a refusal leaves no hole in the sky.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>Sky parts refused for want of a resident arena range, and roles refused whole. Counted
@@ -59,7 +52,7 @@ public sealed unsafe partial class AlloyRenderer
                                     out nint off, out int idxCount, out _)
                     || idxCount <= 0 || vao == 0)
                 { _dbSkyNoRange++; staged = -1; break; }
-                // CX-88: a material naming its own fragment stage (SoW's fst_sky) is that stage, hosted; a
+                // A material naming its own fragment stage (a content sky) is that stage, hosted; a
                 // stage that will not build refuses the sky rather than drawing the bare dome texture.
                 uint prog = SkyProgram(SceneDb.PartMtr[p]);
                 if (prog == uint.MaxValue) { staged = -1; break; }
@@ -70,8 +63,7 @@ public sealed unsafe partial class AlloyRenderer
                 _dCount[n] = idxCount;
                 _dOff[n] = off;
                 _dBase[n] = baseVertex;
-                // #242: the sky's records live in the reserved block above the ownership slots and are
-                // restaged every pass.
+                // The sky's records live in the reserved block above the ownership slots, restaged every pass.
                 int srec = _recOwnCap + _skyN;
                 _dSlot[n] = srec;
                 MarkRecordDirty(srec);
@@ -88,7 +80,7 @@ public sealed unsafe partial class AlloyRenderer
                 {
                     tint[0] = 1f; tint[1] = 1f; tint[2] = 1f;
                     // the dome feeds the fog its sky colour; the fog-tinted band must not (it is the fog), and
-                    // neither may a hosted stage's diffuse -- fst_sky's is a night moon mask (#136's black sky)
+                    // neither may a hosted stage's diffuse -- fst_sky's is a night moon mask
                     if (prog == 0) SceneFog.NoteSkyDb(DbTexOf(p, recipe, 0), roles[r].Alpha);
                 }
                 rec[16] = 1f; rec[17] = 0f; rec[18] = 0f;
@@ -114,7 +106,7 @@ public sealed unsafe partial class AlloyRenderer
                 _skProg[_skyN] = prog;
                 _skyN++; _drawN = n + 1; staged++;
             }
-            // All-owned-or-none, as the engine path is (#107): a role that cannot stage every one of its
+            // All-owned-or-none, as the engine path is: a role that cannot stage every one of its
             // parts would leave a permanent hole in the sky, so the whole sky sits the frame out.
             if (staged <= 0)
             { _dbSkyRefused++; _drawN = _skyFirst; _skyN = 0; SceneFog.EndSky(); return; }

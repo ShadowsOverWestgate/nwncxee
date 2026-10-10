@@ -30,7 +30,7 @@ public static unsafe partial class TextRig
     }
 
     /// <summary>Level-0 size of a live GL texture, 0x0 when <paramref name="tid"/> is 0. Binds it on unit 0 (the
-    /// frame host resyncs the engine on hand-back, #210). Render thread only.</summary>
+    /// frame host resyncs the engine on hand-back). Render thread only.</summary>
     public static void TexSize(int tid, out int w, out int h)
     {
         w = h = 0;
@@ -45,7 +45,7 @@ public static unsafe partial class TextRig
 
     /// <summary>One textured, tinted batch over the engine texture <paramref name="tid"/>: the skin pass's one draw
     /// call per sheet. UVs follow <see cref="DrawIconTid"/>'s convention (engine textures are bottom-up: v = 1 is the
-    /// image's top row). Sets its own full GL preamble (no snapshot, #210).</summary>
+    /// image's top row). Sets its own full GL preamble, taking no state snapshot.</summary>
     public static void DrawSkin(int tid, System.ReadOnlySpan<float> verts, int count, float alpha = 1f,
                                 bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {

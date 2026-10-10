@@ -4,7 +4,7 @@ using CX.Framework;
 
 namespace CX.Ui;
 
-/// <summary>Which layer of the fixed input precedence consumes a key (US #8).</summary>
+/// <summary>Which layer of the fixed input precedence consumes a key.</summary>
 public enum InputLayer
 {
     /// <summary>The focused window owns the keyboard (typing): it eats every key; chords and keybinds withheld.</summary>
@@ -15,11 +15,10 @@ public enum InputLayer
     GameplayKeybind,
 }
 
-/// <summary>A global hotkey owner that consumes chords without owning a Window (US #12). Registered with a
-/// priority; the highest-priority consumer wanting a key wins, and only while no window owns the keyboard.
-/// <see cref="WantsKey"/> is the off-device arbiter query (spec #61); <see cref="Fire"/> / <see cref="FireMouse"/>
-/// are the live entry points (#64) the framework calls once a key/button has fallen past every window and the
-/// chord gate is clear -- the consumer self-gates on its own arm/consent/debounce state and does the send.</summary>
+/// <summary>A global hotkey owner that consumes chords without owning a Window. Registered with a priority; the
+/// highest-priority consumer wanting a key wins, and only while no window owns the keyboard. <see cref="WantsKey"/>
+/// is the off-device arbiter query; <see cref="Fire"/> / <see cref="FireMouse"/> are the live entry points, called
+/// once a key or button fell past every window with the chord gate clear -- the consumer self-gates and sends.</summary>
 public interface IChordConsumer
 {
     int Priority { get; }
@@ -31,34 +30,27 @@ public interface IChordConsumer
     void FireMouse(int button, int sdlMods);
 }
 
-/// <summary>The pure-C# UI arbiter (spec #61): a static registry of <see cref="Window"/>s plus the
-/// value-in/decision-out logic every window needs -- z-order, top-down hit-test, cursor pick, one global
-/// keyboard owner, and the fixed input-precedence chain. No GL, no native refs, nothing hooked; the frame host
-/// (<c>UiHostService</c>, #62) and the input layer (<c>UiInputService</c>, #64) supply the raw events. The
-/// per-frame reads (<see cref="HitTest"/>, <see cref="PickCursor"/>, <see cref="DrawFrame"/>) are zero-alloc --
-/// plain loops, no LINQ, no closures, no sorting -- because they run on the render thread inside SwapBuffers
-/// where churn is a visible stutter.
-/// Cross-thread discipline: the window/chord registry is populated at service init and is immutable thereafter
-/// (no Register/Unregister after the first frame), so <see cref="DrawFrame"/>'s render-thread read of the list
-/// is race-free without a lock. Input now lands live (#64): <see cref="Focus"/> / <see cref="RequestKeyboard"/>
-/// / <see cref="HoverFocusAt"/> run on the input thread while the render thread reads <c>Z</c>/<c>Focused</c> in
-/// the same frame -- but those are word-sized writes, so the worst case is one frame of stale z-order, which is
-/// benign. ponytail: if a window ever mutates <see cref="Window.Regions"/> live, snapshot-or-swap it (a
-/// mid-growth list read on the cursor thread is a real crash) -- today's consumers use a hit-test override, not
-/// Regions, so nothing grows.</summary>
+/// <summary>The pure-C# UI arbiter: a static registry of <see cref="Window"/>s plus the value-in/decision-out
+/// logic every window needs -- z-order, top-down hit-test, cursor pick, one global keyboard owner, and the fixed
+/// input-precedence chain. No GL, no native refs, nothing hooked; <c>UiHostService</c> (the frame host) and
+/// <c>UiInputService</c> (the input layer) supply the raw events.</summary>
 public static partial class UiHost
 {
+    /// <summary>Populated at service init and immutable thereafter -- no Register/Unregister after the first frame --
+    /// so <see cref="DrawFrame"/>'s render-thread read needs no lock. Focus and keyboard writes land live from the
+    /// input thread, but are word-sized: the worst case is one frame of stale z-order. ponytail: a window that ever
+    /// mutates <see cref="Window.Regions"/> live needs snapshot-or-swap, a mid-growth read being a real crash.</summary>
     private static readonly List<Window> _windows = new();
     private static readonly List<IChordConsumer> _chords = new();
     private static int _zCounter;
 
-    /// <summary>Focus-mode preference (AC #6): false = click-to-focus (default), true = hover-to-focus. The
+    /// <summary>Focus-mode preference: false = click-to-focus (default), true = hover-to-focus. The
     /// <c>ui.hoverfocus</c> knob is the storage; the setter is the SelfCheck's (a plain value write, no set).</summary>
     public static bool HoverToFocus { get => UiKnobs.HoverFocus.V; set => UiKnobs.HoverFocus.V = value; }
 
-    /// <summary>The engine keyboard-capture gate, owned by the framework input layer (#64). It drives
-    /// <c>CExoInput::KeyboardMode{On,Off}</c> plus the drive-latch reset (<c>TurnOffKeyboardModal</c>, #34) on
-    /// the off→on edge, once for every consumer. Null off-device / under LOCKCHAT (no input layer installed).</summary>
+    /// <summary>The engine keyboard-capture gate, owned by the framework input layer. It drives
+    /// <c>CExoInput::KeyboardMode{On,Off}</c> plus the drive-latch reset (<c>TurnOffKeyboardModal</c>) on the
+    /// off→on edge, once for every consumer. Null off-device / under LOCKCHAT (no input layer installed).</summary>
     public static Action<bool>? KeyboardGate;
 
     /// <summary>The single window that owns focus -- the candidate keyboard owner. Null when nothing is focused.</summary>
@@ -105,7 +97,7 @@ public static partial class UiHost
 
     /// <summary>Move focus, ending the outgoing window's keyboard-ownership. A window that loses focus is no
     /// longer typing, so its <see cref="Window.WantsKeyboard"/> is cleared -- otherwise re-focusing it would
-    /// silently re-raise the gate and suppress gameplay keys (the #34 stuck-input class).</summary>
+    /// silently re-raise the gate and suppress gameplay keys -- the stuck-input class of bug.</summary>
     private static void SetFocused(Window? w)
     {
         if (Focused == w) return;
@@ -119,7 +111,7 @@ public static partial class UiHost
 
     /// <summary>Topmost window (any) whose live UI covers the point, or null. Drives the cursor -- overlays
     /// count. Uses <see cref="Window.Hit"/> so a window's chrome outside its rect (popped-out strip, dropdown)
-    /// still registers.</summary>
+    /// still registers. Zero-alloc, like every per-frame read here: plain loops, no LINQ, no sorting.</summary>
     public static Window? HitTest(float px, float py)
     {
         Window? best = null;
@@ -131,8 +123,8 @@ public static partial class UiHost
         return best;
     }
 
-    /// <summary>Topmost FOCUSABLE window under the point (AC #3: non-focusable windows are skipped for focus,
-    /// so a click passes through an overlay to the focusable window beneath it).</summary>
+    /// <summary>Topmost FOCUSABLE window under the point: non-focusable windows are skipped for focus, so a
+    /// click passes through an overlay to the focusable window beneath it.</summary>
     public static Window? HitTestFocusable(float px, float py)
     {
         Window? best = null;
@@ -155,7 +147,7 @@ public static partial class UiHost
         return w;
     }
 
-    /// <summary>Hover-to-focus resolution (AC #6): when <see cref="HoverToFocus"/> is set, focus the topmost
+    /// <summary>Hover-to-focus resolution: when <see cref="HoverToFocus"/> is set, focus the topmost
     /// focusable window under the point as the pointer moves over it. No-op (returns null) in click-to-focus
     /// mode; empty space never releases focus on hover (only a click does).</summary>
     public static Window? HoverFocusAt(float px, float py)
@@ -174,12 +166,10 @@ public static partial class UiHost
         return w == null ? CursorKind.None : w.CursorAt(px, py);
     }
 
-    /// <summary>Route the keyboard capture on/off for a window (#64): flip its <see cref="Window.WantsKeyboard"/>
-    /// and drive the centralized engine gate through <see cref="KeyboardGate"/>. A release while another window
-    /// still owns the keyboard leaves the gate up (#588: <c>/settings</c> takes the keyboard inside chat's submit,
-    /// and chat releases its own right after). The gate itself edge-gates the drive-latch reset.
-    /// Contract: a window that takes the keyboard MUST wire <see cref="Window.OnKey"/> -- the owner consumes every
-    /// key (that is how it withholds gameplay keybinds), so an owner without a handler would swallow all input.</summary>
+    /// <summary>Route the keyboard capture on/off for a window: flip its <see cref="Window.WantsKeyboard"/> and drive
+    /// the centralized engine gate through <see cref="KeyboardGate"/>. A release while another window still owns the
+    /// keyboard leaves the gate up. Contract: a window that takes the keyboard MUST wire <see cref="Window.OnKey"/> --
+    /// the owner consumes every key, which is how it withholds gameplay keybinds, so a handler-less owner eats all.</summary>
     public static void RequestKeyboard(Window w, bool on)
     {
         w.WantsKeyboard = on;
@@ -209,11 +199,10 @@ public static partial class UiHost
         }
     }
 
-    /// <summary>Pump-level swallow (#64): a modal <see cref="Window.SuppressChords"/> window that consumes a key
-    /// at the SDL pump, before the engine queues its scancode keybind (<c>CExoInput::AddEvent</c> runs
-    /// pre-HandleWMKeyDown with no modifier check, so Ctrl+C would still fire the plain-C keybind). Only
-    /// SuppressChords windows swallow here; the keyboard owner suppresses keybinds via the keyboard-mode gate.
-    /// Topmost-first; true when one consumed the key.</summary>
+    /// <summary>Pump-level swallow: a modal <see cref="Window.SuppressChords"/> window that consumes a key at the
+    /// SDL pump, before the engine queues its scancode keybind (<c>CExoInput::AddEvent</c> runs pre-HandleWMKeyDown
+    /// with no modifier check, so Ctrl+C would still fire the plain-C keybind). Only SuppressChords windows swallow
+    /// here; the keyboard owner suppresses keybinds via the keyboard-mode gate. Topmost-first.</summary>
     public static bool DispatchKeyPumpSwallow(uint key, int sdlMods)
     {
         foreach (Window next in TopmostFirst())
@@ -223,13 +212,10 @@ public static partial class UiHost
         return false;
     }
 
-    /// <summary>Route a mouse button (press/release) to window content and return true at the first window that
-    /// consumes it. Two topmost-first passes: modal windows (<see cref="Window.SuppressChords"/>, e.g. an open
-    /// dialog) win the click first -- restoring the "modal: dialog wins the click" precedence -- then the rest.
-    /// Each window is visited exactly once (in the pass matching its modal flag), so no double-invoke. An unconsumed
-    /// press then falls to the chord layer.
-    /// <paramref name="captureOnly"/> visits just the <see cref="Window.CapturesPointer"/> windows: the pump's extra
-    /// pass BEFORE the engine-GUI yield (CX-690), so every other window keeps the old precedence.</summary>
+    /// <summary>Route a mouse button (press/release) to window content, true at the first window that consumes it.
+    /// Two topmost-first passes -- modal (<see cref="Window.SuppressChords"/>) windows win the click, then the rest --
+    /// each window visited exactly once, so no double-invoke; an unconsumed press falls to the chord layer.
+    /// <paramref name="captureOnly"/> visits only <see cref="Window.CapturesPointer"/> windows: the pump's extra pass BEFORE the engine-GUI yield.</summary>
     public static bool DispatchMouseButton(bool down, int button, int x, int y, bool captureOnly = false)
     {
         for (int pass = 0; pass < 2; pass++)
@@ -308,7 +294,7 @@ public static partial class UiHost
         return next;
     }
 
-    /// <summary>The fixed key precedence, live (#64). First a full keyboard owner (chat typing) eats every key;
+    /// <summary>The fixed key precedence, live. First a full keyboard owner (chat typing) eats every key;
     /// then selective consumers (a modal dialog) top-down eat what they handle. Returns true when a window
     /// consumed the key -- the caller then does NOT run the engine's original handler. An unconsumed key falls
     /// to the chord layer (subject to <see cref="AnySuppressChords"/>) and then gameplay keybinds.</summary>
@@ -354,11 +340,10 @@ public static partial class UiHost
         for (int i = 0; i < _chords.Count; i++) _chords[i].FireMouse(button, sdlMods);
     }
 
-    /// <summary>The per-frame draw roll-call: invoke every registered window's <see cref="Window.DrawContent"/>
-    /// in ascending z-order (bottom-up, so the focused/topmost window paints last). Zero-alloc -- an O(n^2)
-    /// min-scan over the z values (unique, from the monotonic counter) with no sort buffer, no LINQ, no
-    /// closures -- because it runs on the render thread inside SwapBuffers. n is a handful of windows.
-    /// ponytail: O(n^2) is free at this n; swap for a kept-sorted list only if the window count ever grows big.</summary>
+    /// <summary>The per-frame draw roll-call: invoke every registered window's <see cref="Window.DrawContent"/> in
+    /// ascending z-order, so the focused/topmost window paints last. Zero-alloc -- an O(n^2) min-scan over the unique
+    /// z values, no sort buffer, no LINQ, no closures -- because it runs on the render thread inside SwapBuffers.
+    /// ponytail: O(n^2) is free at a handful of windows; a kept-sorted list is the upgrade if the count grows.</summary>
     public static void DrawFrame()
     {
         int lastZ = int.MinValue;

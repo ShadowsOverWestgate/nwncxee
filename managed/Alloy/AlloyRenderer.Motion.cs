@@ -6,19 +6,15 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#392: object motion vectors for matrix movers. After <see cref="MotionVectors"/> has painted the
-/// camera field, every record whose model matrix changed THIS frame is drawn once more into the velocity
-/// target, depth-tested LEQUAL against the frame depth it already wrote, with the difference of its current
-/// and previous clip positions -- so a door swinging under a still camera carries its own motion and the
-/// static world around it keeps the camera-only estimate. Opaque movers only (the staging walk picks them,
-/// <c>NoteMoverDraw</c>); CX-26 adds posed skinmeshes, skinned with this frame's and last frame's palettes,
-/// and dangly meshes, with each vertex's position from before this frame's solve. Grass, water, particles and
-/// every blended class stay on the camera path by design.</summary>
+/// <summary>Object motion vectors for matrix movers. After <see cref="MotionVectors"/> has painted the camera
+/// field, every opaque record whose model matrix changed THIS frame is drawn once more into the velocity target,
+/// LEQUAL against the depth it already wrote, with the difference of its current and previous clip positions;
+/// a posed skinmesh uses both frames' palettes, a dangly its pre-solve positions. Blended classes stay camera-only.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>Draw indices of this pass's movers, serial-appended by the staging walk. Sized to every
-    /// draw (CX-26): with creatures in, a crowd moves thousands of parts a frame, and a cap would hand the
-    /// ones past it camera-only vectors -- exactly the ghosting this pass exists to remove.</summary>
+    /// <summary>Draw indices of this pass's movers, serial-appended by the staging walk. Sized to every draw:
+    /// a crowd moves thousands of parts a frame, and a cap would hand the ones past it camera-only vectors --
+    /// exactly the ghosting this pass exists to remove.</summary>
     private static readonly int[] _mvDraw = new int[MaxOwned];
     private static int _mvN, _mvDrawn, _mvSkinDrawn, _mvDanglyDrawn;
     /// <summary>DB-mode record rewrites since the last period line: with the model moving (past the record's
@@ -27,16 +23,16 @@ public sealed unsafe partial class AlloyRenderer
     private static bool _mvSkinned, _mvDangly;
     private static int _mvDanglyLoc;
 
-    /// <summary>CX-26: dangly positions from before this frame's solve, part-local xyz, appended per owned
-    /// part by <see cref="NoteDanglyPrev"/> and reset by the first append of a new frame. Native and growing
-    /// for <c>EnsureBoneSlots</c>' reason.</summary>
+    /// <summary>Dangly positions from before this frame's solve, part-local xyz, appended per owned part by
+    /// <see cref="NoteDanglyPrev"/> and reset by the first append of a new frame. Native and growing for
+    /// <c>EnsureBoneSlots</c>' reason.</summary>
     private static float* _dpStage;
     private static int _dpUsed, _dpCap, _dpSeq = -1;
     private static uint _dpBuf;
     /// <summary>Per ownership slot: the frame its snapshot is from, and where in <see cref="_dpStage"/> and
     /// how many vertices.</summary>
     private static readonly int[] _oDpAt = new int[MaxOwned], _oDpBase = new int[MaxOwned], _oDpN = new int[MaxOwned];
-    /// <summary>CX-26: last frame's dangly vertices, read by the mover sweep alone.</summary>
+    /// <summary>Last frame's dangly vertices, read by the mover sweep alone.</summary>
     internal const uint BindDanglyPrev = 27;
 
     /// <summary>The dangly solve's hand-off, called before it overwrites <paramref name="dst"/>: keep the
@@ -69,9 +65,9 @@ public sealed unsafe partial class AlloyRenderer
     private static int _mvVp, _mvPrevVp, _mvJitter, _mvSize, _mvBase;
     private static bool _mvBuilt, _mvFailed;
 
-    /// <summary>#536: a camera CUT -- the camera layer snapping after a stand-down gate lifts, or a mode
-    /// switch. Drops the reprojection history so neither the motion vectors nor TAA carry one frame of the
-    /// wrong camera. Flag writes only; safe from any point of the frame.</summary>
+    /// <summary>A camera CUT -- the camera layer snapping after a stand-down gate lifts, or a mode switch.
+    /// Drops the reprojection history so neither the motion vectors nor TAA carry one frame of the wrong
+    /// camera. Flag writes only; safe from any point of the frame.</summary>
     public static void CameraCut() { MotionVectors.Revoke(); TaaStage.Reset(); }
 
     private static void NoteMoverDraw(int n, bool skinned, bool dangly)
@@ -120,17 +116,16 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = 0; k < n; k++)
         {
             int d = _mvDraw[k], i = _dSlot[d];
-            // CX-120: a DB slot's _oLodBit keeps only the arena bit, so the arena FORMAT comes from the slot's
-            // range, exactly as the colour batch keys it -- else a skinned mover pulls through the static VAO.
+            // A DB slot's _oLodBit keeps only the arena bit, so the arena FORMAT comes from the slot's range,
+            // exactly as the colour batch keys it -- else a skinned mover pulls through the static VAO.
             uint vao = VaoName(DbSlot(i) ? DbVaoKey(i) | DbArenaVaoBit : _oVao[i] | _oLodBit[i], _oCls[i]);
             if (vao == 0) continue;
             BindBatchState(_oNoCull[i], vao, ref boundCull, ref boundVao);
             Gl.Uniform1i(_mvBase, d);
             if (DanglyPrevNow(i)) { Gl.Uniform2i(_mvDanglyLoc, _oDpBase[i], _oDpN[i]); _mvDanglyDrawn++; }
             else Gl.Uniform2i(_mvDanglyLoc, 0, 0);
-            // CX-120: a DB slot carries no engine primitive enum, and index 0 is GL_POINTS in the engine's
-            // translation table -- the same trap that drew the sun cascades as points. An arena draw is
-            // TRIANGLES, which is what the colour batch row already says for it unconditionally.
+            // A DB slot carries no engine primitive enum, and index 0 is GL_POINTS in the engine's translation
+            // table; an arena draw is TRIANGLES, as the colour batch row says for it unconditionally.
             Gl.MultiDrawElementsBaseVertex(DbSlot(i) ? Gl.TRIANGLES : _primTable[_oPrim[i]],
                                            counts + d, GlUnsignedShort, (void**)(offs + d), 1, bases + d);
             _mvDrawn++;
@@ -175,7 +170,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The mover vertex stage. <c>gl_Position</c> is the prepass's exact <see cref="ClipExpr"/> text
     /// under <c>invariant</c>, so LEQUAL against the depth the mover already wrote passes on every fragment;
     /// the previous clip position rides through the record's <c>prev</c> and last frame's view-projection, and
-    /// for a posed skinmesh (CX-26) through last frame's palette at <see cref="BindBonesPrev"/>.</summary>
+    /// for a posed skinmesh through last frame's palette at <see cref="BindBonesPrev"/>.</summary>
     internal static string MotionVs => ShaderSource.Get("cx_motion_v.glsl");
 
     /// <summary>The same convention as <see cref="MotionVectors.CameraFs"/>: prev minus current, render pixels,

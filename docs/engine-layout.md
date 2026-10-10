@@ -730,7 +730,7 @@ ctor value, so its rows rest on the wire order alone.
 Three files still read engine memory through their own `private const int` / `IsWindows() ? win : linux`
 pairs: `NameplateNative`, `HotkeyConsent` and `PoseService`. All 21 are rows now. Half of them the
 `#420`/`#446` tables had already measured; each was **re-read** here, by decompiling the same function on
-both programs of `~/ghidra/nwn-linux.rep` (`tools/ghidra/DecompOne.java`), because a table entry is a prior
+both programs of `$GHIDRA_PROJECT/nwn-linux.rep` (`tools/ghidra/DecompOne.java`), because a table entry is a prior
 measurement and not a substitute for one. Linux addresses are `nm` (Ghidra shows `nm + 0x100000`), Windows
 are RVAs off the `0x140000000` image base.
 

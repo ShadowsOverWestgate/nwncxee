@@ -6,13 +6,10 @@ using CX.Framework;
 
 namespace CX.Ui;
 
-/// <summary>The framework text layer's opt-in select-and-copy capability (spec #63). Any content that lays out a
-/// run of runes can hold one of these to make that run selectable: it owns the selection state (anchor/cursor rune
-/// indices), the per-rune edge geometry both glyph-emit and selection measure against, the point-to-rune hit-test,
-/// and the clipboard copy. Content keeps its own per-line loop (wrap + <c>RowAlign</c> live in the chat text
-/// module, not here, so the framework carries no service dependency) and feeds each row's <see cref="RowEdges"/>
-/// back in. Lifted out of <c>DialogService</c>, which was the only consumer; Dialog now turns it on for its NPC
-/// body block. Pure Core apart from the one clipboard symbol -- no GL, no per-frame allocation on the hot path.</summary>
+/// <summary>The framework text layer's opt-in select-and-copy capability: it owns the selection state (anchor and
+/// cursor rune indices), the per-rune edge geometry both glyph-emit and selection measure against, the point-to-rune
+/// hit-test and the clipboard copy. Content keeps its own per-line loop -- wrap and <c>RowAlign</c> stay with it, so
+/// the framework takes no service dependency -- and feeds each row's <see cref="RowEdges"/> back in. No hot alloc.</summary>
 public sealed unsafe class SelectableText
 {
     /// <summary>Rune indices into the currently laid-out block; -1 = no selection. Anchor is where the drag began,
@@ -39,10 +36,9 @@ public sealed unsafe class SelectableText
     }
 
     /// <summary>Per-rune left-edge x positions for one wrapped row [<paramref name="start"/>,<paramref name="end"/>),
-    /// written into <paramref name="edges"/> (cleared first): edges[i] is the left edge of rune <c>start + i</c>, and
-    /// the final entry is the row's right edge. The single source of truth for glyph x-positions -- content draws
-    /// glyphs at these edges and the selection hit-test + highlight measure against them, so a selection never drifts
-    /// from the glyphs (including under justify, where each space carries <paramref name="extraPerGap"/>).</summary>
+    /// written into <paramref name="edges"/> (cleared first): edges[i] is the left edge of rune <c>start + i</c>, the
+    /// final entry the row's right edge. The single source of truth for glyph x -- content draws glyphs here and the
+    /// selection measures against them, so it never drifts (justify too: each space carries <paramref name="extraPerGap"/>).</summary>
     public static void RowEdges(GlyphAtlas atlas, IReadOnlyList<Rune> runes, int start, int end, float x0,
                                 float extraPerGap, List<float> edges)
     {
@@ -80,7 +76,7 @@ public sealed unsafe class SelectableText
         return true;
     }
 
-    /// <summary>Off-device proof (#63): the edge geometry (cumulative advances + justify), the point-to-rune
+    /// <summary>Off-device proof: the edge geometry (cumulative advances + justify), the point-to-rune
     /// hit-test, and the selection-range normalize/clamp/clear. No GL, no device.</summary>
     public static void SelfCheck(ExtenderLog log)
     {

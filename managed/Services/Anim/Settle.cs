@@ -6,29 +6,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Stops and starts through the feet, a <see cref="PoseService"/> module (<c>anim.settle</c>, CX-68 and CX-69).
-/// Both edges are the same hole: the engine crossfades the whole body between the idle stance and a locomotion
-/// cycle (0.20-0.25 s in, 0.70-1.00 s out), blending every bone, so <b>both</b> feet glide and neither plants
-/// (CX-61 §3.1). The foot lock lets go the moment the animation leaves locomotion,
-/// which is exactly the moment it is needed.
-/// <para><b>The stop.</b> At arrival the lock's held feet are taken over here instead of released: the weighted
-/// foot holds its world point through the crossfade, and the unweighted one takes a <see cref="Arc"/> settle
-/// step -- a lift arc from where it was drawn onto the animated ankle, which the crossfade is carrying to the
-/// idle stance. Only then, and only if the weighted foot is more than <see cref="Adjust"/> off its own stance
-/// spot, does it take a second step; under that the remainder eases out. One foot is on the ground throughout.</para>
-/// <para><b>The start.</b> A fresh cycle is seeded at phase 0, where no foot is planted. On <c>Starting</c> the
-/// new run's time is set so the cycle's planted foot is the stance's <b>front</b> foot, just after its touchdown
-/// (<see cref="SeedPhase"/>); that foot then plants and holds, and the first step comes from the back foot.</para>
-/// <para><b>Contact is learned from the pose, never from a name.</b> <c>animationsets.2da</c> puts swim, crawl
-/// and floating cycles behind the name <c>walk</c>, and the footstep event gives the phase but not the foot
-/// (locomotion-content §6.2). The touchdown phases are measured per <c>Animation</c> object
-/// from <see cref="Footfall.Landed"/> against <c>GaitPhase</c>, and until a clip has been walked once its phase
-/// is left exactly as the engine set it.</para>
-/// <para><b>Unhurried.</b> The step is a slow, low shift of weight rather than a hop into place, and the foot that
-/// carried the body only follows it when it is left well off its spot: two quick adjustments after every halt read
-/// as fidgeting, not settling (live feedback, 2026-09-29).</para>
-/// <para><b>Hot.</b> Once per corrected humanoid per frame: two contact tests, a fixed-probe table lookup and a
-/// short arc. No allocation.</para>
+/// Stops and starts through the feet, a <see cref="PoseService"/> module (<c>anim.settle</c>). The engine crossfades
+/// the whole body between the idle stance and a locomotion cycle, so both feet glide and neither plants: at arrival
+/// the lock's held feet are taken over here (one keeps its world point, the other takes a settle step), and a starting
+/// cycle is seeded so its planted foot is the stance's front one (<see cref="SeedPhase"/>). <b>Hot</b>, no allocation.
 /// </summary>
 internal static unsafe class Settle
 {
@@ -57,7 +38,7 @@ internal static unsafe class Settle
     /// (the run's 29 % duty) and clear of the hand-off.</summary>
     private const float JustAfter = 0.06f;
     /// <summary>Cycle fraction under which a run is fresh enough to seed: past it the engine reused a run and its
-    /// phase is carried on purpose (locomotion-engine §4.4), which must not be stomped.</summary>
+    /// phase is carried on purpose, which must not be stomped.</summary>
     private const float Fresh = 0.1f;
     /// <summary>Blend weight above which the driven run alone poses the legs: contact measured through a
     /// crossfade belongs to two clips and is no measurement of either.</summary>
@@ -86,10 +67,9 @@ internal static unsafe class Settle
     // ---- The frame ----
 
     /// <summary>After the gait signals and before the foot lock: learns the playing cycle's contacts, seeds a
-    /// starting cycle's phase, and gives each ankle the world offset the settle draws it at (XY, plus the step's
-    /// lift in Z).</summary>
-    /// <param name="stand">The settle stands down: the animation is gated, or the foot lock is holding a pivot
-    /// through a turn on the spot, which owns the same two offsets.</param>
+    /// starting cycle's phase, and gives each ankle the world offset the settle draws it at (XY, plus the step's lift
+    /// in Z). It stands down (<paramref name="stand"/>) when the animation is gated or the foot lock is holding a
+    /// pivot through a turn on the spot, which owns the same two offsets.</summary>
     internal static void Step(ref PoseService.Slot s, IntPtr gob, Vector3 mr, Vector3 ml, Vector3 rAnkle,
                               Vector3 lAnkle, float scale, bool stand, bool snap, float dt,
                               out Vector3 dr, out Vector3 dl)
@@ -270,8 +250,10 @@ internal static unsafe class Settle
 
     // ---- Learned contacts, per animation ----
 
-    /// <summary>One frame of contact measurement for the playing cycle, from the same landing test the footsteps
-    /// use. Only while the cycle alone poses the legs: through a crossfade the ankles are two clips at once.</summary>
+    /// <summary>One frame of contact measurement for the playing cycle, from the same landing test the footsteps use:
+    /// contact is learned from the pose, never from a name -- <c>animationsets.2da</c> puts swim, crawl and floating
+    /// cycles behind the name <c>walk</c>, and the footstep event gives the phase but not the foot. Only while the
+    /// cycle alone poses the legs: through a crossfade the ankles are two clips at once.</summary>
     private static void Learn(ref PoseService.Slot s, long key, RunRef run, float hr, float hl, float dt)
     {
         if (!s.Loco || run.Blend < Clear) return;
@@ -333,8 +315,8 @@ internal static unsafe class Settle
 
     // ---- Self-check ----
 
-    /// <summary>The arc, the two-step state machine and the start seed, on the stock numbers measured in
-    /// CX-147 (§3.1 male walk, §3.2 male run, §4 the idle stance).</summary>
+    /// <summary>The arc, the two-step state machine and the start seed, on the measured stock numbers (the male
+    /// walk, the male run, the idle stance).</summary>
     internal static bool SelfCheck() =>
         // also the first touch of the contact table, so its storage is claimed here and not inside a frame hook
         !Known(1L, out _, out _, out _, out _) && ArcCheck() && StopCheck() && SeedCheck();

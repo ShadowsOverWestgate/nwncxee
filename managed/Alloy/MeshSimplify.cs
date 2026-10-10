@@ -4,20 +4,10 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// Quadric-error-metric edge collapse, in managed code, over one part's index range. NWN models carry no LOD
-/// chain -- every mesh draws its full triangle count at every distance -- so <see cref="MeshLod"/> generates
-/// one here, off the frame, and draws it through the same vertex buffer: this only ever REINDEXES, so the
-/// vertex stream, the base vertex and the VAO's attribute formats are untouched and an output index means
-/// exactly what the input index meant.
-/// <para><b>What is locked.</b> A border vertex (on an edge only one triangle uses) and a seam vertex (two
-/// distinct indices at the same position, which is how an attribute discontinuity is spelled in an indexed
-/// mesh) are never collapsed. That is the cheap form of "preserve borders and attribute seams": the UV, the
-/// normal and the tangent frame of every surviving corner are the ones the artist authored, because no
-/// corner is ever merged with a corner that disagreed with it.</para>
-/// <para>Greedy and multi-pass rather than heap-driven: each pass costs every legal collapse, sorts, and
-/// applies the cheapest ones whose endpoints no earlier collapse in the same pass touched. Correctness comes
-/// from re-costing every pass; this is not fast and does not need to be -- it runs once per mesh on
-/// <see cref="MeshLod"/>'s worker thread.</para>
+/// Quadric-error-metric edge collapse over one index range, greedy and multi-pass: each pass costs every legal
+/// collapse, sorts, and applies the cheapest ones whose endpoints no earlier collapse in the pass touched.
+/// REINDEXES only -- the vertex stream, the base vertex and the VAO formats are untouched. A border vertex (on an
+/// edge one triangle uses) and a seam vertex (two indices at one position) are never collapsed, so attributes live.
 /// </summary>
 internal static class MeshSimplify
 {
@@ -40,11 +30,10 @@ internal static class MeshSimplify
     /// window object sits in -- and the two then fought. Near-coplanar collapses, where the saving is, pass.</summary>
     internal const double MaxShift = 0.02;
 
-    /// <summary>Simplify <paramref name="idxCount"/> indices down towards <paramref name="targetTris"/>
-    /// triangles and write the survivors to <paramref name="outIdx"/>. <paramref name="pos"/> is three floats
-    /// per index VALUE (so <c>pos[3*i]</c> is what index <c>i</c> points at), <paramref name="errorLimit"/> is
-    /// a fraction of the squared bounding-box diagonal past which a collapse is refused. Returns the output
-    /// index count, or 0 when the mesh could not usefully be reduced.</summary>
+    /// <summary>Simplify <paramref name="idxCount"/> indices towards <paramref name="targetTris"/> triangles and
+    /// write the survivors to <paramref name="outIdx"/>. <paramref name="pos"/> is three floats per index VALUE
+    /// (<c>pos[3*i]</c> is what index <c>i</c> points at); <paramref name="errorLimit"/> is a fraction of the
+    /// squared bounding-box diagonal past which a collapse is refused. 0 = no useful reduction.</summary>
     internal static int Run(ushort[] idx, int idxCount, float[] pos, int vertCount,
                             int targetTris, float errorLimit, ushort[] outIdx, double maxShift = MaxShift)
     {

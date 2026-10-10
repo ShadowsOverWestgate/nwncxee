@@ -3,23 +3,17 @@ using System.Runtime.InteropServices;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120 seam-anim: the bone-slot claim DB mode needs. The palette must live in the renderer's own
-/// bone stage, because that is the block <c>Issue.UploadBones</c> sends and <c>feat.y</c> indexes -- so the
-/// pose step claims a slot here and writes into it, and <c>SceneDb.PartBoneBase</c> carries the slot number
-/// the feed's record then names.
-/// <para>A DB slot is marked with an owner of <see cref="DbBoneOwner"/>, which is below zero, so the engine
-/// path's two reclaimers both leave it alone by construction: <c>FreeBoneSlot</c> returns on a negative owner
-/// and <c>PoseSkinned</c>'s orphan sweep tests <c>_boneOwner[s] &gt;= 0</c>. The slot is therefore sticky for
-/// as long as the part holds it -- which is also what #308 needs, since the shadow bake pairs the previous
-/// build's <c>feat.y</c> with this frame's block.</para>
-/// <para>NEW FILE, not an edit to another stream's: seam-feed owns <c>AlloyRenderer.Db.cs</c>.</para></summary>
+/// <summary>The bone-slot claim for database parts: the palette lives in the renderer's own bone stage, the
+/// block <c>Issue.UploadBones</c> sends and <c>feat.y</c> indexes, with <c>SceneDb.PartBoneBase</c> carrying the
+/// slot number. The owner is <see cref="DbBoneOwner"/>, below zero, so <c>FreeBoneSlot</c> and
+/// <c>PoseSkinned</c>'s orphan sweep both skip it: sticky while the part holds it, as the shadow bake needs.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>The owner marker a DB-mode bone slot carries.</summary>
+    /// <summary>The owner marker a database bone slot carries.</summary>
     private const int DbBoneOwner = -2;
 
-    /// <summary>Claim a bone slot for a DB part, or -1 when the stage cannot grow (the caller counts it and the
-    /// part draws rigid, which is its rest pose).</summary>
+    /// <summary>Claim a bone slot for a database part, or -1 when the stage cannot grow (the caller counts it
+    /// and the part draws rigid, which is its rest pose).</summary>
     internal static int DbAllocBone()
     {
         int s = AllocBoneSlot(DbBoneOwner);
@@ -34,14 +28,9 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>
     /// Where slot <paramref name="slot"/>'s 64 matrices live: a stage of this file's OWN, not the pair
-    /// <c>PoseSkinned</c> ping-pongs.
-    /// <para>That matters because the two run on different clocks. A DB palette is solved on the GAME thread,
-    /// at the end of the object's animate step; <c>PoseSkinned</c> swaps <c>_boneStage</c> with
-    /// <c>_bonePrevStage</c> once per frame, afterwards. Writing straight into <c>_boneStage</c> therefore put
-    /// half the palettes in the buffer that was about to become the PREVIOUS frame's, and
-    /// <c>Issue.UploadBones</c> sent the other one -- alternating one- and two-frame-old poses, and
-    /// arbitrarily old ones for a creature that had settled. The palettes live here instead and
-    /// <see cref="DbBonePublish"/> copies them into whichever buffer the frame is about to upload.</para>
+    /// <c>PoseSkinned</c> ping-pongs, because the two run on different clocks -- a palette is solved on the
+    /// GAME thread at the end of the animate step, and <c>PoseSkinned</c> swaps the pair once per frame after
+    /// that. <see cref="DbBonePublish"/> copies from here into whichever buffer the frame is about to upload.
     /// </summary>
     internal static float* DbBoneStage(int slot)
     {
@@ -68,7 +57,7 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>
-    /// Copy every live DB palette into the frame's upload buffer, and last frame's into the history one.
+    /// Copy every live palette into the frame's upload buffer, and last frame's into the history one.
     /// Called from <c>PoseSkinned</c> immediately after its swap, which is the one moment both buffers mean
     /// what their names say.
     /// </summary>
@@ -81,8 +70,8 @@ public sealed unsafe partial class AlloyRenderer
             long off = (long)slot * BoneFloats;
             var now = new ReadOnlySpan<float>(_dbStage + off, BoneFloats);
             var prev = new Span<float>(_dbPrev + off, BoneFloats);
-            // CX-26's rule, which the engine path follows for the same reason: a FRESH slot's history is its
-            // own pose, or a creature's first frame smears from whatever the slot held before it.
+            // A FRESH slot's history is its own pose, or a creature's first frame smears from whatever the
+            // slot held before it.
             if (_dbFresh.Remove(slot)) now.CopyTo(prev);
             prev.CopyTo(new Span<float>(_bonePrevStage + off, BoneFloats));
             now.CopyTo(new Span<float>(_boneStage + off, BoneFloats));
@@ -90,8 +79,8 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>Give a DB bone slot back. Does what <c>FreeBoneSlot</c> does, which refuses a negative owner on
-    /// purpose: a DB slot is only ever released from here.</summary>
+    /// <summary>Give a database bone slot back. Does what <c>FreeBoneSlot</c> does, which refuses a negative
+    /// owner on purpose: such a slot is only ever released from here.</summary>
     internal static void DbFreeBone(int slot)
     {
         if (slot < 0 || slot >= _boneTop || _boneOwner[slot] != DbBoneOwner) return;

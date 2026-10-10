@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Walk a model's setsupermodel chain and report where each animation name resolves.
 
-    ./chain.py pmh0 pfh0            # live (SoW haks first)
+    ./chain.py pmh0 pfh0            # live (the HAKS chain first)
     ./chain.py --stock pmh0 pfh0    # vanilla install only
 """
 import sys

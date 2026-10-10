@@ -5,11 +5,10 @@ using System.Diagnostics.CodeAnalysis;
 namespace CX.Framework;
 
 /// <summary>
-/// The slash-command surface (#165; bucket 1 of ADR 0013). Services register their own commands during
+/// The slash-command surface (bucket 1 of ADR 0013). Services register their own commands during
 /// <see cref="IExtenderService.Initialize"/>; the chat input surface only hands text to
-/// <see cref="TryDispatch"/> and echoes whatever comes back, so it no longer knows what any command does.
-/// <para>Cold by construction -- one dispatch per submitted line -- so the hot-path allocation rule does not
-/// apply here.</para>
+/// <see cref="TryDispatch"/> and echoes whatever comes back, so it knows nothing about any command.
+/// Cold by construction -- one dispatch per submitted line -- so the hot-path allocation rule does not apply.
 /// </summary>
 public sealed class CommandRegistry
 {
@@ -17,11 +16,10 @@ public sealed class CommandRegistry
     /// the single line to echo back to the player, or null to stay silent.</summary>
     public delegate string? Handler(string args);
 
-    /// <summary>One registered command, as enumeration sees it.</summary>
-    /// <param name="Name">Canonical name, with the leading slash.</param>
-    /// <param name="Aliases">Extra names that dispatch to the same handler.</param>
-    /// <param name="Help">One line describing the command; the listing a /help would print.</param>
-    /// <param name="Exempt">Dispatches even while <see cref="Gate"/> is closed: <c>/settings</c>, the one door in.</param>
+    /// <summary>One registered command, as enumeration sees it. <paramref name="Name"/> carries the leading slash,
+    /// <paramref name="Aliases"/> dispatch to the same handler, <paramref name="Help"/> is the one line a listing
+    /// prints, and <paramref name="Exempt"/> dispatches even while <see cref="Gate"/> is closed -- <c>/settings</c>,
+    /// the one door in.</summary>
     public sealed record Command(string Name, string[] Aliases, string Help, Handler Run, bool Exempt = false);
 
     /// <summary>The one live registry every service registers into.</summary>
@@ -83,9 +81,9 @@ public sealed class CommandRegistry
         return true;
     }
 
-    /// <summary>Whether <see cref="TryDispatch"/> WOULD handle <paramref name="text"/>, running nothing. #580: the
-    /// vanilla prompt has to close before a handler runs (a handler may take the keyboard), so the decision and the
-    /// dispatch are two calls there.</summary>
+    /// <summary>Whether <see cref="TryDispatch"/> WOULD handle <paramref name="text"/>, running nothing. The vanilla
+    /// prompt has to close before a handler runs (a handler may take the keyboard), so on that path the decision and
+    /// the dispatch are two calls.</summary>
     public bool Knows(string text) => Lookup(text, out _, out _, out _);
 
     /// <summary>The one parse both entry points share: first token of the trimmed, lowercased line names the

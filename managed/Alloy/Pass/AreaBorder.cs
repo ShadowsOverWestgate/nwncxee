@@ -6,19 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#353: the area border ring, widened. The engine pads every area with five tiles of unwalkable
-/// edge geometry (<c>CNWCArea::LoadBorder</c> @0x70a5c0, hard-coded <c>-5..-1</c> / <c>+4</c> in four strip
-/// loops); this replays the OUTERMOST engine tile of every strip further out, to <c>border</c> tiles
-/// (<c>cx.cfg</c>, default 15). Sound because the edge model is chosen per row/column from the nearest real
-/// tile's corner and edge types, so every tile along a strip's outward axis is the same model at the same
-/// height -- the ring is widened, not re-derived.
-/// <para>CX-188: what is left here is the WINDOW. <c>CNWCArea::LoadBorder</c>/<c>ReloadBorder</c> are game-layer
-/// calls and still run, and <see cref="CX.Alloy.Db.TileBuild.BorderWindow"/> is what tells the database's own
-/// tile build that the spawns inside them are ring tiles -- <see cref="Ring"/> is the ring it widens to
-/// (<c>TileBuild.cs</c>). The engine-side half went: <c>Scene::InitBSP</c>, <c>SpawnTile</c> and
-/// <c>DeleteTile</c> are vtable slots the seam FILLS (<c>SceneSlots</c>), so the engine bodies those three
-/// hooks chained never run, and the outward replay and the border-face grass they fed never happened.</para>
-/// <para>The engine's "shadowed" border tint is deliberately not reproduced.</para></summary>
+/// <summary>The area border ring, widened. The engine pads every area with five tiles of unwalkable edge
+/// geometry (<c>CNWCArea::LoadBorder</c> @0x70a5c0, hard-coded strip loops); this widens the WINDOW that tells
+/// the database's tile build a spawn is a ring tile, out to <c>border</c> tiles (<c>cx.cfg</c>, default 15).
+/// Sound because the edge model comes from the nearest real tile's types -- widened, not re-derived.</summary>
 internal static unsafe class AreaBorder
 {
     /// <summary>The engine's own ring: LoadBorder walks <c>-5..-1</c> past each near edge and <c>dim..dim+4</c>

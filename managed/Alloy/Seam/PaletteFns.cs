@@ -5,9 +5,9 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 seam-obj: the object-free <c>Aur*</c> palette setters, routed onto CX-117's palette store
+/// <summary>The object-free <c>Aur*</c> palette setters, routed onto CX's own palette store
 /// (<c>docs/alloy-db-texture-mode.md</c>). They take no engine object, so there is nothing to facade -- the
-/// seam just answers them with CX's own state instead of the engine's GL texture.</summary>
+/// seam answers them with CX's state instead of the engine's GL texture.</summary>
 public sealed unsafe class PaletteFns : ISeamProvider
 {
     private static bool _createPending;
@@ -24,8 +24,7 @@ public sealed unsafe class PaletteFns : ISeamProvider
     }
 
     /// <summary><c>AurSetPalette(int slot, char const* resref)</c> @0x485190 -- returns int. Synchronous on the
-    /// game thread, which is where CX-117 wants it: the palette rows go into a CPU buffer and the texture is
-    /// built later, in the bracket.</summary>
+    /// game thread: the palette rows go into a CPU buffer and the texture is built later, in the bracket.</summary>
     [UnmanagedCallersOnly]
     private static int AurSetPalette(int slot, nint resref)
     {

@@ -5,17 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 (seam-scene): what a <c>CAurCamera</c> IS when CX owns the scene database -- a row in
-/// <see cref="SceneDb.Cameras"/>, and the view/projection arithmetic over its columns.
-/// <para>In tier 3 <see cref="AlloyCamera"/> MEASURES the engine's camera object: it hooks
-/// <c>Camera::RenderScene</c> and reads <c>Camera+0x4c4..+0x4e0</c>. In DB mode the camera IS a record, so the
-/// same arithmetic runs over columns and the engine's object does not exist. The arithmetic itself is NOT
-/// re-derived here -- <see cref="AlloyCamera.Perspective"/>, <see cref="AlloyCamera.Ortho"/>,
-/// <see cref="AlloyCamera.ViewOf"/>, <see cref="AlloyCamera.ViewportScales"/> and
-/// <see cref="AlloyCamera.DepthRange"/> are the one copy, read off the engine term for term in
-/// <c>CX-109</c> §1, and this class supplies their inputs from the record.</para>
-/// <para>Everything here runs on the GAME thread: the game reads <c>GetPosition</c>, <c>MapToScreen</c>,
-/// <c>MouseDir</c> and the hit tests synchronously and must not wait on the renderer (ADR 0028 section 5).</para></summary>
+/// <summary>What a <c>CAurCamera</c> IS: a row in <see cref="SceneDb.Cameras"/>, and the view/projection
+/// arithmetic over its columns, whose terms are not re-derived here -- <see cref="AlloyCamera.Perspective"/>,
+/// <see cref="AlloyCamera.Ortho"/>, <see cref="AlloyCamera.ViewOf"/>, <see cref="AlloyCamera.ViewportScales"/>
+/// and <c>DepthRange</c> are the one copy. GAME thread: the game's reads are synchronous (ADR 0028 s5).</summary>
 public static unsafe class DbCamera
 {
     /// <summary>The ortho extent <c>Camera::RenderScene</c> derives: <c>cam+0x4c8 = viewportHeight * 0.01</c>,
@@ -64,18 +57,10 @@ public static unsafe class DbCamera
         return id;
     }
 
-    /// <summary>The clip range a fresh camera carries, as <c>Camera::Camera</c> @0x5a6060 initialises
-    /// <c>+0x4cc</c>/<c>+0x4d0</c>. A camera the game never calls <c>SetClipDist</c> on renders with these.</summary>
     /// <summary>The clip distances a camera has before anything sets them -- the ENGINE's own constructor
-    /// defaults, read off the same store as the view angle: <c>Camera::Camera</c> @0x5a42c0 writes
-    /// <c>0x42c800003dcccccd</c> across <c>+0x4cc</c>, whose low word <c>0x3dcccccd</c> is 0.1 (near) and whose
-    /// high word <c>0x42c80000</c> is 100.0 (far).
-    /// <para>The far plane was 45, which is not a distance at all -- it is the view ANGLE, and the two sat on
-    /// adjacent lines. An area measures 340 units across and the camera stands ~14 above the floor, so a
-    /// 45-unit far plane clipped away all but the camera's own feet: 303 draws submitted, a frustum that
-    /// reached almost nothing, and a flat frame. Nothing in the game calls <c>SetClipDist</c> on the world
-    /// camera -- the slot trace shows <c>GetClipDist</c> arriving and <c>SetClipDist</c> never -- because in
-    /// vanilla the constructor has already supplied these.</para></summary>
+    /// defaults, 0.1 near and 100.0 far across <c>Camera+0x4cc</c>/<c>+0x4d0</c> (<c>Camera::Camera</c>
+    /// @0x5a42c0). Nothing in the game calls <c>SetClipDist</c> on the world camera, so these are what it
+    /// renders with; a far plane of 45 -- the view ANGLE, one field over -- reaches the camera's own feet.</summary>
     public const float DefaultNear = 0.1f, DefaultFar = 100f;
 
     /// <summary>Destroy the camera record. Its <c>CAurObject</c> sub-object record is seam-obj's to free, from
@@ -148,41 +133,27 @@ public static unsafe class DbCamera
     /// <summary>Republish one camera's place NOW, for a writer whose answer the engine-view readers
     /// (nameplates, the aim assist's projector, every <c>Camera::GetPosition</c>) must see in the frame it was
     /// written -- the camera-feel layer's pose rewrite. The per-frame walk alone leaves them a frame behind,
-    /// which in mode 0 they never are.</summary>
+    /// which they must never be.</summary>
     internal static void Publish(DbId cam)
     {
         if (SceneDb.Cameras.Valid(cam)) PublishShellAt(cam.Index);
     }
 
     /// <summary>Copy the camera's place into its facade SHELL, at the Camera-relative offsets the engine keeps
-    /// it in: <c>+0xb0</c>/<c>+0xbc</c>, which ARE the gob half's <c>+0xa8</c>/<c>+0xb4</c> at <c>+8</c>. In the
-    /// engine a <c>Camera</c> IS-A <c>Gob</c> and there is one storage; the database has three homes for it
-    /// (the column, the sub-object record, the shell) and the GAME -- plus every CX feature that reads the live
-    /// camera through an engine view -- takes the shell's word.
-    /// <para>Nothing wrote it, so <c>Camera::GetPosition</c> answered the world ORIGIN and
-    /// <c>GetOrientation</c> the identity all session. The overhead nameplates measure their distance from
-    /// exactly that, so every plate's "distance" was its object's world-coordinate magnitude -- in an ordinary
-    /// area 30-45 m, which sits permanently inside the fade band, and the plates rendered as if almost at the
-    /// visible-distance limit. The identity rotation also pointed the behind-camera rejection down world -Z.</para>
-    /// <para>Per FRAME rather than in the two setters, because the game moves the world camera through its
-    /// CAurObject sub-object and never calls <c>Camera::SetPosition</c> at all; the frame walk covers both
-    /// paths and is the same both-stores rule <see cref="WriteShellViewAngle"/> follows.</para></summary>
+    /// it in: <c>+0xb0</c>/<c>+0xbc</c>, which ARE the gob half's <c>+0xa8</c>/<c>+0xb4</c> at <c>+8</c>. The
+    /// game, and every CX reader that goes through an engine view, takes the shell's word. Per FRAME and not in
+    /// the setters: the game moves the world camera through its <c>CAurObject</c>, never by that setter.</summary>
     private static unsafe void PublishShellAt(int i)
     {
         nint shell = SceneDb.CamFacade[i];
         if (shell == 0) return;
-        if (EngineLayout.CamPos >= 0)
-        {
-            Vector3 p = PosAt(i);
-            float* f = (float*)(shell + EngineLayout.CamPos);
-            f[0] = p.X; f[1] = p.Y; f[2] = p.Z;
-        }
-        if (EngineLayout.CamRot < 0) return;
+        var cam = new Camera(shell);
+        cam.Pos = PosAt(i);
         DbId obj = SceneDb.CamObj[i];
         Quaternion q = SceneDb.Objects.Valid(obj) ? SceneDb.ObjRot[obj.Index] : SceneDb.CamRot[i];
-        // W-FIRST in memory, which is how Gob keeps a quaternion and how Facade.SetXform writes one.
-        float* r = (float*)(shell + EngineLayout.CamRot);
-        r[0] = q.W; r[1] = q.X; r[2] = q.Y; r[3] = q.Z;
+        // W-FIRST in memory, which is how Gob keeps a quaternion and how Facade.SetXform writes one: Quat's
+        // own field order, so the conversion is the store.
+        cam.Rot = q;
     }
 
     public static void SetOrientation(DbId cam, Quaternion q)
@@ -224,15 +195,10 @@ public static unsafe class DbCamera
         SceneDb.TouchCam(cam, Dirty.Xform);
     }
 
-    /// <summary>The view angle a camera has before anything sets one -- the ENGINE's own constructor default,
-    /// not zero. <c>Camera::Camera</c> @0x5a42c0 stores <c>0x3f80000042340000</c> across <c>+0x4c4</c>, whose
-    /// low word is <c>0x42340000</c> = 45.0 (the high word, 1.0, is the field after it).
-    /// <para>This is what the first DB-mode area actually died of, and it is worth spelling out because the
-    /// symptom was five steps away from the cause: a camera at view angle 0 takes <c>BuildView</c>'s ORTHO
-    /// branch, an ortho projection fails <c>AlloyLights.TryPerspective</c> (its w row is 0, not -1), a frame
-    /// with no perspective never builds the clustered light rig, and every lit part in the world is then
-    /// skipped as "unlit-pass" -- 1850 of them, an empty world and no error anywhere. Nothing in the game ever
-    /// calls <c>SetViewAngle</c> on the world camera, because in vanilla it does not have to.</para></summary>
+    /// <summary>The view angle a camera has before anything sets one -- the ENGINE's own constructor default of
+    /// 45.0 at <c>Camera+0x4c4</c> (<c>Camera::Camera</c> @0x5a42c0), not zero, and nothing in the game calls
+    /// <c>SetViewAngle</c> on the world camera. At 0 <c>BuildView</c> takes the ORTHO branch, an ortho
+    /// projection fails <c>AlloyLights.TryPerspective</c>, no light rig builds and every lit part is skipped.</summary>
     public const float DefaultViewAngle = 45f;
 
     public static void SetViewAngle(DbId cam, float degrees)
@@ -246,12 +212,10 @@ public static unsafe class DbCamera
 
     // ---- the view ------------------------------------------------------------------------------------
 
-    /// <summary>The rect this camera renders into: its own when it has one, else the whole draw viewport
-    /// (<c>Camera::RenderScene</c> takes the latter from <c>RenderInterface::GetViewPort</c>). Divided by the
-    /// game's UI scale when the scale is not 1 and the camera has a rect of its own -- the arithmetic
-    /// <c>Camera::MapToScreen</c> @0x5a3d60 spells out, which is the same rect <c>UpscaleViewport</c> rewrites
-    /// for the view. CX does not reproduce the engine's ~20-name <c>sceneGUI_*</c> centring table: in DB mode
-    /// CX owns the panel layout, so the scale is applied to every panel camera uniformly.</summary>
+    /// <summary>The rect this camera renders into: its own when it has one, else the whole draw viewport.
+    /// Divided by the game's UI scale when that is not 1 -- the arithmetic <c>Camera::MapToScreen</c> @0x5a3d60
+    /// spells out, and the same rect <c>UpscaleViewport</c> rewrites for the view. CX does not reproduce the
+    /// engine's <c>sceneGUI_*</c> centring table: CX owns the panel layout, so every panel camera scales.</summary>
     public static void Rect(DbId cam, float vpX, float vpY, float vpW, float vpH, float guiScale,
                             out float x, out float y, out float w, out float h)
     {
@@ -270,16 +234,10 @@ public static unsafe class DbCamera
         h /= guiScale;
     }
 
-    /// <summary>CX-120: where this camera actually is.
-    /// <para>In the engine a <c>Camera</c> IS-A <c>Gob</c>: there is ONE position, and the game moves the
-    /// camera through the ordinary object setters. The database splits the two -- a camera record and the
-    /// <c>CAurObject</c> sub-object record the shell carries at +8 -- so a game that moves the camera through
-    /// its sub-object writes <c>ObjPos</c> while <c>CamPos</c> stays where <c>NewCAurCamera</c> left it.
-    /// It does exactly that, and the result was a view matrix built at the world ORIGIN: 296 draws kept by the
-    /// cull and not one fragment shaded, because the whole area sits in front of a camera looking the other
-    /// way from (0,0,0).</para>
-    /// <para>So the sub-object record is the authority whenever the camera has one, and
-    /// <see cref="SetPosition"/> writes it. One storage, as the engine has one.</para></summary>
+    /// <summary>Where this camera actually is. In the engine a <c>Camera</c> IS-A <c>Gob</c> and there is ONE
+    /// position; the database splits the camera record from the <c>CAurObject</c> sub-object record the shell
+    /// carries at +8, and the game moves the camera through that sub-object. So the sub-object record is the
+    /// authority whenever the camera has one, and <see cref="SetPosition"/> writes it.</summary>
     internal static Vector3 PosOf(DbId cam) => PosAt(cam.Index);
 
     /// <inheritdoc cref="PosOf"/>
@@ -297,21 +255,17 @@ public static unsafe class DbCamera
         return SceneDb.Objects.Valid(obj) ? SceneDb.ObjRot[obj.Index] : SceneDb.CamRot[cam.Index];
     }
 
-    /// <summary>CX-120: this camera's view angle, taking the SHELL's own word as the authority.
-    /// <para>The game layer does not only call <c>SetViewAngle</c>: <c>Camera+0x4c4</c> is one of the fields it
-    /// reaches by literal offset (<c>EngineLayout.CamViewAngle</c> exists for exactly that reason), and the
-    /// facade is a layout-compatible shell, so such a write lands in the shell and never in the column. That is
-    /// what left the world camera at a view angle of 0 -- which <c>BuildView</c> reads as the ORTHO branch, so
-    /// the world was drawn through an orthographic projection, <c>TryPerspective</c> refused it, the lighting
-    /// rig never built and every lit part in the area was skipped as "unlit-pass". An empty world.</para>
-    /// <para>The slot setter writes both, so whichever path the game takes, the two agree.</para></summary>
+    /// <summary>This camera's view angle, taking the SHELL's own word as the authority: the game layer reaches
+    /// <c>Camera+0x4c4</c> by literal offset as well as through <c>SetViewAngle</c>, and such a write lands in
+    /// the layout-compatible shell, never in the column. An angle of 0 is <c>BuildView</c>'s ORTHO branch,
+    /// which <c>TryPerspective</c> refuses, so nothing lights. The slot setter writes both, so the two agree.</summary>
     internal static unsafe float ViewAngleOf(DbId cam)
     {
         int i = cam.Index;
         nint shell = SceneDb.CamFacade[i];
-        if (shell != 0 && EngineLayout.CamViewAngle >= 0)
+        if (shell != 0)
         {
-            float shellAngle = *(float*)(shell + EngineLayout.CamViewAngle);
+            float shellAngle = new Camera(shell).ViewAngle;
             // A sane view angle only: the shell is game-written memory, and a NaN or an out-of-range value
             // must not become a projection. Anything else falls back to the column.
             if (shellAngle > 0f && shellAngle < 180f) return shellAngle;
@@ -322,7 +276,7 @@ public static unsafe class DbCamera
     private static unsafe void WriteShellViewAngle(DbId cam, float degrees)
     {
         nint shell = SceneDb.CamFacade[cam.Index];
-        if (shell != 0 && EngineLayout.CamViewAngle >= 0) *(float*)(shell + EngineLayout.CamViewAngle) = degrees;
+        if (shell != 0) new Camera(shell).ViewAngle = degrees;
     }
 
     /// <summary>This camera's whole view state -- what <c>Camera::RenderScene</c> derives before it renders:
@@ -391,15 +345,9 @@ public static unsafe class DbCamera
     public const float GuiFrontNear = 0f, GuiFrontFar = 0.02f, GuiBackNear = 0.021f, GuiBackFar = 0.1f;
 
     /// <summary>Fill the camera's world-space view volume from the view just built and latch
-    /// <c>ViewVolumeSet</c>. <see cref="SceneDb.ViewPlanes"/> planes in the engine's own order -- near, far,
-    /// then the four sides -- extracted from <c>view * proj</c>, which is the frustum
-    /// <c>Camera::RenderScene</c> builds from its view-space corner rays and then rotates into world space.
-    /// <para><b>Plane convention: <c>dot(n, p) + d &gt; 0</c> is OUTSIDE.</b> Measured, not assumed:
-    /// <c>Camera::HitCheckViewVolumeNearest</c> @0x5a4060 rejects a candidate with
-    /// <c>n.x*P.x + n.y*P.y + n.z*P.z + n.w &gt; 0.0</c>, and <c>Camera::RenderScene</c> builds plane 0 as
-    /// <c>(0, 0, 1, near)</c> -- which, in a view space that looks down -Z, is negative in front of the
-    /// camera. That is the OPPOSITE of <see cref="CullPass.Planes"/>' inside-positive form, so the extraction
-    /// is reused and every plane is negated here. <c>GetViewVolume</c> hands the game the engine's sign.</para></summary>
+    /// <c>ViewVolumeSet</c>: the planes in the engine's own order -- near, far, then the four sides -- out of
+    /// <c>view * proj</c>. <b>The engine's convention is <c>dot(n, p) + d &gt; 0</c> is OUTSIDE</b> (measured at
+    /// <c>Camera::HitCheckViewVolumeNearest</c> @0x5a4060), so every <see cref="CullPass.Planes"/> plane is negated.</summary>
     internal static void SetViewVolume(DbId cam, in AlloyView v)
     {
         if (!SceneDb.Cameras.Valid(cam) || !v.Valid) return;
@@ -407,10 +355,9 @@ public static unsafe class DbCamera
         float* p = stackalloc float[24];
         CullPass.Planes((float*)&m, p, PosOf(cam));
         int b = cam.Index * SceneDb.ViewPlanes;
-        // CullPass emits left, right, bottom, top, near, far (its own loop order) and inside-POSITIVE; the
-        // ENGINE's list -- which is what GetViewVolume(i) must index, because the game's callers index it the
-        // engine's way -- is near, far, then the four sides (CX-109 section 1), and
-        // inside-NEGATIVE. So: permute, then negate.
+        // CullPass emits left, right, bottom, top, near, far and inside-POSITIVE; the ENGINE's list -- which
+        // GetViewVolume(i) must index, because the game's callers index it the engine's way -- is near, far,
+        // then the four sides, inside-NEGATIVE. So: permute, then negate.
         for (int k = 0; k < SceneDb.ViewPlanes; k++)
         {
             int src = Order[k] * 4;
@@ -433,19 +380,10 @@ public static unsafe class DbCamera
 
     // ---- the three projections the game asks for -----------------------------------------------------
 
-    /// <summary><c>Camera::MapToScreen(Vector, bool)</c> @0x5a3d60, term for term.
-    /// <para>The space is settled (<c>Services/Nameplate/NameplateNative.cs</c>, from the disassembly):
-    /// <c>planelineintersection</c> resolves against the plane <c>z = -1</c>, so eye space is -Z-forward and
-    /// <c>t = -1/P.z</c>; the tail is <c>vp + half + P' * (h/2) / tan(fov/2)</c> for BOTH axes -- the vertical
-    /// half-extent scales x as well, which is what makes the result square-pixel. Unnormalised it is
-    /// <b>pixels, bottom-left origin, y up</b>, inside the camera's rect; <paramref name="normalized"/> takes
-    /// the engine's own tail, <c>x/w</c> and <c>1 - y/h</c>, i.e. a top-down [0,1] coordinate.</para>
-    /// <para>A view angle of 0 or less (an ortho camera) returns the zero vector, exactly as the engine's
-    /// <c>else</c> branch does -- it has no perspective divide to make.</para>
-    /// <para>z is the eye-space depth of the point (negative in front of the camera). The engine's own z here
-    /// is Ghidra-opaque (a 12-byte by-value return it does not model), and no caller in the game layer reads
-    /// it -- <c>UpdatePopUpBubble</c> and the aim assist take x and y. <c>ponytail:</c> if a caller ever turns
-    /// out to read z, this is the term to re-measure.</para></summary>
+    /// <summary><c>Camera::MapToScreen(Vector, bool)</c> @0x5a3d60, term for term: eye space is -Z-forward so
+    /// <c>t = -1/P.z</c>, and the VERTICAL half-extent scales BOTH axes (square-pixel). Unnormalised it is
+    /// <b>pixels, bottom-left origin, y up</b> in the camera's rect; <paramref name="normalized"/> is
+    /// <c>x/w</c>, <c>1 - y/h</c>; a view angle &lt;= 0 returns zero. <c>ponytail:</c> z is nobody's term yet.</summary>
     public static Vector3 MapToScreen(DbId cam, Vector3 world, bool normalized,
                                       float vpX, float vpY, float vpW, float vpH, float guiScale)
     {
@@ -465,26 +403,10 @@ public static unsafe class DbCamera
         return new Vector3(sx, sy, p.Z);
     }
 
-    /// <summary>The segment a screen pick casts through this camera, in world space --
-    /// <c>Camera::HitCheck(int, int, Vector*, CHitInfo*)</c> @0x5a5e10's own two arms. False means the pixel
-    /// is outside this camera's rect, which is the engine's own answer of 0.
-    /// <para><b>The ortho arm is not an optimisation, it is the only correct one for a GUI panel.</b> A
-    /// camera with a view angle of 0 or less is orthographic (<see cref="BuildView"/> draws it that way), and
-    /// <see cref="MouseDir"/>'s <c>tan(fov/2)</c> is then ZERO: every pixel returns the camera's forward axis,
-    /// so a perspective-arm pick casts the same ray down the middle of the panel whatever the mouse is doing.
-    /// That is why the main menu's buttons could not be clicked. The engine's own ortho arm instead maps the
-    /// pixel to a position and casts a segment PARALLEL to world -Z through it, ignoring the camera's
-    /// orientation entirely:</para>
-    /// <list type="bullet">
-    /// <item>the pixel goes rect-relative and is rejected outside <c>[0, w) x [0, h)</c>;</item>
-    /// <item>both axes map as <c>(c + 0.5) / rectH * cam+0x4c8</c> -- the VERTICAL extent divides x as well,
-    /// the same square-pixel convention <see cref="MapToScreen"/> and <see cref="MouseDir"/> use -- plus the
-    /// camera's own x / y;</item>
-    /// <item><c>cam+0x4c8</c> is the ortho extent <see cref="BuildView"/> derives, <c>rectH * 0.01</c>, so the
-    /// two cancel and the mapping is one hundredth of a pixel per world unit;</item>
-    /// <item>the segment runs from <c>pos.z - near</c> to <c>pos.z - near - far</c>, so it looks down world
-    /// -Z and the pick is the inverse of the projection the panel was drawn with.</item>
-    /// </list></summary>
+    /// <summary>The segment a screen pick casts through this camera, in world space (<c>Camera::HitCheck</c>
+    /// @0x5a5e10's own two arms); false means the pixel is outside the camera's rect. The ORTHO arm (view
+    /// angle &lt;= 0) is the only correct one for a GUI panel: <see cref="MouseDir"/>'s <c>tan(fov/2)</c> is then
+    /// ZERO, so every pixel picks down the panel's middle. It maps by the VERTICAL extent, parallel to -Z.</summary>
     public static bool PickSegment(DbId cam, int px, int py, float vpX, float vpY, float vpW, float vpH,
                                    float guiScale, out Vector3 from, out Vector3 to)
     {
@@ -514,12 +436,9 @@ public static unsafe class DbCamera
     }
 
     /// <summary><c>Camera::MouseDir(int, int)</c> @0x5a3bc0, term for term: the normalised WORLD-space ray
-    /// through a pixel of this camera's rect. The pixel is in the engine's screen space (the same one
-    /// <see cref="MapToScreen"/> returns unnormalised), and the camera-space ray is
-    /// <c>((px - x - w/2) * t/(h/2), (py - y - h/2) * t/(h/2), -1)</c> before the camera rotation -- note both
-    /// axes divide by the VERTICAL half-extent, as in <see cref="MapToScreen"/>.
-    /// <para>Unlike <see cref="MapToScreen"/>, the engine does NOT apply the UI-scale division here, so
-    /// neither does this.</para></summary>
+    /// through a pixel of this camera's rect (the same screen space <see cref="MapToScreen"/> returns
+    /// unnormalised), <c>((px - x - w/2) * t/(h/2), (py - y - h/2) * t/(h/2), -1)</c> before the camera
+    /// rotation -- both axes divide by the VERTICAL half-extent. No UI-scale division here, as in the engine.</summary>
     public static Vector3 MouseDir(DbId cam, int px, int py, float vpX, float vpY, float vpW, float vpH)
     {
         if (!SceneDb.Cameras.Valid(cam)) return default;
@@ -551,33 +470,18 @@ public static unsafe class DbCamera
          ? Vector3.Transform(new Vector3(0f, 0f, -1f), RotOf(cam))
          : default;
 
-    /// <summary>Yaw, pitch and distance come from the camera's BEHAVIOUR, not from the camera
-    /// (<c>Camera::GetYaw</c>/<c>GetPitch</c>/<c>GetDist</c> @0x5a3970/@0x5a39c0/@0x5a3a10 each test
-    /// <c>behavior-&gt;AsBehaviorCameraFollow()</c> and then read <c>behavior+0x54</c>/<c>+0x5c</c>/<c>+0x48</c>).
-    /// The behaviour is a GAME-constructed engine-layout object (ADR 0028 section 2), so CX reads those three
-    /// fields off it directly -- which is also how <c>CNWCModule::InterpolateYaw/Pitch/Dist</c> writes them.
-    /// Zero when the camera has no behaviour.</summary>
-    public static float BehaviorFloat(DbId cam, int offset)
+    /// <summary>This camera's follow behaviour, or null: yaw, pitch and distance live on it, as the engine's
+    /// <c>Camera::GetYaw</c>/<c>GetPitch</c>/<c>GetDist</c> read them. The type test is not optional: a
+    /// <c>CAurBehaviorSubwindow</c> is far smaller, so follow fields read off it over-read another object.</summary>
+    public static CAurBehaviorCameraFollow BehaviorFollow(DbId cam)
     {
-        if (!SceneDb.Cameras.Valid(cam)) return 0f;
+        if (!SceneDb.Cameras.Valid(cam)) return default;
         nint b = SceneDb.CamBehavior[cam.Index];
-        if (b == 0) return 0f;
-        // The TYPE TEST, which is not optional: the engine's own GetYaw/GetPitch/GetDist each call
-        // behavior->AsBehaviorCameraFollow() first and return 0 when it is null. A camera can carry a
-        // CAurBehaviorSubwindow instead, and that object is operator_new(0x48) -- reading +0x54/+0x5c off it
-        // is a heap over-read of someone else's allocation.
+        if (b == 0) return default;
         var beh = new CAurBehavior(b);
-        if (beh.AsBehaviorCameraFollowFn == IntPtr.Zero) return 0f;
-        CAurBehaviorCameraFollow follow = beh.AsBehaviorCameraFollow();
-        return follow.IsNull ? 0f : *(float*)(follow.Ptr + offset);
+        if (beh.AsBehaviorCameraFollowFn == IntPtr.Zero) return default;
+        return beh.AsBehaviorCameraFollow();
     }
-
-    /// <summary>The three behaviour fields <c>GetYaw</c>/<c>GetPitch</c>/<c>GetDist</c> read.
-    /// <c>EngineLayout</c>'s own <c>CAurBehaviorCameraFollow</c> rows, per OS: the object is the GAME's, so
-    /// the offsets are the engine's class layout and are build-locked like any other engine read.</summary>
-    public static int BehYaw => EngineLayout.FollowYaw;
-    public static int BehPitch => EngineLayout.FollowPitch;
-    public static int BehDist => EngineLayout.FollowDist;
 
     /// <inheritdoc cref="DbScene.TakeCounters"/>
     internal static (long, long, long, long) TakeCounters() => (_created, _destroyed, _refused, _views);

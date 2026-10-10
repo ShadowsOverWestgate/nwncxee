@@ -4,26 +4,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>The look-at run: <c>Gob::BeginLookAtAnimate</c> @0x49d5b0 / <c>EndLookAtAnimate</c> @0x4979e0,
-/// which <c>CNWCCreature::UpdateLookAt</c> @0x80fa60 drives so a creature's head follows what it is talking to
-/// or fighting.
-/// <para><b>What the engine does</b>, read off <c>LookAtAnimation::LookAtAnimation</c> @0x49d480 and
-/// <c>::Control</c> @0x4973c0: the two parts are the TARGET's named part and this object's own named part; the
-/// two angle limits are DEGREES, taken through <c>ABS</c> and clamped to 89 at construction; the fourth float
-/// is a maximum distance between the two objects, past which the run deactivates. Control then measures the
-/// yaw and pitch from the head part toward the target part, clamps each against its limit and writes
-/// <c>YawPitchRoll(yaw, 0, 0) * YawPitchRoll(0, pitch, 0)</c> into the SECOND key of a two-key orientation
-/// track whose FIRST key is the head's current rotation (<c>BuildAnimation</c> @0x49a480 keys it at 0 and
-/// 0.25 s), with the run's time reset to 0 every step -- so each frame the head travels dt/0.25 of the way
-/// from where it is to the aim: an ease, not a snap. Deactivated, both keys hold the head where it is and the
-/// run fades out.</para>
-/// <para><b>What this does differently.</b> The engine builds a <c>LookAtAnimation</c> on the heap with its own
-/// vtable and a generated <c>Animation</c>, and reaches the head pose through the ordinary controller path;
-/// there is no such object in DB mode, so the clamped rotation is written into the head part's column directly
-/// at the same point in the step. Measured in the head part's PARENT frame rather than through the head's own
-/// rest rotation, which agrees wherever that rest rotation is the identity -- every head node in the stock
-/// corpus -- and differs by it where it is not. The float the engine keeps at <c>+0x50</c> is read only by
-/// <c>BuildAnimation</c>, so nothing here uses it.</para></summary>
+/// <summary>The look-at run: <c>Gob::BeginLookAtAnimate</c> @0x49d5b0 / <c>EndLookAtAnimate</c> @0x4979e0, so
+/// a creature's head follows what it talks to or fights. Angle limits are DEGREES, absolute and clamped to 89;
+/// the fourth float is the deactivation distance. Each step clamps yaw/pitch to the target and resets the run
+/// time, so the head eases dt/0.25 of the way, measured in the head part's PARENT frame.</summary>
 public static unsafe partial class DbAnim
 {
     private struct LookAtState

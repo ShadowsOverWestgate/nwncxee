@@ -4,9 +4,8 @@ namespace CX.Alloy;
 
 /// <summary>The <c>light</c> group (spec §4.3 Lighting), and the storage <see cref="AlloyLights"/> and
 /// <see cref="EnvProbe"/> read: the point-light curve's dials, the area-term scales, the wrap terms, the
-/// receiver's departed-light fade, and the environment probe (the former <c>/probe</c> plus the
-/// <c>probe</c>/<c>probe_size</c> boot keys). No master: lighting is the lit stage, and off is Renderer off.
-/// Touched from <see cref="RenderCommands.Register"/> so it declares on the main thread at Initialize.</summary>
+/// receiver's departed-light fade, and the environment probe. No master: lighting is the lit stage, and off
+/// is Renderer off.</summary>
 internal static class Lighting
 {
     internal static readonly KnobGroup G;

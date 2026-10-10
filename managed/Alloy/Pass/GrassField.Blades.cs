@@ -6,13 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-24: which atlas cells draw as procedural blades. Servers and builders swap grass textures at
-/// will (<c>AddGrassOverride</c>, per-area tilesets) and NWN does not say which is grass and which is a
-/// flower, so each live atlas is classified from its own pixels (<see cref="GrassAtlas"/>) once per upload;
-/// the verdict and the cells' colour ramps fill the material table.
-/// <para>ponytail: no hak 2DA override of the verdict yet. It needs a <c>C2DA</c> read (new symbols, both
-/// platforms); <c>grass.style</c> is the A/B, and a per-resref override is the upgrade if a real atlas
-/// misclassifies.</para></summary>
+/// <summary>Which atlas cells draw as procedural blades. Servers and builders swap grass textures at will
+/// (<c>AddGrassOverride</c>, per-area tilesets) and NWN does not say which is grass and which is a flower, so
+/// each live atlas is classified from its own pixels (<see cref="GrassAtlas"/>) once per upload. ponytail: no
+/// hak 2DA override of the verdict -- that needs a <c>C2DA</c> read on both platforms.</summary>
 internal static unsafe partial class GrassField
 {
     /// <summary>One material slot's verdict, keyed by the texture it was read from: the GL name and a hash of
@@ -29,8 +26,7 @@ internal static unsafe partial class GrassField
     /// <summary>Every live material's BLADE cell bits this frame: none under the texture style, or without
     /// the blade program. <paramref name="cards"/> takes the complement -- does the material draw any CARD --
     /// off the same walk, because it is a property of the material and the visible-patch loop was re-deriving
-    /// it (an engine deref per patch) for an answer that cannot differ between two patches of one
-    /// material.</summary>
+    /// it per patch for an answer that cannot differ between two patches of one material.</summary>
     private static void ClassifyAll(int* tids, bool* live, int* bits, bool* cards)
     {
         bool blades = Grass.Style.V == Grass.StyleBlades && _progBlade != 0;

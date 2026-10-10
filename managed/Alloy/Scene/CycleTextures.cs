@@ -5,20 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#331: the cycle-texture tick the M4 shim removed. A <c>.txi proceduretype cycle</c> texture is
-/// advanced by <c>CycleTIDTextureController::Control</c> @0x4d6c90, which rewrites the GL name INSIDE the
-/// shared basic (<c>basic+0x6c</c>) -- the <c>CAurTexture*</c> a material hands out never changes, so no
-/// pointer compare can see a cycle. Vanilla reaches Control only from the tail of <c>CAurTexture::Bind</c> /
-/// <c>BindInUnit</c>, inside the engine bucket walk Alloy no longer performs. So Alloy calls it: a fixed table
-/// of the controllers behind owned records, ticked once per frame inside the owned bracket. Control latches on
-/// <c>texcurrentframe</c> itself, so a second tick in the same frame (the engine's overlay replay) is a no-op.
-/// <para>Only the CycleTID class is ticked: the other controllers (wave, perlin, water, life, arturo)
-/// allocate and re-upload pixels, which is not a name rewrite and not this table's business.</para>
-/// <para>Lifetime (CX-25): an entry dies with its texture ref, told by the <c>~CAurTexture</c> death notice --
-/// a vtable guard cannot see a freed block the next texture re-used. A live ref holds a reference on its
-/// basic (the dtor releases <c>+0x18</c>), so the basic and its controller outlive the entry. The per-tick
-/// re-guard stays for a controller swapped under a live ref, and the table is cleared with the ownership
-/// table.</para></summary>
+/// <summary>Ticks the CycleTID controllers behind owned records once per frame inside the owned bracket:
+/// <c>CycleTIDTextureController::Control</c> @0x4d6c90 rewrites the GL name inside the shared basic
+/// (<c>basic+0x6c</c>), so no pointer compare sees a cycle and vanilla reaches it only from the engine bucket
+/// walk Alloy no longer performs. Control latches on <c>texcurrentframe</c>: a second tick is a no-op.</summary>
 internal static unsafe class CycleTextures
 {
     /// <summary>ponytail: a fixed table; an area has a handful of cycle textures (torches, waterfalls).
@@ -38,7 +28,7 @@ internal static unsafe class CycleTextures
 
     internal static bool Ready => _getController != null && _vtbl != IntPtr.Zero && _origDtor != null;
 
-    /// <summary>#456: the controller layout probe's one-shot latch, and the log it reports through.</summary>
+    /// <summary>The controller layout probe's one-shot latch, and the log it reports through.</summary>
     private static bool _probedCtl;
     private static ExtenderLog? _log;
 
@@ -46,7 +36,7 @@ internal static unsafe class CycleTextures
     {
         _log = log;
         if (Ready) return;
-        // CX-25: no death notice, no table -- a ref kept without one is the crash this hook exists for.
+        // No death notice, no table -- a ref kept without one is the crash this hook exists for.
         _origDtor = hooks.InstallAurTextureDtor(&OnTextureDtor);
         _getController = EngineFn.AurTextureGetController;
         _vtbl = EngineAbi.Vtbl(Native.Sym(SymbolMap.CycleTidControllerVtbl));
@@ -54,7 +44,7 @@ internal static unsafe class CycleTextures
         if (!Ready) log.Info("CycleTextures: AurTextureGetController, the CycleTID vtable or ~CAurTexture unresolved -- cycle textures stay frozen on Alloy parts");
     }
 
-    /// <summary>CX-25: the death notice. Compares the dying pointer, never dereferences it. Any thread;
+    /// <summary>The death notice. Compares the dying pointer, never dereferences it. Any thread;
     /// allocation-free (it fires in bulk on the area edge).</summary>
     [UnmanagedCallersOnly]
     private static void OnTextureDtor(IntPtr tex)
@@ -129,7 +119,7 @@ internal static unsafe class CycleTextures
 
     internal static void Clear() { lock (_lock) { _n = 0; _dirtyN = 0; _droppedN = 0; Overflow = 0; } }
 
-    /// <summary>CX-25, off-device: a freed ref is tombstoned (which Tick's guard drops) and a ref that did
+    /// <summary>Off-device: a freed ref is tombstoned (which Tick's guard drops) and a ref that did
     /// not die stays. Synthetic pointers, nothing dereferenced; runs at init on the empty table.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {

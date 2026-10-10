@@ -5,12 +5,13 @@ yet -- this is the only instrument that says the 142 mechanical rows of #447 (an
 predate them) are not typos.
 
     tools/abi/check-win-symbols.py          # exit 1 on the first bad row
-Env: NWN_WIN_EXE overrides the default Steam path.
+Env: NWN_WIN_EXE (tools/paths.py) names the binary.
 """
 import os, pathlib, re, struct, subprocess, sys
 
-EXE = os.environ.get("NWN_WIN_EXE",
-    "~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import paths  # noqa: E402  tools/paths.py: env, local.env, then the Steam library
+EXE = paths.require("NWN_WIN_EXE")
 SRC = pathlib.Path(__file__).resolve().parents[2] / "managed/Framework/SymbolMap.cs"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "update"))
 from tables import read_builds, symbols  # noqa: E402

@@ -4,7 +4,7 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>One row of a cascade level: a label, an optional engine-texture icon (resref, "" for none, or an owner-
-/// minted <see cref="IconHandle"/> for an icon the owner resolves itself -- CX-693's composite item icons), a
+/// minted <see cref="IconHandle"/> for an icon the owner resolves itself, such as a composite item icon), a
 /// uses-left count ("" for none), a submenu mark, and the owner's handle. The owner builds and owns the arrays.</summary>
 public struct CascadeItem
 {
@@ -26,8 +26,8 @@ public enum CascadeActionKind { None, Activate, RequestChildren, Context, CloseA
 
 /// <summary>What an input did: nothing; a leaf picked (on the release of an undragged left press); a submenu row
 /// wants its children (the owner materializes them and calls <see cref="CascadeMenu.OpenChild"/>); a right-button
-/// press on a row; the menu closed itself; or a row was dragged and dropped (CX-694: <see cref="Level"/>/<see cref="Row"/>
-/// the source, <see cref="ToLevel"/>/<see cref="ToIndex"/> the gap it landed in -- 0..n, before row ToIndex).</summary>
+/// press on a row; the menu closed itself; or a row was dragged and dropped -- <see cref="Level"/>/<see cref="Row"/>
+/// the source, <see cref="ToLevel"/>/<see cref="ToIndex"/> the gap it landed in (0..n, before row ToIndex).</summary>
 public readonly struct CascadeAction
 {
     public readonly CascadeActionKind Kind;
@@ -53,7 +53,7 @@ public readonly struct IconQuad
     { Resref = resref; Handle = handle; X = x; Y = y; Size = size; Alpha = alpha; }
 }
 
-/// <summary>The cascade's look for one draw (CX-694): the fills as RGBA, the text colour (RGB + alpha, as
+/// <summary>The cascade's look for one draw: the fills as RGBA, the text colour (RGB + alpha, as
 /// <see cref="UiText.Draw"/> takes them), and the open animation (<see cref="AnimMs"/> 0 = none) against the
 /// owner's clock.</summary>
 public struct CascadeStyle
@@ -108,20 +108,10 @@ public sealed class CascadeLevel
 }
 
 /// <summary>
-/// A nested dropdown with an icon column (CX-690/CX-691): a root list opened at a point and a cascade of child
-/// lists, each opened beside the parent row that owns it, flipped to the parent's left edge at the viewport's
-/// right edge and clamped into the viewport. Children are lazy: an input that opens a submenu row yields
-/// <see cref="CascadeActionKind.RequestChildren"/> and the owner answers with <see cref="OpenChild"/>. Pure:
-/// pixels and keys in, actions out; icons are reported as rects (<see cref="Icons"/>) for the owner's texture
-/// pass. The widget closes itself only on <see cref="CascadeActionKind.CloseAll"/>; after Activate/Context the
-/// owner decides. A left press arms a row drag (CX-694): past <see cref="DragPx"/> the row follows the pointer
-/// and a gap in its own level or the root is the drop target (<see cref="DropLevel"/>/<see cref="DropIndex"/>); the release yields
-/// <see cref="CascadeActionKind.Drop"/>, or Activate for an undragged press released on the same leaf. Hover, the
-/// dwell and level closes hold while dragging. Zero-alloc in <see cref="Draw"/> and <see cref="Tick"/>.
-/// <para><see cref="Drill"/> mode: a child replaces its parent in place instead of opening beside it, under a Back
-/// band that returns to the parent (its rows, scroll and hover kept); only the deepest level shows, takes input
-/// and reports icons. Submenu rows open on the click's release, never on the dwell (the pointer would land on the
-/// new list and descend again), and a drag drops in the row's own list only.</para>
+/// A nested dropdown with an icon column: a root list opened at a point, then child lists opened beside the
+/// parent row that owns them, flipped to the parent's left and clamped at the viewport edge. Children are lazy --
+/// a submenu row yields <see cref="CascadeActionKind.RequestChildren"/> and the owner answers with
+/// <see cref="OpenChild"/>. Pure: pixels and keys in, actions out; icons come back as rects for the owner to draw.
 /// </summary>
 public sealed partial class CascadeMenu
 {
@@ -174,9 +164,13 @@ public sealed partial class CascadeMenu
 
     /// <summary>Off, a left press never becomes a row drag (the owner's layout is locked); a click still activates.</summary>
     public bool DragEnabled = true;
-    /// <summary>Drill-down mode: see the class summary. Set before <see cref="OpenAt"/>.</summary>
+    /// <summary>Drill-down mode: a child replaces its parent in place, under a Back band that returns to it (rows,
+    /// scroll and hover kept); only the deepest level shows, takes input and reports icons. Submenu rows open on the
+    /// click's release, never on the dwell (the pointer would land on the new list and descend again), and a drag
+    /// drops in the row's own list only. Set before <see cref="OpenAt"/>.</summary>
     public bool Drill;
-    /// <summary>A row drag is in progress (not the scroll thumb: that is <see cref="Dragging"/>).</summary>
+    /// <summary>A row drag is in progress (not the scroll thumb: that is <see cref="Dragging"/>). Hover, the dwell
+    /// and level closes all hold while it runs.</summary>
     public bool RowDrag { get; private set; }
     /// <summary>The drop target while <see cref="RowDrag"/>: the level under the pointer (-1 = none, a release
     /// cancels) and the gap index in it, 0..n.</summary>
@@ -289,6 +283,8 @@ public sealed partial class CascadeMenu
         if (_dwellLevel >= Depth) ResetDwell();
     }
 
+    /// <summary>Close every level. The widget calls this itself only for
+    /// <see cref="CascadeActionKind.CloseAll"/>; after Activate or Context the owner decides.</summary>
     public void Close() { CloseTo(-1); _iconN = 0; ResetDwell(); ResetPress(); }
 
     private void ResetPress() { _pressLevel = -1; _pressRow = -1; RowDrag = false; DropLevel = -1; }
@@ -399,9 +395,8 @@ public sealed partial class CascadeMenu
 
     /// <summary>Press: outside every level closes (CloseAll); the gutter scrolls; a row yields Context for the
     /// right button, RequestChildren for an enabled submenu row, else None -- a left press arms the row for a
-    /// drag, and a leaf activates on its release (<see cref="MouseUp"/>). A press on a row other than the one
-    /// owning an open child closes that child at once -- unless the child is a <see cref="CascadeLevel.DropTarget"/>,
-    /// which the press may be about to drag into (a leaf release or another submenu still replaces it).</summary>
+    /// drag, and a leaf activates on its release (<see cref="MouseUp"/>). A press on a row other than the one owning
+    /// an open child closes that child, unless it is a <see cref="CascadeLevel.DropTarget"/> to drag into.</summary>
     public CascadeAction MouseDown(float mx, float my, int button)
     {
         if (!Open) return CascadeAction.None;
@@ -501,7 +496,7 @@ public sealed partial class CascadeMenu
     /// <summary>Draw every open level, deepest last: body, frame, the owning-row and hover fills, icons noted for
     /// the owner (<see cref="Icons"/>), labels, counts, submenu marks (clipped to the level) and the scrollbar. A
     /// level fades and slides in over <see cref="CascadeStyle.AnimMs"/> from its first draw (the drawn rect moves,
-    /// the hit rect never does); the drop gap and the dragged row's ghost draw on top.</summary>
+    /// the hit rect never does); the drop gap and the dragged row's ghost draw on top. Zero-alloc.</summary>
     public void Draw(VertexBatch b, GlyphAtlas atlas, float baseDrop, in CascadeStyle st)
     {
         _iconN = 0;

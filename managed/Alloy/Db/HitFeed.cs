@@ -4,25 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118: the PRODUCER of the hit-test columns -- what the seam calls so a cast has something to
-/// answer from, and the per-frame fold that keeps the bounds and the index current.
-/// <para><b>Why a producer at all.</b> The hit columns are derived, not authored: the classification comes
-/// from the object's <see cref="ModelDef"/>, the bounds from its parts' meshes and world matrices, the
-/// alphas from 1 until something fades them. Left at their zero defaults every gate in
-/// <c>HitTest.Admits</c> rejects, so a cast would answer "nothing" for a full scene -- the quietest possible
-/// failure. This class is the one place those defaults are seeded, and <see cref="Armed"/> plus
-/// <see cref="Missing"/> make a session that never called it say so out loud.</para>
-/// <para><b>What the seam must call</b> (CX-120):</para>
-/// <list type="bullet">
-/// <item><b>seam-obj</b>, on every object record it creates, after it has set <c>ObjModel</c> and the part
-/// range: <see cref="NoteObject"/>. On a model change or a tree rebuild: <see cref="NoteObject"/> again.
-/// Nothing on destroy -- the <see cref="Dirty.Destroyed"/> mark the table already carries is enough.</item>
-/// <item><b>seam-scene / the transform step</b>, once per frame after the world matrices are written and
-/// before the first cast of the frame: <see cref="Fold"/>.</item>
-/// <item><b>the door fade</b>: <c>DoorFade.StepDb</c>, which writes this class's fade column and the draw's
-/// <c>PartFade</c> together.</item>
-/// </list>
-/// <para>Allocation-free. Runs on the game thread, which owns the database (ADR 0028 §5).</para></summary>
+/// <summary>The PRODUCER of the hit-test columns: what the seam calls on every object it creates (and again
+/// on a model change or tree rebuild) so a cast has something to answer from. The columns are derived --
+/// classification from the <see cref="ModelDef"/>, bounds from the parts' meshes and world matrices -- and at
+/// their zero defaults every gate in <c>HitTest.Admits</c> rejects. Game thread, allocation-free.</summary>
 public static class HitFeed
 {
     /// <summary>True once <see cref="NoteObject"/> has been called at least once: a session where the seam
@@ -35,9 +20,8 @@ public static class HitFeed
 
     /// <summary>Fold visits to a dirty entry that carried a destroy AND a LIVE slot -- a record freed and
     /// re-allocated into the same slot inside one frame, which is what an area change does to every tile.
-    /// Counted per visit, not per hand-over (the marks stand until the frame's <c>TakeDirty</c>, and several
-    /// folds run between). Non-zero is normal at an area edge; it is reported because treating one of these
-    /// as a plain destroy is what left every area after the first with no floor.</summary>
+    /// Counted per visit, the marks standing until the frame's <c>TakeDirty</c>. Non-zero is normal at an area
+    /// edge; taking one for a plain destroy leaves the new area with no floor.</summary>
     public static long Recycled;
 
     private static ExtenderLog? _log;
@@ -60,11 +44,9 @@ public static class HitFeed
     }
 
     /// <summary>Seed (or re-seed) object <paramref name="o"/>'s hit columns from its model and the kind of
-    /// record it is. Idempotent, so a model or tree change just calls it again.
-    /// <para><paramref name="isStatic"/> marks the area's static set -- a tile's parts, a static placeable, a
-    /// trigger prism: the records that are in no object list in the engine and live in the scene BSP, which a
-    /// cast reaches through its static pass. Everything the game creates through <c>NewCAurObject</c> is
-    /// false.</para></summary>
+    /// record it is; idempotent, so a model or tree change just calls it again. <paramref name="isStatic"/>
+    /// marks the area's static set -- tile parts, static placeables, trigger prisms, the records in no object
+    /// list, which a cast reaches through its static pass. Anything from <c>NewCAurObject</c> is false.</summary>
     public static void NoteObject(DbId o, bool isStatic = false)
     {
         if (!SceneDb.Objects.Valid(o)) return;
@@ -106,15 +88,10 @@ public static class HitFeed
         SceneDb.HitPartTrigger[p] = payload;
     }
 
-    /// <summary>What a CAST calls first. The engine issues casts DURING an area load -- the creature update
-    /// that follows <c>CNWCArea::LoadArea</c> in the same message batch runs
-    /// <c>CNWCCreature::ComputeZValue</c>, whose floor probe is a <c>Scene::HitCheck</c> -- and vanilla has no
-    /// window there, because <c>Scene::SpawnTile</c> puts a tile in the BSP then and there. CX files a record
-    /// into the index in <see cref="Fold"/>, which runs once per frame AFTER the message pump, so a cast
-    /// issued in the frame the tiles were spawned in met an area with no floor and answered nothing -- and
-    /// <c>ComputeZValue</c> leaves its 9.0 sentinel on a miss, which is the +9 focus Z (CX-120).
-    /// <para>Cheap: the fold walks the objects table's DIRTY list, which a settled frame leaves empty, and
-    /// this re-folds only while that list has grown since the last fold.</para></summary>
+    /// <summary>What a CAST calls first, because the engine casts DURING an area load: the creature update
+    /// after <c>CNWCArea::LoadArea</c> runs <c>CNWCCreature::ComputeZValue</c>, whose floor probe is a
+    /// <c>Scene::HitCheck</c>, while <see cref="Fold"/> runs only after the message pump -- so the frame the
+    /// tiles spawned in would find no floor and keep the 9.0 sentinel. Re-folds only if the dirty list grew.</summary>
     public static void Sync()
     {
         if (SceneDb.Objects.DirtyMark == _foldedAt) return;
@@ -129,27 +106,18 @@ public static class HitFeed
     public static long SyncFolds { get; private set; }
 
     /// <summary>Per object, the <see cref="DbTable.MarkClock"/> and compose count its last refresh saw: the
-    /// list only grows within a frame and every growth triggers a fold, so without these each append
-    /// re-refreshed every entry before it (~14k refreshes a frame for ~48 dirty objects).
-    /// <para>CX-188: the mark CLOCK, not the dirty take plus the dirty bits it used to compare. Those two
-    /// could not see a re-mark that added no new bit and drove no compose (a text box set twice) -- which is
-    /// the whole reason the frame boundary used to re-refresh every dirty entry unconditionally, 798
-    /// <see cref="HitBounds.Refresh"/> calls a frame in a still scene. The clock moves on EVERY
-    /// <see cref="DbTable.Mark"/>, so the exact case the full fold existed for is now one compare, and there
-    /// is no full fold.</para>
-    /// <para>Invalidation: none to wire -- the clock is monotonic, so a later mark is strictly greater, and a
-    /// recycled slot's <see cref="Dirty.Created"/> mark at alloc is itself such a mark.</para></summary>
+    /// dirty list only grows within a frame and every growth triggers a fold, so without these each append
+    /// would re-refresh every entry before it (~14k refreshes a frame for ~48 dirty objects). The clock moves
+    /// on EVERY <see cref="DbTable.Mark"/> and is monotonic, so there is no invalidation to wire.</summary>
     private static readonly long[] _foldMark = new long[SceneDb.MaxObjects];
     private static readonly int[] _foldCompose = new int[SceneDb.MaxObjects];
     /// <summary>Dirty entries a fold stepped over because nothing changed since their last refresh.</summary>
     public static long FoldSkipped;
 
     /// <summary>Once per frame, after the transform step, and from <see cref="Sync"/> on the cast path: fold
-    /// the objects table's dirty list into the bounds columns and the index. Only the records that CHANGED
-    /// since their last refresh are visited (ADR 0028 §4, and <see cref="_foldMark"/> for what "changed"
-    /// means here), so a still scene costs this nothing.
-    /// <para>It does NOT consume the dirty list -- the renderer's own fold does that -- so it must run before
-    /// whatever calls <c>TakeDirty</c>.</para></summary>
+    /// the objects table's dirty list into the bounds columns and the index. Only records that CHANGED since
+    /// their last refresh are visited (<see cref="_foldMark"/>), so a still scene costs nothing. It does NOT
+    /// consume the dirty list -- the renderer's fold does -- so it must run before whatever calls <c>TakeDirty</c>.</summary>
     public static void Fold()
     {
         Folds++;

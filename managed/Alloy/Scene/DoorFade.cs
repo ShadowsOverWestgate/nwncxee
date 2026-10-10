@@ -1,24 +1,16 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-89: the door fade, Alloy's. A behaviour port of <c>Scene::FadeDoors</c> @0x467990's
-/// arithmetic -- the integrator, the clamp and the face test -- driven per door by <c>HitFeed</c> through
-/// <see cref="StepDb"/>.
-/// <para><b>Why it is not optional.</b> The fade gates the PICK as well as the picture:
-/// <c>Gob::HitCheck</c> @0x4381d0 refuses a door whose alpha sits at <c>mindooralpha</c>, so a frozen
-/// integrator makes doors unclickable without changing a pixel. <see cref="StepDb"/> is the one writer of
-/// both columns for exactly that reason.</para>
-/// <para>CX-188: the engine-memory pass is gone. <see cref="Tick"/> walked <c>AlloyRenderer.VisibleGobs</c>
-/// and wrote <c>Gob+0x10c</c> on each door, and it had no caller -- the slot it held was
-/// <c>RspShim.Run</c>'s, which does not run when CX owns the scene graph. The <c>/alloy doors</c> report went
-/// with it: it printed that same engine walk.</para>
-/// <para>GL-free, allocation-free.</para>
-/// </summary>
+/// <summary>The door fade: a behaviour port of <c>Scene::FadeDoors</c> @0x467990's arithmetic -- integrator,
+/// clamp and face test -- driven per door by <c>HitFeed</c> through <see cref="StepDb"/>. Not cosmetic: the
+/// fade gates the PICK too, since <c>Gob::HitCheck</c> @0x4381d0 refuses a door whose alpha sits at
+/// <c>mindooralpha</c>. GL-free, allocation-free.</summary>
 internal static unsafe class DoorFade
 {
     /// <summary>Seconds a door needs to cross the whole alpha range: the engine divides <c>DeltaT</c> by this
@@ -31,12 +23,10 @@ internal static unsafe class DoorFade
     /// floor above 1 wins. Both branches of the original land here.</summary>
     internal static float Clamp(float alpha, float floor) => MathF.Max(floor, MathF.Min(1f, alpha));
 
-    /// <summary>CX-118, DB mode: one door object's new fade, into the two columns that replace
-    /// <c>Gob+0x10c</c>. There is no engine field to write in DB mode, and the one value has two readers
-    /// that must never disagree -- <see cref="SceneDb.HitObjFadeAlpha"/> is what the hit test gates a click
-    /// on (<c>Gob::HitCheck</c>'s <c>mindooralpha</c> test), and <c>SceneDb.PartFade</c> is what the draw
-    /// multiplies in (the seam-feed contract). A door that faded out of the picture but not out of the pick,
-    /// or the reverse, is exactly the bug the single writer exists to prevent.</summary>
+    /// <summary>One door object's new fade, into the two columns that carry it. The single writer on purpose:
+    /// <see cref="SceneDb.HitObjFadeAlpha"/> is what the hit test gates a click on (<c>Gob::HitCheck</c>'s
+    /// <c>mindooralpha</c> test), <c>SceneDb.PartFade</c> is what the draw multiplies in, and a door faded out
+    /// of the picture but not the pick is the bug one writer prevents.</summary>
     internal static void StepDb(DbId obj, float step, bool opaque, float floor)
     {
         if (!SceneDb.Objects.Valid(obj)) return;
@@ -52,16 +42,10 @@ internal static unsafe class DoorFade
         SceneDb.Touch(obj, Dirty.Material);
     }
 
-    /// <summary>Should this door be driven toward opaque? The engine's own test, transcribed from the
-    /// disassembly of <c>Scene::FadeDoors</c> @0x467a6e..0x467d5b: shoot a segment through the door's bounding
-    /// box from the camera's position in the gob's frame to its mirror about the rotated box centre, take the
-    /// outward normal of the face it enters, and ask whether that normal leans toward the scene focus. A
-    /// camera INSIDE the box (no face) fades the door out.
-    /// <para>The two frames the engine mixes here are deliberate parity, not a transcription slip: the
-    /// segment's xy comes from the inverse-rotated camera delta while its z is the ROTATED centre's z
-    /// (@0x467bea stores <c>(q*centre).z</c> into both endpoints), and the mirror point is the rotated centre
-    /// rather than the local one. Doors are hinged about z and the box is thin across the leaf, so the test
-    /// that matters is the xy one.</para></summary>
+    /// <summary>Should this door be driven toward opaque? The engine's test from <c>Scene::FadeDoors</c>
+    /// @0x467a6e..0x467d5b: a segment through the door's box, from the camera in the gob's frame to its mirror
+    /// about the ROTATED centre; the entered face's outward normal must lean toward the scene focus, and a
+    /// camera inside the box fades out. The mixed frames are parity: xy inverse-rotated, z the rotated centre's.</summary>
     internal static bool Opaque(Vector3 bmin, Vector3 bmax, Vector3 pos, Quaternion rot,
                                Vector3 camPos, Vector3 focus)
     {
@@ -193,12 +177,17 @@ internal static unsafe class DoorFade
         byte* gob = stackalloc byte[0x500];
         for (int i = 0; i < 0x500; i++) gob[i] = 0;
         var gv = new Gob((IntPtr)gob);
-        gv.Rot = Quaternion.Identity;
-        check.Expect(gv.Rot.W == 1f && gv.Rot.X == 0f && gv.Rot.Y == 0f && gv.Rot.Z == 0f,
-                     "Gob+0xb4 holds the orientation as the engine's (w, x, y, z)");
+        gv.Rot = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI * 0.5f);
+        // Read back as RAW floats, not through the view that wrote them: a quarter turn about X is
+        // (w, x, y, z) = (h, h, 0, 0) and (x, y, z, w) = (h, 0, 0, h), so the component order shows here and
+        // would cancel in a round trip through the view.
+        float* raw = (float*)Unsafe.AsPointer(ref gv.Rot);
+        float h = MathF.Sqrt(0.5f);
+        check.Expect(MathF.Abs(raw[0] - h) < 1e-6f && MathF.Abs(raw[1] - h) < 1e-6f && raw[2] == 0f && raw[3] == 0f,
+                     "Gob.Rot holds the orientation as the engine's (w, x, y, z), not System.Numerics' order");
         gv.FadeAlpha = Clamp(2f, 0.25f);
-        check.Expect(gv.FadeAlpha == 1f && *(float*)(gob + EngineLayout.GobFadeAlpha) == 1f,
-                     "the integrator's output lands in Gob+0x10c, the field the draw folds and HitCheck reads");
+        check.Expect(gv.FadeAlpha == 1f,
+                     "the integrator's output lands in Gob's fade alpha, the field the draw folds and HitCheck reads");
 
         log.Info(check.Ok ? "DoorFade.SelfCheck: passed"
                           : "DoorFade.SelfCheck: FAILED -- the Alloy path stands down so the engine keeps FadeDoors");

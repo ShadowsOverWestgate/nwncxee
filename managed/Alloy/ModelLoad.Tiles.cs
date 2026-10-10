@@ -8,31 +8,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-55: the tile models of an area load, read ahead out of the area message itself.
-/// <para><b>Why not the whole tileset.</b> Offering every model a tileset declares read 408 MiB to serve 107
-/// on one SoW area (2348 models offered, ~263 wanted) and slowed every engine read behind it. The area names
-/// its own tiles, and <c>CNWCArea::LoadArea</c> @0x70e010 / Windows rva 0x7dba70 reads them out of
-/// <c>CNWCMessage</c> inside its own tile loop -- so the wanted set is unread message bytes ahead of the
-/// cursor while the loop runs, exactly as the static-placeable block is in
-/// <see cref="OfferObjects"/>.</para>
-/// <para><b>Where the peek anchors.</b> NOT at <c>CNWTileSetManager::GetTileSet</c>: between that call and the
-/// first tile the loop reads a VARIABLE block -- gated on <c>ServerSatisfiesBuild(0x2001, 0x24, 3)</c>, a
-/// <c>ReadBOOL</c>, a <c>ReadINT</c> count and then per grass entry a <c>ReadBYTE</c>, a length-prefixed
-/// <c>ReadCExoString</c> and eight <c>ReadFLOAT</c>s, then a second gate's <c>ReadBOOL</c> (Linux @0x80e84f,
-/// Windows @0x1407dc6a4; identical on both). The cursor there does not name a tile record. The anchor is
-/// instead the loop's own first <c>CNWTile::SetID</c> @0x632550 / rva 0x2c58a0, which the engine calls with
-/// the tile id it has just read: the id is the oracle the shape is proved against, and every later record is
-/// held to what was read ahead.</para>
-/// <para><b>The record</b>, verified on both builds (Linux @0x80eb9e-@0x80f57e, Windows
-/// @0x1407dd382-@0x1407dd4b8): <c>ReadINT</c> id, <c>ReadINT</c> orientation, <c>ReadINT</c> height,
-/// <c>MessageReadOverflow</c>, then <c>CNWCTile::LoadModel</c> -- which is the model read this feature exists
-/// to get ahead of -- then <c>ReadWORD</c> flags and one <c>ReadBYTE</c> per set bit of its low byte, in bit
-/// order: main light colour 1 and 2, source light colour 1 and 2, replacement texture, and three anim-loop
-/// bytes. Nothing in the loop reads sub-byte (<c>ReadBits</c> @0x5e8360 runs a SEPARATE bit stream at
-/// <c>msg+0x48</c> and never moves the byte cursor at <c>msg+0x44</c>), so a record is a whole number of
-/// bytes: <c>3*int + word + popcount(flags &amp; 0xff) * byte</c>, where each width carries
-/// <c>CNWMessage::ExpectType</c>'s @0x5e8300 leading type byte or does not, one global for the whole
-/// stream.</para></summary>
+/// <summary>The tile models of an area load, read ahead out of the area message itself -- the area's own tiles,
+/// not every model its tileset declares. The peek does NOT anchor at <c>CNWTileSetManager::GetTileSet</c>: a
+/// VARIABLE grass block sits between that call and the first tile, so the cursor there names no tile record. It
+/// anchors on the loop's own first <c>CNWTile::SetID</c>, whose id is the oracle the shape is proved against.</summary>
 internal static unsafe partial class ModelLoad
 {
     private static ExtenderLog? _tileLog;
@@ -85,7 +64,7 @@ internal static unsafe partial class ModelLoad
                  + "grid out of the message and offers their models in the order the loop will use them");
     }
 
-    /// <summary>CX-55: called at <c>LoadArea</c> entry, before the engine has read anything of this area. The
+    /// <summary>Called at <c>LoadArea</c> entry, before the engine has read anything of this area. The
     /// tile block state starts clean and the stand-down from a previous area is lifted.</summary>
     private static void ResetTilesForArea(IntPtr area)
     {
@@ -166,9 +145,10 @@ internal static unsafe partial class ModelLoad
         if (n == 1) ResetTiles();
     }
 
-    /// <summary>Accept a record shape only when the id the engine was handed reads back where that shape says
-    /// it is, every record of the grid fits the buffer and names a tile the tileset has. Fills
-    /// <see cref="_tileIds"/> as it goes, which is both the offer list and the per-record oracle.</summary>
+    /// <summary>Accept a record shape only when the id the engine was handed reads back where that shape says it
+    /// is, every record of the grid fits the buffer and names a tile the tileset has. A record is a whole number
+    /// of bytes -- <c>3*int + word + popcount(flags &amp; 0xff) * byte</c> -- where each width carries
+    /// <c>ExpectType</c>'s leading type byte or does not, one global for the whole stream.</summary>
     private static bool WalkTiles(byte* buf, uint len, uint cursor, int id, bool typed, int n, int tiles)
     {
         uint type = typed ? 1u : 0u;                     // ExpectType's leading byte, one per typed read
@@ -184,8 +164,8 @@ internal static unsafe partial class ModelLoad
             int t = *(int*)(buf + p + type);
             if ((uint)t >= (uint)tiles) return false;
             _tileIds[k] = t;
-            // CX-56: the grid IS the area's shape -- the id alone would key two areas laid out of the same
-            // tiles alike, so the record's orientation and height fold in beside it
+            // the id alone would key two areas laid out of the same tiles alike, so the record's orientation
+            // and height fold in beside it
             fold = Fold(Fold(Fold(fold, t), *(int*)(buf + p + step + type)), *(int*)(buf + p + 2 * step + type));
             p += ints;
             uint flags = *(ushort*)(buf + p + type) & (uint)TileFlagMask;
@@ -221,13 +201,10 @@ internal static unsafe partial class ModelLoad
                              + "tile models on the main thread, as it does without CX");
     }
 
-    /// <summary>Off-device, no engine: a message buffer is built in each of the two shapes the stream can have
-    /// -- three <c>ReadINT</c>s, a flags <c>ReadWORD</c> and one <c>ReadBYTE</c> per set low bit, with and
-    /// without <c>ExpectType</c>'s type byte ahead of every read -- and <see cref="WalkTiles"/> is asked to
-    /// recognise it from the cursor and the id the hook would have been handed at the first tile. The records
-    /// carry different flag words, so a walk that got the variable stride wrong cannot reach the last one.
-    /// Then the refusals: a cursor whose record does not carry that id, a grid that runs past the buffer, and
-    /// an id the tileset does not have.</summary>
+    /// <summary>Off-device, no engine: a message buffer is built in each of the two shapes the stream can have,
+    /// with records carrying different flag words so a walk that got the variable stride wrong cannot reach the
+    /// last one, and <see cref="WalkTiles"/> must recognise it from the cursor and the first tile's id. Then the
+    /// refusals: a wrong id, a grid running past the buffer, and an id the tileset does not have.</summary>
     internal static bool SelfCheckTiles(ExtenderLog log)
     {
         var check = new Checker(log, "ModelLoad.Tiles.SelfCheck");
@@ -273,8 +250,8 @@ internal static unsafe partial class ModelLoad
     }
 }
 
-/// <summary>CX-55's tile read-ahead install. Its own service because step 1 owns <c>ModelLoad</c>'s file and
-/// its install site; fold it into that one on merge.</summary>
+/// <summary>The tile read-ahead's one install, in its own service: <c>ModelLoad</c>'s own install site belongs
+/// to the model read.</summary>
 internal sealed class ModelTileLoadService : IExtenderService
 {
     public void Initialize(ExtenderLog log, HookService hooks) => ModelLoad.InstallTiles(log, hooks);

@@ -4,17 +4,10 @@ using Fmt = CX.Alloy.DdsReader.Fmt;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52: CPU BC1/BC2/BC3/BC7 block decoders -- level 0 of a DDS out as the RGB/RGBA raster a TGA of the
-/// same image would give. For the textures the engine forces uncompressed (cubes, <c>numx/numy</c> grids,
-/// controller textures), which <c>AurGetImageWrapper</c> @0x484cc0 never reads a DDS for, and for the coverage
-/// scan of formats the engine cannot name.
-/// <para>The S3TC spec's arithmetic in integers: 565 endpoints widened by bit replication, the two
-/// interpolants at (2a+b)/3 and (a+2b)/3; a BC1 block with c0 &lt;= c1 takes the half-way colour and black (the
-/// engine uploads DXT1 as <c>COMPRESSED_RGB_S3TC_DXT1</c>, so no punch-through alpha), a BC2/BC3 colour block is
-/// always four-colour, BC2 alpha is four bits widened by 17, and BC3's alpha ramp is the BC4 one. BC7 is the
-/// BPTC spec (GL 4.6 appendix C.2): eight modes, the 64 two- and three-subset partitions and their anchors, the
-/// 6-bit weights and <c>(e0*(64-w) + e1*w + 32) &gt;&gt; 6</c>; a reserved mode-8 block decodes to 0,0,0,0 (the D3D11 functional spec; Pillow gives opaque black). Rows stay
-/// in file order, as the compressed upload would have them. Pure: <c>tools/rastercheck</c> compiles it alone.</para></summary>
+/// <summary>CPU BC1/BC2/BC3/BC7 block decoders -- level 0 of a DDS out as the RGB/RGBA raster a TGA of the same
+/// image would give, for the textures the engine forces uncompressed (cubes, <c>numx/numy</c> grids, controller
+/// textures) and for the coverage scan of formats the engine cannot name. Rows stay in file order, as the
+/// compressed upload would have them. Pure: <c>tools/rastercheck</c> compiles it alone.</summary>
 internal static class BcnDecode
 {
     /// <summary>Formats this decoder takes.</summary>
@@ -42,7 +35,10 @@ internal static class BcnDecode
             }
     }
 
-    /// <summary>One BC1/BC2/BC3 block to 16 RGBA texels.</summary>
+    /// <summary>One BC1/BC2/BC3 block to 16 RGBA texels, the S3TC spec's arithmetic in integers: 565 endpoints
+    /// widened by bit replication, interpolants at (2a+b)/3 and (a+2b)/3. A BC1 block with c0 &lt;= c1 takes the
+    /// half-way colour and black -- the engine uploads DXT1 as <c>COMPRESSED_RGB_S3TC_DXT1</c>, so there is no
+    /// punch-through alpha; a BC2/BC3 colour block is always four-colour, and BC2's alpha nibble widens by 17.</summary>
     private static void S3tc(ReadOnlySpan<byte> b, Fmt f, Span<byte> tile)
     {
         Span<byte> pal = stackalloc byte[12];
@@ -163,7 +159,9 @@ internal static class BcnDecode
     private static bool IsAnchor(int ns, int part, int t)
         => t == 0 || (ns == 2 && t == Anchor2[part]) || (ns == 3 && (t == Anchor3a[part] || t == Anchor3b[part]));
 
-    /// <summary>One BC7 block to 16 RGBA texels.</summary>
+    /// <summary>One BC7 block to 16 RGBA texels, per the BPTC spec (GL 4.6 appendix C.2): eight modes, the 64
+    /// two- and three-subset partitions and their anchors, 6-bit weights and
+    /// <c>(e0*(64-w) + e1*w + 32) &gt;&gt; 6</c>. A reserved mode-8 block decodes to 0,0,0,0, not opaque black.</summary>
     private static void Bc7(ReadOnlySpan<byte> b, Span<byte> tile)
     {
         var v = BinaryPrimitives.ReadUInt128LittleEndian(b);

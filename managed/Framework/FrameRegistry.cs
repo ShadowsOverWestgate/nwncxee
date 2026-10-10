@@ -16,24 +16,11 @@ public enum FramePhase
 }
 
 /// <summary>
-/// The frame roll-call (#170, ADR 0014). A service joins the frame at <c>Initialize</c> instead of the host
-/// hardcoding a call to it, so the framework names no service -- mirroring the <c>UiHost</c> window registry
-/// beside it. ADR 0004 rejected the hardcoded shape in its own considered options and then fixed only the
-/// window half; this closes the amendment.
+/// The frame roll-call (ADR 0014): a service joins the frame at <c>Initialize</c> instead of the host hardcoding a
+/// call, so the framework names no service. Zero-alloc per frame, because this runs inside the present where a GC
+/// pause is a visible stutter: <see cref="Seal"/> flattens the lists to arrays once and nothing after it allocates.
+/// Priority orders the walk (low first, ties by registration), and a registration after Seal is refused and logged.
 /// </summary>
-/// <remarks>
-/// Zero-alloc per frame, which is the hard part: this runs on the render thread inside the present, where any
-/// GC pause is a visible stutter. Registration builds <see cref="List{T}"/>s, <see cref="Seal"/> flattens them
-/// to arrays once at init, and <see cref="Run"/> is a plain indexed walk invoking cached delegates. Nothing
-/// after <see cref="Seal"/> allocates, sorts, or enumerates.
-/// <para><b>Priority, not registration order.</b> Services are discovered alphabetically, which is not the
-/// order the frame needs -- <c>DrawFunnelService</c> initializes before <c>DrawStatsService</c> but must tick after
-/// it. Every participant states a priority (low runs first) exactly as <c>HookService.Chain</c> does for
-/// shared symbols (#88); ties fall back to registration order.</para>
-/// <para><see cref="Seal"/> happens-before the first frame: the host calls it just before
-/// <c>HookService.Commit()</c> installs the present hook, so the walk can never read a half-built list. A
-/// registration after that point is refused and logged rather than silently dropped.</para>
-/// </remarks>
 public sealed class FrameRegistry
 {
     /// <summary>The live registry the frame host walks. Services register onto this one.</summary>

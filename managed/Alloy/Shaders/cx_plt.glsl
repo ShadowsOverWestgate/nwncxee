@@ -24,9 +24,10 @@ layout(std430, binding = 24) readonly buffer CxPltBuf { uint uPltRow[]; };
 #define CX_PLT_LOD_CUT  4.0
 
 // Does this draw's diffuse resolve as a PLT? One scalar load, uniform across the primitive.
-// The length() test is what makes ENGINE mode defined rather than merely lucky: there the block is bound to a
-// buffer of exactly CX_PLT_WORDS zero words, so every record past the first is out of range and the first
-// reads a zero flag word. Without it an unbound binding is an undefined read, and one stray bit would resolve
+// The length() test is what makes a session with no PLT record defined rather than merely lucky: the block is
+// then bound to a buffer of exactly CX_PLT_WORDS zero words, so every record past the first is out of range
+// and the first reads a zero flag word. Without it an unbound binding is an undefined read, and one stray bit
+// would resolve
 // a wall through the palette.
 bool CxPltOn(int draw)
 {

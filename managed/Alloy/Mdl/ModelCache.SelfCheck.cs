@@ -4,7 +4,7 @@ using CX.Framework;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-113's off-device suite: a hand-built supermodel chain, a cycle, a missing supermodel, and the
+/// <summary>The off-device suite: a hand-built supermodel chain, a cycle, a missing supermodel, and the
 /// refcount / resident-set / binding / census contracts. No engine, no GL, no files -- the whole point of the
 /// <see cref="IModelSource"/> seam is that the cache can be driven from a dictionary.</summary>
 public static partial class ModelCache
@@ -203,17 +203,25 @@ public static partial class ModelCache
         check.Expect(MathF.Abs(FindAnimScale(top, new AnimDef { Name = "stranger" }) - 30f) < 1e-4f,
                      "an animation outside the chain did not get the whole product");
 
-        // ---- the memo answers exactly what the walk does ----
+        // ---- the memo, against the chain written out by hand: top owns walk unscaled, mid owns run one
+        // level up (x5), and every other name lands on base's terminal "default" (x5 x3).
         long rh = ResolveHits, rm = ResolveMisses;
-        foreach (string nm in new[] { "walk", "run", "sit", "default", "nothing_like_it" })
+        (string Ask, string Anim, ModelDef Owner, float Scale)[] want =
+        [
+            ("walk", "walk", top, 1f),
+            ("run", "run", mid, 5f),
+            ("sit", "default", bas, 15f),
+            ("default", "default", bas, 15f),
+            ("nothing_like_it", "default", bas, 15f),
+        ];
+        foreach (var w in want)
         {
-            AnimLookup got = Resolve(top, nm);
-            AnimDef? direct = FindAnimation(top, nm, out ModelDef? who);
-            check.Expect(ReferenceEquals(got.Anim, direct) && ReferenceEquals(got.Owner, who)
-                         && MathF.Abs(got.Scale - FindAnimScale(top, direct)) < 1e-5f,
-                         $"the memo disagrees with the walk for '{nm}'");
-            check.Expect(ReferenceEquals(Resolve(top, nm.ToUpperInvariant()).Anim, direct),
-                         $"the memo is case sensitive for '{nm}'");
+            AnimLookup got = Resolve(top, w.Ask);
+            check.Expect(got.Anim?.Name == w.Anim && ReferenceEquals(got.Owner, w.Owner)
+                         && MathF.Abs(got.Scale - w.Scale) < 1e-5f,
+                         $"the memo answers '{w.Ask}' with {got.Anim?.Name ?? "nothing"} at x{got.Scale}, not {w.Anim} at x{w.Scale}");
+            check.Expect(ReferenceEquals(Resolve(top, w.Ask.ToUpperInvariant()).Anim, got.Anim),
+                         $"the memo is case sensitive for '{w.Ask}'");
         }
         check.Expect(ResolveMisses == rm + 5 && ResolveHits == rh + 5,
                      $"the memo resolved {ResolveMisses - rm} times and hit {ResolveHits - rh}, not 5 and 5");

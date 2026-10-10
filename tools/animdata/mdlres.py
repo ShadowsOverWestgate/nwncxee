@@ -3,7 +3,7 @@
 
 Search order (highest first), mirroring the client's resman:
     1. user override/          (empty on this box, still checked)
-    2. the module's hak list, in module order: sow_top, sow_over_01, sow_core_01, ...
+    2. the module's hak list, in module order (HAKS, comma-separated, via tools/paths.py)
     3. the game's ovr/ directory
     4. data/nwn_base.key -> *.bif
 
@@ -13,13 +13,14 @@ Binary MDLs go through NeverBlender's pure-Python decompiler, same as tools/mdlc
 """
 import os, pickle, struct, subprocess, sys, tempfile
 
-sys.path.insert(0, os.environ.get("NEVERBLENDER", os.path.expanduser("~/repos/neverblender/NeverBlender")))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import paths  # noqa: E402  tools/paths.py: env, local.env, then the Steam library
+sys.path.insert(0, paths.require("NEVERBLENDER"))
 import nvb_decompile  # noqa: E402
 
-NWN_ROOT = os.environ.get("NWN_ROOT", "~/gry/steam/Neverwinter Nights")
+NWN_ROOT = os.environ.get("NWN_ROOT") or paths.require("NWN_DIR")
 NWN_HOME = os.path.expanduser("~/.local/share/Neverwinter Nights")
-HAK_ORDER = ["sow_top", "sow_over_01", "sow_core_01", "sow_core_02", "sow_part_01",
-             "sow_appr_01", "sow_item_01", "sow_envi_01", "sow_vfxs_01"]
+HAK_ORDER = [h.strip() for h in (paths.get("HAKS") or "").split(",") if h.strip()]
 RESTYPE_MDL = 2002
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "extract", "hakindex.pkl")
 

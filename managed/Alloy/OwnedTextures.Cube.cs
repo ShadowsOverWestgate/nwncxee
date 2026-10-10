@@ -6,13 +6,12 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52: cube textures, the one class of engine texture the 2D upload funnel never sees
-/// (<c>glImageBasic</c> routes <c>flagCube</c> to <c>CreateCubeTexture</c>). Owned the way <see cref="Adopt"/>
-/// owns a 2D one under <c>texsingle</c>: an Alloy-minted <c>GL_TEXTURE_CUBE_MAP</c> name is bound where the
-/// engine bound its own, the engine's upload runs into it (face cut, rotations, sampler state and mips are all
-/// the engine's code), and the cell array is handed Alloy's name while the engine's dies unused. Nothing in
-/// Alloy samples a cube map today -- the IBL probe and the 2D scene env map stand in -- so this is ownership
-/// of the object for its own sake: the engine's draws bind Alloy's cube. No scan and no BCn transcode.</summary>
+/// <summary>
+/// Cube textures, the one class of engine texture the 2D upload funnel never sees (<c>glImageBasic</c> routes
+/// <c>flagCube</c> to <c>CreateCubeTexture</c>). Owned as <see cref="Adopt"/> owns a 2D one: an Alloy-minted
+/// <c>GL_TEXTURE_CUBE_MAP</c> name is bound where the engine bound its own, the engine's upload runs into it, and
+/// the cell array is handed Alloy's name while the engine's dies unused. Nothing in Alloy samples it; no scan.
+/// </summary>
 internal static unsafe partial class OwnedTextures
 {
     private static RiCreateCubeTextureFn _origCreateCube;

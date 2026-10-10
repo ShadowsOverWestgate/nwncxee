@@ -4,24 +4,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120: <b>the DB-mode staleness audit</b> -- does what the GPU is about to draw still say what
-/// the database says?
-/// <para>DB mode is change-driven: a record is (re)written only when its part's <see cref="Dirty"/> bits say
-/// so, and only a record on the dirty list is UPLOADED (<c>Issue.UploadDraws</c> pushes runs, not the table).
-/// Vanilla had neither gate -- it rebuilt every draw from the engine every frame -- so a missing mark is a
-/// bug class that exists only here, and its symptom is a correct database drawing a wrong creature.</para>
-/// <para>Two questions, both answered by comparison rather than by reasoning about who marks what:</para>
-/// <list type="number">
-/// <item><b>Did the upload keep up?</b> Every buffer the draw reads per record -- the 72-float record, the
-/// eight bindless handles, the six PLT words -- is mirrored at the moment it is pushed. A live slot whose
-/// CPU value differs from its mirror is a record that CHANGED WITHOUT BEING MARKED: the GPU is drawing the
-/// previous value and nothing will ever correct it.</item>
-/// <item><b>Did the seat keep up?</b> The columns <c>DbWriteColumns</c> writes once per seating (recipe,
-/// class, lit, primitive) are recomputed from the live database and compared. A difference is a part whose
-/// material or model changed under a slot that was never re-seated.</item>
-/// </list>
-/// <para>Armed by <c>alloy.staleaudit</c> = frames between audits, 0 = off. Cold by construction: it runs
-/// once a period, allocates its mirrors once, and reports each offending part once per session.</para></summary>
+/// <summary>
+/// The DB-mode staleness audit: does what the GPU is about to draw still say what the database says? Only a
+/// record on the dirty list is uploaded, so a record that changes without being marked draws stale for good.
+/// Two comparisons catch it -- every per-record buffer against a mirror taken as it was pushed, and the
+/// once-per-seating columns recomputed from the live database. <c>alloy.staleaudit</c> = frames between audits.
+/// </summary>
 public sealed unsafe partial class AlloyRenderer
 {
     private static float[] _saRec = Array.Empty<float>();

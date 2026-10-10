@@ -6,11 +6,9 @@ using CX.Graphics;
 namespace CX.Alloy.Db;
 
 /// <summary>A texture's <c>.txi</c> beyond its sampler: the material words (<c>blending</c>, <c>decal</c>) and the
-/// <c>numx</c>/<c>numy</c> grid with its <c>proceduretype cycle</c> flipbook. The engine de-atlases a grid into one
-/// GL texture per cell (<c>GLRender::CreateTexture</c> @0x5ca2b0 cuts cell <c>k</c> at
-/// <c>((k % numx) * w/numx, (k / numx) * h/numy)</c>) and <c>CycleTIDTextureController::Control</c> @0x5d6c90 steps
-/// the shown cell; here the slot's one texture is cell-sized and the bracket re-uploads the cell it steps to, so a
-/// record's bindless handle never moves.</summary>
+/// <c>numx</c>/<c>numy</c> grid with its <c>proceduretype cycle</c> flipbook. The engine cuts cell <c>k</c> at
+/// <c>((k % numx) * w/numx, (k / numx) * h/numy)</c>; here one cell-sized texture per slot is re-uploaded as
+/// <c>CycleTIDTextureController::Control</c> @0x5d6c90 steps the cell, so a record's bindless handle never moves.</summary>
 internal static unsafe partial class TexRegistry
 {
     /// <summary><c>blending</c> as <c>Material::ParseField</c> @0x5c5850 stores it: <c>additive</c> is the pair

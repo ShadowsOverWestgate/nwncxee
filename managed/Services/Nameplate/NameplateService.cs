@@ -13,25 +13,16 @@ using CX.Ui;
 namespace CX.Services.Nameplate;
 
 /// <summary>
-/// The overhead nameplate and chat bubble: one <see cref="Window"/> that draws every world-anchored plate
-/// and bubble, four cold hooks that feed it, and the <c>nameplate</c> group (<see cref="NameplateKnobs"/>: the
-/// panel rows, <c>/nameplate</c> and the <c>cx.cfg</c> keys) read on the frame.
-/// <para>Vanilla is suppressed by putting the engine in text-bubble mode 0 (the supported "Off" setting),
-/// which stops it drawing either element while leaving every piece of state we poll intact -- including the
-/// projected screen anchor, which under mode 0 is refreshed every tick for every bubble-owning object.</para>
-/// <para><c>nameplate.enabled</c> is live both ways (#591): the frame compares it with <see cref="_suppressed"/>
-/// and on the edge hands the engine mode 0 or its own last-requested mode back (<see cref="EngineMode"/>). While
-/// off the hooks forward the real mode, bank nothing and leave the engine's chat-wins latch alone, so the stock
-/// names and bubbles draw. On re-enable every bubble that idled under vanilla carries the hide bit; the hooks
-/// clear it per object (<see cref="NameplateNative.UnfreezeAnchor"/>) as the plate, line or floaty arrives.</para>
-/// <para>Nothing here reads the Alloy camera: the plate anchor is the engine's own projection, and the
-/// distance fade reads the LIVE game camera off the module (<c>CNWCModule+0xe8</c>).</para>
+/// The overhead nameplate and chat bubble: one <see cref="Window"/> that draws every world-anchored plate and
+/// bubble, four cold hooks that feed it, and the <c>nameplate</c> group read on the frame. Vanilla is suppressed
+/// by putting the engine in text-bubble mode 0 (its own supported "Off" setting), which stops it drawing either
+/// element while still refreshing every bubble-owning object's projected anchor each tick. Live both ways.
 /// </summary>
 public sealed unsafe class NameplateService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static bool _armed, _wasInModule;
-    /// <summary>The engine is at mode 0 by our hand. Written on the frame at the master's edge, read by the cold
+    /// <summary>The engine is at text-bubble mode 0 by our hand. Written on the frame at the master's edge, read by the cold
     /// hooks (forward 0 or the real mode; bank or not; clear the latch or not) and by <see cref="Suppressing"/>.</summary>
     private static volatile bool _suppressed;
     /// <summary>False when the chat handler did not hook: per-channel styling then degrades to one style
@@ -39,9 +30,9 @@ public sealed unsafe class NameplateService : IExtenderService
     private static bool _chatHooked;
 
     /// <summary>Whether the vanilla text-bubble mode-0 suppression is in force. While it is -- and only while
-    /// it is -- the engine refreshes every bubble-owning object's projected screen anchor every tick
-    /// (CX-179 §D), which is the anchor <c>CombatTextService</c> reads. It checks this before
-    /// swallowing anything, so a stood-down OR switched-off nameplate feature stands the combat text down with it.</summary>
+    /// it is -- the engine refreshes every bubble-owning object's projected screen anchor every tick, which is the
+    /// anchor <c>CombatTextService</c> reads. It checks this before swallowing anything, so a stood-down OR
+    /// switched-off nameplate feature stands the combat text down with it.</summary>
     public static bool Suppressing => _suppressed;
 
     private static readonly PlateTable _table = new();
@@ -64,7 +55,7 @@ public sealed unsafe class NameplateService : IExtenderService
     /// handler, and a stale byte would mis-style it.</summary>
     private static int _channel = -1;
 
-    /// <summary>The nameplate unit (#420): every symbol the plates cannot run without. Optional and NOT listed:
+    /// <summary>The nameplate unit: every symbol the plates cannot run without. Optional and NOT listed:
     /// HandleServerToPlayerChat (per-channel styling degrades to one style), GetViewPort (falls back to the
     /// camera rect), GetObjectName (names fall back to the creature stats read).</summary>
     private static readonly string[] RequiredSymbols =
@@ -84,8 +75,8 @@ public sealed unsafe class NameplateService : IExtenderService
         PlateTable.SelfCheck(log);
         UiCategory.Declare();   // the UI groups declare in panel order whether or not the hooks arm
 
-        if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // #420: whole or nothing
-        if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable",   // #432: same, for offsets
+        if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // whole or nothing
+        if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable",   // same, for offsets
                                   "CNWCCreatureStats", "CGuiInGamePopUpBubble", "CNWCModule", "CNWCArea",
                                   "CClientExoApp", "CClientExoAppInternal", "Camera")) return;
 
@@ -126,11 +117,9 @@ public sealed unsafe class NameplateService : IExtenderService
     // ---- hooks -------------------------------------------------------------------------------
 
     /// <summary>Hook 1. <c>CGuiInGamePopUpBubble::SetChatBubbleMode(int)</c> is static and is the suppression:
-    /// whatever the options screen (or the startup ini bind) asks for, the engine is left at 0 while
-    /// <see cref="_suppressed"/>, so nothing of vanilla's ever draws. The requested value is kept in
-    /// <see cref="EngineMode"/> -- what the off edge hands back (#591). Unarmed or off, the value passes through
-    /// untouched: a stand-down must leave vanilla exactly as it found it, and this handler is live from
-    /// <c>Commit</c> whether or not the rest of the service armed. Cold (config/options thread).</summary>
+    /// whatever the options screen or the ini bind asks for, the engine is left at 0 while
+    /// <see cref="_suppressed"/>, and the requested value is kept in <see cref="EngineMode"/> for the off edge.
+    /// Unarmed or off it passes through untouched; this handler is live from <c>Commit</c> either way. Cold.</summary>
     [UnmanagedCallersOnly]
     private static void OnSetChatBubbleMode(int mode)
     {
@@ -145,8 +134,8 @@ public sealed unsafe class NameplateService : IExtenderService
     internal static volatile int EngineMode = -1;
 
     /// <summary>The user's mode when none was ever requested through the hook: 2 (Full), the config bind's
-    /// default (CX-179 §D). Not expected on the LD_PRELOAD / proxy-DLL load path, where the hook
-    /// is live before the ini bind runs.</summary>
+    /// default. Not expected on the LD_PRELOAD / proxy-DLL load path, where the hook is live before the ini
+    /// bind runs.</summary>
     private const int DefaultEngineMode = 2;
 
     /// <summary>Hook 2 (x3). Flag the plate's own text so the shared sink below can tell it from chat, then
@@ -166,15 +155,9 @@ public sealed unsafe class NameplateService : IExtenderService
     { _inPlate++; if (_origItemPlate != null) _origItemPlate(self); _inPlate--; }
 
     /// <summary>Hook 3. The one sink both elements pass through, and the only place the object is a clean
-    /// <c>CNWCObject*</c>. After the original runs: a plate's own text is recorded as a plate candidate (we
-    /// build our own string), anything else is a chat line and is queued with the engine's decay.
-    /// <para>The <c>+0x14c</c> reset at the tail is load-bearing. Under mode 0 nothing else ever clears that
-    /// latch, and <c>MouseOver</c> refuses to build a plate while it is 1 -- without the reset a creature's
-    /// plate dies permanently the first time it speaks. We enforce chat-wins ourselves instead.</para>
-    /// <para>Both tail writes follow the LIVE state, not the master: under vanilla (<see cref="_suppressed"/>
-    /// false) the latch is the engine's own "chat wins over the plate" rule and stays; the hide-bit clear is the
-    /// re-enable remedy (<see cref="NameplateNative.UnfreezeAnchor"/>). Off, nothing is banked, so neither the hook
-    /// ring nor the table fills with candidates no frame will ever draw.</para></summary>
+    /// <c>CNWCObject*</c>. After the original runs, a plate's own text is recorded as a plate candidate and
+    /// anything else is queued as a chat line with the engine's decay. The <c>+0x14c</c> reset at the tail is
+    /// load-bearing: under text-bubble mode 0 nothing else clears it and <c>MouseOver</c> then never builds a plate.</summary>
     [UnmanagedCallersOnly]
     private static void OnSetPopUpBubbleText(IntPtr self, IntPtr exo, int forceShow, float perChar, float fixedSec)
     {
@@ -438,7 +421,7 @@ public sealed unsafe class NameplateService : IExtenderService
         Publish(hitN);
     }
 
-    /// <summary>The master's edge, on the frame (the one thread the engine mode is written from): on = mode 0 and
+    /// <summary>The master's edge, on the frame (the one thread the bubble mode is written from): on = text-bubble mode 0 and
     /// the table starts empty, so every entry is re-noted through the hooks and its anchor unfrozen; off = the
     /// engine's own mode back (one cold <c>ReloadModel</c> walk) and the table dropped, since nothing would keep
     /// its entries' anchors fresh.</summary>
@@ -448,7 +431,7 @@ public sealed unsafe class NameplateService : IExtenderService
         _table.Clear();
         int mode = on ? 0 : (EngineMode >= 0 ? EngineMode : DefaultEngineMode);
         if (_origSetMode != null) _origSetMode(mode);
-        _log?.Info($"[nameplate] master {(on ? "on: engine at mode 0" : $"off: engine mode {mode} restored")}");
+        _log?.Info($"[nameplate] master {(on ? "on: engine at text-bubble mode 0" : $"off: engine bubble mode {mode} restored")}");
     }
 
     /// <summary>COLD, one shot per probe press: every term of the anchor conversion, so a residual
@@ -695,11 +678,10 @@ public sealed unsafe class NameplateService : IExtenderService
         }
     }
 
-    /// <summary>One line of a plate NAME. Same glyphs as <see cref="EmitString"/>, except that a char the
-    /// name's own <c>&lt;cRGB&gt;</c> tags coloured wins over the reaction colour -- the fallback rule
-    /// <see cref="EmitRuns"/> already applies to an override's untagged runs, now applied to the name too.
-    /// <paramref name="colours"/> is indexed by char of <c>Entry.Name</c>, so the line's own char offset is
-    /// passed in rather than assumed to be zero.</summary>
+    /// <summary>One line of a plate NAME. Same glyphs as <see cref="EmitString"/>, except that a char the name's
+    /// own <c>&lt;cRGB&gt;</c> tags coloured wins over the reaction colour. <paramref name="colours"/> is indexed
+    /// by char of <c>Entry.Name</c>, so the line's own char offset is passed in rather than assumed to be
+    /// zero.</summary>
     private static void EmitNameLine(ref int n, GlyphAtlas atlas, ReadOnlySpan<char> s, uint[]? colours,
                                      int offset, float penX, float baseline,
                                      float r, float g, float b, float a)
@@ -721,11 +703,10 @@ public sealed unsafe class NameplateService : IExtenderService
         }
     }
 
-    /// <summary>Emit one run of already-parsed, per-rune-coloured text and return the pen. The one place
-    /// colour runs become glyphs: the bubble's wrapped spans and the plate's override lines both come through
-    /// here, so an override's <c>&lt;cRGB&gt;</c> tags render exactly as a chat line's do.
-    /// <para><paramref name="fallbackRgb"/> re-colours only runes the parser left at plain white, which is how
-    /// a channel style tints untagged text without overriding the author's own colours.</para></summary>
+    /// <summary>Emit one run of already-parsed, per-rune-coloured text and return the pen. The one place colour
+    /// runs become glyphs: the bubble's wrapped spans and the plate's override lines both come through here.
+    /// <paramref name="fallbackRgb"/> re-colours only runes the parser left at plain white, which is how a
+    /// channel style tints untagged text without overriding the author's own colours.</summary>
     private static float EmitRuns(ref int n, GlyphAtlas atlas, List<Rune> runes, uint[] colours,
                                   int from, int to, float penX, float baseline, float a,
                                   uint fallbackRgb, float shear, out uint tailRgb)
@@ -756,9 +737,9 @@ public sealed unsafe class NameplateService : IExtenderService
     }
 
     /// <summary>Where an entry's <c>ObjectTextBubbleOverride</c> lands on the plate, resolved once and used by
-    /// both the measure and the emit. The engine composes ONE string, <c>name\nband</c>, and glues the
-    /// override onto its head or tail (CX-179 §8.5) -- so the segment at the joint continues an
-    /// existing line and the rest become lines of their own.</summary>
+    /// both the measure and the emit. The engine composes ONE string, <c>name\nband</c>, and glues the override
+    /// onto its head or tail -- so the segment at the joint continues an existing line and the rest become
+    /// lines of their own.</summary>
     private struct OverrideLayout
     {
         public bool ShowName, ShowBand;
@@ -1099,15 +1080,10 @@ public sealed unsafe class NameplateService : IExtenderService
 
     // ---- portraits ---------------------------------------------------------------------------
 
-    /// <summary>Second pass, the chat renderer's shape: resolve EVERY texture id and build ALL the geometry
-    /// first, because <c>AurTextureGet</c>'s create path can touch GL and rebind <c>ARRAY_BUFFER</c> -- it
-    /// must never run between our BindBuffer and BufferData. Then one upload and one bind+draw per plate.
-    /// A texture id of 0 means the engine has not uploaded it yet: skip that plate this frame.</summary>
-    /// <summary>One line per NEW portrait texture, the first eight: level-0 size, internal format, level-1
-    /// size, mip range, filter, and a hash of levels 0 and 1 as the driver holds them. Read off the ENGINE's
-    /// texture, because that is what the plate samples -- so two machines disagreeing on the hash of the
-    /// same portrait is an upload/decode divergence, and agreeing while the plate looks different is a
-    /// draw one. Cold: once per portrait name; the readback is a sync, spent eight times a session.</summary>
+    /// <summary>One line per NEW portrait texture, the first eight: level-0 size, internal format, level-1 size,
+    /// mip range, filter, and a hash of levels 0 and 1 as the driver holds them. Read off the ENGINE's texture,
+    /// because that is what the plate samples. Cold: once per portrait name; the readback is a sync, spent eight
+    /// times a session.</summary>
     private static void PortraitDiag(int tid, string resref)
     {
         if (_diagN >= _diagTids.Length || !GlContextService.Available) return;
@@ -1154,6 +1130,10 @@ public sealed unsafe class NameplateService : IExtenderService
         return x;
     }
 
+    /// <summary>Second pass, the chat renderer's shape: resolve EVERY texture id and build ALL the geometry first,
+    /// because <c>AurTextureGet</c>'s create path can touch GL and rebind <c>ARRAY_BUFFER</c> -- it must never run
+    /// between our BindBuffer and BufferData. Then one upload and one bind+draw per plate. A texture id of 0 means
+    /// the engine has not uploaded it yet: skip that plate this frame.</summary>
     private static void DrawPortraits(int count)
     {
         if (count <= 0 || !AurTex.Ready || !TextRig.EnsurePortraitProgram()) return;
@@ -1203,17 +1183,15 @@ public sealed unsafe class NameplateService : IExtenderService
     /// never sees a button-up with no button-down.</summary>
     private static bool _plateGrab;
 
-    /// <summary>Click a plate's NAME to start a tell to it. Reuses the chat's own Tell entry path
-    /// (<see cref="ChatService.StartTell"/>) -- the same one the chat portrait click uses.
-    /// <para>This window publishes NO hit-test override, so the pointer over a plate is not framework UI: the
-    /// cursor stays the engine's and every click outside the narrow name box falls straight through to the game
-    /// world. Opt-in (<c>nameplate.clicktotell</c> ships off) because even the name box is world
-    /// the player would otherwise have clicked.</para></summary>
     /// <summary>A plate name as one line again, for the chat entry: the name carries the LFs
     /// <c>PlateLayout.BreakName</c> put there, and an embedded newline in a <c>/tell</c> prefill is a bug.
     /// Cold (a click), so the copy costs nothing that matters; a break-free name is returned as-is.</summary>
     private static string Flatten(string name) => name.IndexOf('\n') < 0 ? name : name.Replace('\n', ' ');
 
+    /// <summary>Click a plate's NAME to start a tell to it, through the chat's own Tell entry path
+    /// (<see cref="ChatService.StartTell"/>). This window publishes NO hit-test override, so the pointer over a
+    /// plate is not framework UI: the cursor stays the engine's and every click outside the narrow name box falls
+    /// through to the world. Opt-in, because even the name box is world the player would otherwise have clicked.</summary>
     private static bool OnPlateClick(bool down, int button, int x, int y)
     {
         if (button != 1) return false;

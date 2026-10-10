@@ -7,32 +7,23 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>The bake cache (#666): one blob per page bake under <c>cx-charts/</c> beside the chart ledger --
-/// the bake's union readback (uint32 RG11B10F texels, then RGBA8, <c>uw x uh</c> each) deflated behind a table
-/// of the rects it holds (key, place inside the union). An in-memory index over every blob's table (built once
-/// at thread start, a later bake of a key wins) answers a probe with a reference into the inflated union, so
+/// <summary>The bake cache: one blob per page bake under <c>cx-charts/</c> -- the bake's union readback
+/// deflated behind a table of the rects it holds -- with an in-memory index over every blob's table, so
 /// adoption is one row-strided <c>glTexSubImage3D</c> per page and no allocation. Per-rect files were the
-/// load: 7425 opens + a utime write each behind an 18k-file sweep took 10 s on a cold box (2026-09-21).
-/// Reads and writes on one background thread (<c>cx-lmcache</c>); the render thread hands over keys and
-/// takes back answers through two queues. Shares the chart ledger's byte budget (<c>lightmap.disk</c>, one
-/// directory, one prune over every file in it): the writer prunes oldest-first every <see cref="PruneEvery"/>
-/// blobs -- a pruned blob is a whole page's cache gone, and its index entries miss on the next load.
-/// <para>ponytail: the ledger's own running tally does not see these bytes until it re-settles (it counts
-/// only its own writes); the prune here keeps the directory under budget either way. Upgrade path if the two
-/// ever fight: one shared tally behind a lock in <c>MeshChart.Ledger</c>.</para></summary>
+/// load: thousands of opens behind an 18k-file sweep took ten seconds on a cold box.</summary>
 internal sealed class BakeCache
 {
     /// <summary>"CXLP" little-endian.</summary>
     private const uint Magic = 0x504c5843;   // not-an-offset: the file's first four bytes
     /// <summary>Bumped with every change to what a baked texel holds or how the file is laid out: a file from
-    /// an older bake is stale, whatever its key. 8 = page blobs (7 was one file per rect); 9 = the header
-    /// carries the union's page and origin, so CX-56's area cache uploads a union whole instead of per rect; 10 = a third
-    /// plane, C, the mover shares (<see cref="LightmapBake.TexelBytes"/>); 11 = C by each rect's pick, not an area channel.</summary>
+    /// an older bake is stale, whatever its key. 9 = the header carries the union's page and origin, so an
+    /// area cache uploads a union whole instead of per rect; 10 = a third plane, C, the mover shares;
+    /// 11 = C by each rect's pick, not an area channel.</summary>
     internal const int Version = 11;
     /// <summary>Blobs written between prunes (a blob is a page: 32 is a budget's worth).</summary>
     private const int PruneEvery = 32;
     internal const string Ext = ".lmp";
-    /// <summary>CX-56: the area plan beside the page blobs, named by the area key.</summary>
+    /// <summary>The area plan beside the page blobs, named by the area key.</summary>
     internal const string AreaExt = ".lma";
 
     /// <summary>One rect inside a blob's union: its key and place (relative to the union's origin).</summary>
@@ -40,7 +31,7 @@ internal sealed class BakeCache
     /// <summary>Where a blob's union sits on its page: the layer and the origin the readback was taken at.</summary>
     internal struct Union { internal string File; internal int Page, X0, Y0, W, H; }
     /// <summary>A probe (Rect &gt;= 0), its answer (Data = the union or null, X/Y/Uw/Uh place the rect in it),
-    /// a write (Data = the union readback, Table = its rects), or CX-56's area-plan read/write (Area).</summary>
+    /// a write (Data = the union readback, Table = its rects), or an area-plan read/write (Area).</summary>
     private struct Job
     {
         internal int Rect; internal ulong Key; internal int W, H;
@@ -50,7 +41,7 @@ internal sealed class BakeCache
     }
     private readonly Queue<Job> _in = new();
     private readonly Queue<Job> _out = new();
-    /// <summary>CX-56: area-plan answers, their own queue so a plan never queues behind a page of probes.</summary>
+    /// <summary>Area-plan answers, their own queue so a plan never queues behind a page of probes.</summary>
     private readonly Queue<(ulong Key, LightmapAreaPlan? Plan)> _outArea = new();
     private readonly object _gate = new();
     private Thread? _thread;
@@ -68,7 +59,7 @@ internal sealed class BakeCache
     internal int Outstanding;
     /// <summary>Bytes the cache thread allocated this period (unions, deflate streams).</summary>
     internal long Allocated;
-    /// <summary>Page blobs read and inflated this session: one per blob a probe drain touched (CX-56 step 0).</summary>
+    /// <summary>Page blobs read and inflated this session: one per blob a probe drain touched.</summary>
     internal int Inflates;
     /// <summary>Per readback buffer: writes still reading from it. The render thread re-uses a buffer at 0.</summary>
     internal readonly int[] Busy = new int[4];
@@ -90,7 +81,7 @@ internal sealed class BakeCache
 
     /// <summary>Queue a page bake's union readback (A texels then B texels, <paramref name="uw"/> x
     /// <paramref name="uh"/> each) for the disk as one blob, with the rects it holds and where the union sits
-    /// on its page. Returns the blob's file name, minted here so the area plan (CX-56) can name it before the
+    /// on its page. Returns the blob's file name, minted here so the area plan can name it before the
     /// write lands.</summary>
     internal string Save(byte[] union, int buf, int page, int x0, int y0, int uw, int uh, Entry[] table)
     {
@@ -100,7 +91,7 @@ internal sealed class BakeCache
         return file;
     }
 
-    /// <summary>CX-56: read the area plan for <paramref name="key"/> and inflate every union its page plan
+    /// <summary>Read the area plan for <paramref name="key"/> and inflate every union its page plan
     /// names, so the area edge can install them whole. The answer -- a plan or a counted refusal -- comes back
     /// through <see cref="TryTakeArea"/>.</summary>
     internal void PrefetchArea(ulong key)
@@ -108,14 +99,14 @@ internal sealed class BakeCache
         lock (_gate) { _in.Enqueue(new Job { Rect = -1, Area = true, Key = key }); Monitor.Pulse(_gate); }
     }
 
-    /// <summary>CX-56: write an area plan, and touch the page blobs it names so a plan that is read every
+    /// <summary>Write an area plan, and touch the page blobs it names so a plan that is read every
     /// session does not outlive them under the prune.</summary>
     internal void SaveArea(LightmapAreaPlan plan)
     {
         lock (_gate) { _in.Enqueue(new Job { Rect = -1, Area = true, Write = true, Plan = plan }); Monitor.Pulse(_gate); }
     }
 
-    /// <summary>CX-56: an area-plan answer. Plan null = a miss or a refusal, already logged and counted.</summary>
+    /// <summary>An area-plan answer. Plan null = a miss or a refusal, already logged and counted.</summary>
     internal bool TryTakeArea(out ulong key, out LightmapAreaPlan? plan)
     {
         lock (_gate)
@@ -137,7 +128,7 @@ internal sealed class BakeCache
         }
     }
 
-    /// <summary>The world edge: answers in flight name rects that no longer exist. Writes and CX-56's area
+    /// <summary>The world edge: answers in flight name rects that no longer exist. Writes and area
     /// jobs are kept -- the area prefetch is posted at <c>LoadArea</c>'s return, which is BEFORE the edge that
     /// drains, and its answer is guarded by the area key on the way in.</summary>
     internal void Drain()
@@ -268,7 +259,7 @@ internal sealed class BakeCache
     }
 
     /// <summary>Header + table + deflated union; pure. The header names the page and the origin the readback
-    /// was taken at (v9), which is what lets CX-56 upload a union whole.</summary>
+    /// was taken at, which is what lets an area plan upload a union whole.</summary>
     internal static void SerializeTo(Stream s, int page, int x0, int y0, int uw, int uh, Entry[] table, byte[] union)
     {
         var bw = new BinaryWriter(s);
@@ -333,10 +324,10 @@ internal sealed class BakeCache
         if (++_writes % PruneEvery == 0) MeshChart.Prune(dir, (long)Lightmap.Disk.V << 20);
     }
 
-    /// <summary>CX-56, cache thread: the area plan and every union its page plan names, inflated and held for
+    /// <summary>Cache thread: the area plan and every union its page plan names, inflated and held for
     /// the area edge. A plan whose version, key or settings moved, or one of whose page blobs is gone or has
-    /// moved on its page, is refused by name and deleted -- the area then bakes from its rects as it always
-    /// did. Never throws: a stranded prefetch would leave the edge waiting for an answer that never comes.</summary>
+    /// moved on its page, is refused by name and deleted -- the area then bakes from its rects. Never throws:
+    /// a stranded prefetch would leave the edge waiting for an answer that never comes.</summary>
     private void ReadArea(ulong key)
     {
         string dir = MeshChart.LedgerDir();
@@ -386,7 +377,7 @@ internal sealed class BakeCache
         return plan;
     }
 
-    /// <summary>CX-56, cache thread: the plan of a complete visit, plus a touch on every page blob it names so
+    /// <summary>Cache thread: the plan of a complete visit, plus a touch on every page blob it names so
     /// the prune ages them together rather than leaving a plan pointing at files it outlived.</summary>
     private void WriteArea(LightmapAreaPlan plan)
     {

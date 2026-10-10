@@ -6,16 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>The <c>CAurObjectVisualTransformData</c> a <c>Gob</c> carries, kept exactly where the engine kept
-/// it: EMBEDDED IN THE SHELL at +0x1c0, ten <c>LerpFloat</c> records of 0x40 bytes each, in the order
-/// ScaleX, ScaleY, ScaleZ, RotateX, RotateY, RotateZ, TranslateX, TranslateY, TranslateZ, AnimationSpeed
-/// (<c>Gob::GetVisualTransformData</c> @0x436e70 is <c>return this + 0x1c0</c>, and the member names come from
-/// the server's own GFF writer <c>CNWSObject::SaveVisualTransform</c>; sizeof is 0x280, confirmed by
-/// <c>nm --print-size</c> on <c>CAurObjectVisualTransformData::s_IdentityVisualTransformData</c>).
-/// <para>Because the record is the engine's byte-for-byte, the seam samples it with the engine's own
-/// <c>LerpFloat::Lerped</c> instead of reimplementing a lerp whose internal fields were never decompiled. The
-/// game layer reads ScaleY/ScaleZ off this record directly (<c>CNWCObject.c:4929</c>), which is the second
-/// reason it has to live at the engine's offset rather than in a column.</para></summary>
+/// <summary>The <c>CAurObjectVisualTransformData</c> a <c>Gob</c> carries, kept where the engine keeps it:
+/// EMBEDDED IN THE SHELL at +0x1c0 (<c>Gob::GetVisualTransformData</c> @0x436e70), ten 0x40-byte
+/// <c>LerpFloat</c>s ordered ScaleX..Z, RotateX..Z, TranslateX..Z, AnimationSpeed; sizeof 0x280. The game
+/// layer reads ScaleY/ScaleZ off it directly, and the seam samples it with the engine's <c>LerpFloat::Lerped</c>.</summary>
 public static unsafe class VisualXform
 {
     /// <summary>Offset of the record inside the shell, and the stride and count of its <c>LerpFloat</c>s.</summary>
@@ -46,13 +40,10 @@ public static unsafe class VisualXform
         }
     }
 
-    /// <summary>Seed the record the way <c>Gob::Gob</c> @0x440a00 does. It is not all zeros: the three SCALE
-    /// lerps and ANIMATION SPEED start at 1.0, and only the rotate and translate ones start at 0 --
-    /// <c>*(this+0x1c4) = *(this+0x204) = *(this+0x244) = *(this+0x404) = 0x3f8000003f800000</c>, i.e. both
-    /// endpoints of each of those four at 1.0.
-    /// <para>Leaving them zero made <c>Gob::GetAdjustedScale</c> answer 0 for EVERY object -- which collapsed
-    /// every bounding box the game divides by (the main menu's backdrop came out at infinite scale and a NaN
-    /// position) and made <c>PlayAnimation</c>'s speed multiplier 0.</para></summary>
+    /// <summary>Seed the record the way <c>Gob::Gob</c> @0x440a00 does: the three SCALE lerps and ANIMATION
+    /// SPEED start at 1.0 at BOTH endpoints, rotate and translate at 0. All-zeros makes
+    /// <c>Gob::GetAdjustedScale</c> answer 0 for every object -- collapsed bounding boxes, NaN positions and a
+    /// <c>PlayAnimation</c> speed multiplier of 0.</summary>
     public static void Seed(nint shell)
     {
         if (shell == 0) return;

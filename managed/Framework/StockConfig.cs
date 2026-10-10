@@ -4,24 +4,11 @@ using CX.Engine;
 namespace CX.Framework;
 
 /// <summary>
-/// #571 (Path A-lite): read-only access to the player's STOCK settings -- <c>settings.tml</c> through the
-/// engine's own <c>CExoConfig::Get&lt;T&gt;</c>, so Alloy can honour what the player set in Game Options.
-/// Never writes (that would re-open ADR 0013's "third place"), and never reads per frame: every
-/// <c>Get</c> allocates on the engine side (a <c>std::map</c> lookup plus cpptoml's qualified-key
-/// substrings), so the graphics keys are taken as one <see cref="Snapshot"/> at the world edges -- the
-/// first world scene and every area change -- and the gates read the snapshot.
+/// Read-only access to the player's STOCK settings -- <c>settings.tml</c> through the engine's own
+/// <c>CExoConfig::Get&lt;T&gt;</c>, so Alloy can honour Game Options. Never writes, and never per frame (every
+/// <c>Get</c> allocates engine-side): the graphics keys are one <see cref="Snapshot"/> taken at the world edges.
+/// An unbound key answers the type's ZERO, so each key is paired with the type the engine binds it with.
 /// </summary>
-/// <remarks>
-/// <para>The call is <c>Get&lt;T&gt;(this, std::string const&amp; key, bool committed)</c>. <c>this</c> is
-/// <c>**g_pExoBase</c>; the key is a pointer to a <c>std::string</c> header that this file forges in the
-/// running platform's layout (libstdc++ <c>{ptr, len, buf[16]}</c>, MSVC <c>{buf[16] | ptr, size, res}</c>
-/// with <c>res &gt; 15</c> meaning the pointer is live) -- both callees read only pointer and length
-/// (<c>basic_string::compare</c> @0x4318d0, <c>std::less&lt;string&gt;</c> @0x140130ad0). The bool picks
-/// the committed table over the working one; the engine's own callers pass <c>false</c> and so does this.</para>
-/// <para>A key with no bind, or a bind of a different type, answers the type's zero rather than failing --
-/// so every key here is paired with the type <c>DefineClientConfiguration</c> @0x8ce7b0 binds it with,
-/// read off the <c>Bind&lt;T&gt;</c> call that follows each key string.</para>
-/// </remarks>
 public static unsafe class StockConfig
 {
     private static readonly IntPtr _exoBaseSym = Native.Sym(SymbolMap.ExoBase);
@@ -111,15 +98,10 @@ public static unsafe class StockConfig
 
     // ---- the graphics snapshot ------------------------------------------------------------------
 
-    /// <summary>The stock graphics keys Alloy honours or reports, as last taken. Every field keeps its
-    /// stock default until a read succeeds, so a client that cannot be read gates nothing.
-    /// <para>Bound types and meanings, from <c>DefineClientConfiguration</c>: <c>grass.mode</c> long
-    /// {0 off, 1 fast, 2 full}; <c>grass.render-distance</c> double; <c>lighting.enhanced</c>
-    /// bool -- its bind writes <c>g_bFullDynamicLighting</c> and shader int param 1 (FRAGMENT_LIGHTING);
-    /// <c>lighting.max-lights</c> long; <c>fbo.hdr-bloom.enabled</c> bool -- writes <c>g_nHDRFramebuffers</c>;
-    /// <c>keyholing.enabled</c> bool -- shader int param 8, which <c>Camera::RenderScene</c> folds into the
-    /// camera's keyhole byte; <c>gamma</c> double; <c>framelimiter.foreground.target-fps</c> long;
-    /// <c>video.anisotropic-filtering.mode</c> long {1,2,4,8,16} -- its bind writes <c>g_nTexAnisoFilterLevel</c>.</para></summary>
+    /// <summary>The stock graphics keys Alloy honours or reports, as last taken; every field keeps its stock default
+    /// until a read succeeds, so a client that cannot be read gates nothing. Bound types from
+    /// <c>DefineClientConfiguration</c>: <c>grass.mode</c> long {0 off, 1 fast, 2 full}, grass distance and gamma
+    /// double, max lights and target fps long, and the bools -- enhanced lighting, HDR bloom, keyholing, aniso.</summary>
     public struct Snapshot
     {
         public long GrassMode;

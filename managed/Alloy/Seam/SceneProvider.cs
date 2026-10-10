@@ -3,20 +3,16 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>Plugs the seam-scene stream's slot tables and hooks into the seam's registry.
-/// <para>seam-scene exposes its work as slot-index-to-entry-point arrays (<c>SceneSlots.Table</c>,
-/// <c>SceneOnlySlots.Table</c>, <c>CameraSlots.Table</c> / <c>PrimaryExtra</c>) and one
-/// <c>SceneFns.Install(log, hooks)</c>, rather than as an <see cref="ISeamProvider"/>. Both shapes are fine --
-/// the registry only needs a function pointer per slot -- so this adapter is where the two meet, and it lives
-/// with the installer because the installer is what has the <c>HookService</c>.</para>
-/// <para>A zero entry in one of those arrays is deliberate: it means "no CX body for this slot", and the
-/// builder fills it with the poison entry for that slot's NAME, which is what the boot census then prints.</para></summary>
+/// <summary>Plugs the seam-scene stream's slot tables (<c>SceneSlots.Table</c>, <c>SceneOnlySlots.Table</c>,
+/// <c>CameraSlots.Table</c> / <c>PrimaryExtra</c>) and <c>SceneFns.Install</c> into the seam registry, which
+/// only needs a function pointer per slot. A zero entry means "no CX body for this slot", and the builder fills
+/// it with the poison entry for that slot's NAME, which is what the boot census prints.</summary>
 public sealed unsafe class SceneProvider : ISeamProvider
 {
     internal static ExtenderLog? Log;
     internal static HookService? Hooks;
 
-    /// <summary>True once <see cref="SceneFns"/>' hooks took; the service stands DB mode down if they did not.</summary>
+    /// <summary>True once <see cref="SceneFns"/>' hooks took; the service stands the seam down if they did not.</summary>
     public static bool SceneHooksInstalled { get; private set; }
 
     public void Register(SeamRegistry r)
@@ -31,7 +27,7 @@ public sealed unsafe class SceneProvider : ISeamProvider
         if (Log != null && Hooks != null)
             SceneHooksInstalled = SceneFns.Install(Log, Hooks);
 
-        // The DB-mode frame boundary is armed HERE, not from the pass registry's Install walk. That walk runs
+        // The frame boundary is armed HERE, not from the pass registry's Install walk. That walk runs
         // only on a client where the Alloy renderer can arm ("everything above this line has already returned
         // in that case", AlloyRenderer.cs) -- so a session that installed the seam and then stood the renderer
         // down would have no engine scene layer AND no CX frame, which is a black screen with nothing to say

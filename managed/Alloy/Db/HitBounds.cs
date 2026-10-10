@@ -4,14 +4,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118: the bounds columns the hit test reads, kept current from the dirty list -- part-space
-/// boxes from each part's <see cref="MeshDef"/>, and per object the world box and the world sphere.
-/// <para>Change-driven, not per frame: <see cref="Refresh"/> is called for one object when its transform,
-/// tree or visibility changed, and it re-files that object in <see cref="HitGrid"/>. <see cref="Consume"/>
-/// does that over the objects table's dirty list, which is the hook the transform step (CX-120) owns.</para>
-/// <para>The part boxes come from the model, which is immutable, so a part's own-space box is computed once
-/// per part at tree build -- <see cref="PartBox"/> is called from <see cref="Refresh"/> only because the CX-114
-/// tree builder has not landed; it costs a model lookup per dirty part, not per frame.</para></summary>
+/// <summary>The bounds columns the hit test reads, kept current from the dirty list -- part-space boxes from
+/// each part's <see cref="MeshDef"/>, and per object the world box and world sphere. Change-driven, not per
+/// frame: <see cref="Refresh"/> runs for one object whose transform, tree or visibility changed and re-files it
+/// in <see cref="HitGrid"/>; <see cref="Consume"/> folds that over the objects table's dirty list.</summary>
 public static class HitBounds
 {
     /// <summary>Objects refreshed, and parts whose box was derived -- the counters the self-check reads.</summary>
@@ -65,17 +61,9 @@ public static class HitBounds
     }
 
     /// <summary>The quad <c>StringGob::HitCheck</c> @0x492920 tests, in the gob's own frame, or false for an
-    /// object that is not a text gob with a box set. The engine builds it from three fields:
-    /// <c>x</c> from <c>-(+0x54c)</c> to <c>(+0x54c) + MaxWidth</c>, <c>y</c> from <c>-MaxHeight</c> to 0, flat
-    /// on <c>z</c>; <c>+0x54c</c> is written 0 by the constructor and by nothing else on either build, so the
-    /// quad is <c>[0,MaxWidth] x [-MaxHeight,0]</c>. Note that it is the box the game SET
-    /// (<c>SetMaxWidth</c>/<c>SetMaxHeight</c>, or the corner pair <c>AttachCornersToObjects</c> hands over),
-    /// not the measured text -- so an unmeasured document still has its row.
-    /// <para>The engine's own two "no box" sentinels are refused here rather than filed: a width of 0 or a
-    /// height at or below <c>-5e-06</c> builds a quad with no area, which <c>polyhit</c> cannot land in.</para>
-    /// <para>This is the whole reason a GUI list row was unclickable: rows are part-less text gobs
-    /// (<c>kind=Text parts=0</c>) attached to the list control, the bounds came only from parts, so no row
-    /// ever entered <see cref="HitGrid"/> and every click fell through to the list frame behind them.</para></summary>
+    /// object that is not a text gob with a box set. <c>+0x54c</c> is 0 on both builds, so the quad is
+    /// <c>[0,MaxWidth] x [-MaxHeight,0]</c> -- the box the game SET, not the measured text. A width of 0 or a
+    /// height at or below <c>-5e-06</c> is the engine's "no box" sentinel and is refused rather than filed.</summary>
     internal static bool TextQuad(int o, out Vector3 lo, out Vector3 hi)
     {
         lo = default; hi = default;

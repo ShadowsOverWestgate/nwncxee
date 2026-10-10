@@ -5,24 +5,19 @@ using CX.Alloy.Db;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>The <c>CAurPart*</c> the seam hands the game, and the one Part vtable behind it.
-/// <para>The game never walks a part tree (CX-182 section 3): the only
-/// <c>Part*</c> it holds is what <c>Gob::GetPart(name)</c> returned, and the only thing it does with it is a
-/// VIRTUAL call through <c>Part</c> vtable slot 4 -- <c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c>,
-/// confirmed by dumping <c>_ZTV4Part</c> @0x186b2b8 -- plus storing it opaquely in
-/// <c>CAurBehaviorSubwindow</c> +0x30/+0x38 and <c>CAurBehaviorAttach</c> +0x30. Because that call is virtual,
-/// an encoded handle would not do: the game loads the pointer's first word as a vptr. So a part handed out is
-/// a small shell -- a CX header and a vptr -- cached per (object, part) and freed with its object.</para></summary>
+/// <summary>The <c>CAurPart*</c> the seam hands the game, and the one Part vtable behind it. The game never
+/// walks a part tree: the only <c>Part*</c> it holds is what <c>Gob::GetPart(name)</c> returned, and all it
+/// does with it is a VIRTUAL call through <c>Part</c> vtable slot 4 -- <c>Part::GetWorld</c>, dumped from
+/// <c>_ZTV4Part</c> @0x186b2b8 -- so a shell is real memory: a CX header plus a vptr, one per (object, part).</summary>
 public static unsafe class PartShell
 {
     private const ulong Magic = 0x5452_4150_5F58_43;   // not-an-offset: "CX_PART"
     /// <summary>Which slot <c>Part::GetWorld</c> is, from the measured <c>vtbl.GetWorld</c> row: Linux
     /// <c>+0x20</c> (slot 4), Windows <c>+0x18</c> (slot 3, the collapsed destructor pair). Read off the row
-    /// rather than derived as "Linux minus one", so the number is this build's measurement on both OSes
-    /// (review #12).</summary>
+    /// rather than derived as "Linux minus one", so the number is this build's measurement on both OSes.</summary>
     private static int GetWorldSlot => CX.Framework.EngineLayout.PartGetWorldSlot / sizeof(nint);
     /// <summary>Slots built. The game reaches only slot 4; the rest are the shared refusal, and the engine's
-    /// own Part code never runs in DB mode. 16 covers every slot any observed caller indexes.</summary>
+    /// own Part code never runs. 16 covers every slot any observed caller indexes.</summary>
     private const int Slots = 16;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -104,10 +99,9 @@ public static unsafe class PartShell
     }
 
     /// <summary>Retire every Part shell of <paramref name="obj"/>. They are QUARANTINED, not freed: the game
-    /// stores a <c>CAurPart*</c> for the life of a behaviour (<c>CAurBehaviorSubwindow</c> +0x30/+0x38,
-    /// <c>CAurBehaviorAttach</c> +0x30) and calls <c>Part::GetWorld</c> through it every frame from its own
-    /// <c>Control</c>, so a freed shell is a wild vptr. A retired one keeps its vptr and its header, answers
-    /// the identity transform, and names itself once -- the same contract as an object shell.</summary>
+    /// keeps a <c>CAurPart*</c> for the life of a behaviour (<c>CAurBehaviorSubwindow</c> +0x30/+0x38,
+    /// <c>CAurBehaviorAttach</c> +0x30) and calls <c>Part::GetWorld</c> through it every frame, so a freed
+    /// shell is a wild vptr; a retired one keeps vptr and header and answers the identity transform.</summary>
     public static void FreeAll(DbId obj)
     {
         if (!SceneDb.Objects.Valid(obj)) return;

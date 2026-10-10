@@ -7,43 +7,24 @@ using static CX.Ui.PanelChrome;
 namespace CX.Ui;
 
 /// <summary>
-/// The settings panel (docs/spec/unified-settings.md §3, #588): one centred window of three independently
-/// scrolling columns -- categories, the chosen category's submenus (one <see cref="KnobGroup"/> each,
-/// declaration order), the chosen submenu's rows under their section headers -- with a header (title, close).
-/// A row is the knob's label with its help wrapped beneath and the control right-aligned: toggle, slider with
-/// an inline value box that applies per motion, dropdown, text, swatch, or an action button whose press runs
-/// <see cref="KnobButton.Press"/>. Every edit is a registry set (instant apply; <see cref="KnobFile"/>
-/// debounces the write). Pure: pixels and keys in, sets and geometry out, no native refs, so it self-checks
-/// off-device. Layout runs cold on the input thread and publishes an immutable row list; <see cref="Emit"/>
-/// walks it every frame and allocates nothing -- a row's value text is cached and re-formatted only when its
-/// knob moved.
-/// <para>Semantics: the master is the boxed first row; an off master -- the group's own, or any ancestor's
-/// through <c>parent:</c> -- greys every value row to 42 % and makes it inert, while action and link rows stay
-/// live; an off ancestor also lays a warning strip above the rows. Advanced rows sit behind a collapsed
-/// disclosure, compact, with the <c>(?)</c> marker and a <see cref="Tooltip"/> where they have help. A blue
-/// dot marks an off-default row and a submenu holding one; <c>Reset to defaults</c> in the column head is
-/// <see cref="KnobGroup.ResetRows"/>. A Restart row wears the ↻ badge, amber once its value left the boot one.
-/// The status line and the header note lead the rows; a link row copies on press and flashes "copied"; a
-/// confirming button fires on its second press within <see cref="KnobButton.ConfirmSec"/>; a swatch expands to
-/// R/G/B/A channel rows in place (#589); a list lays one item row per entry under its label -- a text box and a
-/// remove × -- and a trailing empty box that appends, where Enter keeps adding.</para>
-/// <para>Faces: everything is measured in <see cref="Em"/>, the panel's own body face height (design
-/// <see cref="FacePx"/> × the game's GUI scale), never <c>ui.font</c>; help, section and path text use the
-/// <see cref="SmallPx"/> face of the same scale.</para>
-/// <para>Row source: by default the registry (the three columns above). A consumer that sets <see cref="Source"/>
-/// supplies its own <see cref="Categories"/> and, per relayout, its own rows through <see cref="Publish"/> --
-/// rows with no <see cref="Row.K"/>, carrying <see cref="Row.Act"/> + extras the consumer alone interprets --
-/// and takes the edits back through <see cref="RowPressed"/>, <see cref="ApplyValue"/> and
-/// <see cref="CommitLabel"/>; <see cref="SubFrac"/> 0 drops the submenu column. The chat window's per-window
-/// settings are that consumer (CX-696).</para>
+/// The settings panel: one centred window with a header and three independently scrolling columns --
+/// categories, the chosen category's submenus (one <see cref="KnobGroup"/> each, declaration order), the chosen
+/// submenu's rows under their section headers. Every edit is a registry set, applied at once. Pure: pixels and
+/// keys in, sets and geometry out, no native refs, so it self-checks off-device.
 /// </summary>
 public sealed partial class KnobPanel
 {
     public static readonly string[] KnobCategories = { "General", "Interface", "Graphics", "Audio", "Controls" };
+    /// <summary>The row-column head's action: <see cref="KnobGroup.ResetRows"/> over every group of the submenu.</summary>
     public const string ResetText = "Reset to defaults";
+    /// <summary>The disclosure row Advanced-tier rows sit behind, collapsed by default.</summary>
     public const string AdvancedClosed = "▸ Advanced", AdvancedOpen = "▾ Advanced";
+    /// <summary>Worn by a Restart-tier row, amber once its value has left the one it booted with.</summary>
     public const string BadgeText = "↻ restart";
+    /// <summary>A confirming button's caption after its first press; it fires on a second press within
+    /// <see cref="KnobButton.ConfirmSec"/>.</summary>
     public const string ConfirmText = "Click again to confirm";
+    /// <summary>Flashed by a link row, which copies its address on press.</summary>
     public const string CopiedText = "copied";
     /// <summary>Design face heights before the GUI scale: the body face, and the small face help / sections / the
     /// submenu path draw in (the prototype's 0.82 em).</summary>
@@ -53,7 +34,8 @@ public sealed partial class KnobPanel
     public float WFrac = 0.70f, HFrac = 0.75f, CatFrac = 0.18f, SubFrac = 0.22f;
     /// <summary>Rows one wheel notch scrolls a column by, in em.</summary>
     public const float WheelEm = 3.3f;
-    /// <summary>Opacity of a value row under an off master.</summary>
+    /// <summary>Opacity of a value row under an off master -- the group's own or any ancestor's through
+    /// <c>parent:</c> -- which is also inert; action and link rows stay live.</summary>
     public const float OffAlpha = 0.42f;
     /// <summary>How long a link row shows "copied" after a press.</summary>
     public const float CopiedSec = 1.5f;
@@ -72,16 +54,17 @@ public sealed partial class KnobPanel
     public enum RowKind { Note, Section, Knob, Status, Strip, Advanced, Channel, Item, Heading }
 
     /// <summary>One laid-out line of the knob column: a section header, a note (the group's header text), the
-    /// status line, the parent-off strip, the Advanced disclosure, a control row (a knob's, or a consumer's
-    /// with <see cref="K"/> null), one channel of an expanded swatch, or one entry of a list. Geometry is in list-content px (the
-    /// column's scroll offset and origin are added at draw and hit-test); the value state is a cache the draw
-    /// thread refreshes when the knob moved, or the consumer's own draw state.</summary>
+    /// status line, the parent-off strip, the Advanced disclosure, a control row (a knob's, or a consumer's with
+    /// <see cref="K"/> null), one channel of an expanded swatch, or one entry of a list. Geometry is in
+    /// list-content px -- the column's scroll offset and origin are added at draw and hit-test.</summary>
     public sealed class Row
     {
         public RowKind Kind;
         public Knob? K;
         /// <summary>The control a <see cref="RowKind.Knob"/> / <see cref="RowKind.Channel"/> row draws and
-        /// hit-tests: the knob's kind, or what the consumer set.</summary>
+        /// hit-tests, right-aligned past the label and its wrapped help: the knob's kind -- toggle, slider with an
+        /// inline value box that applies per motion, dropdown, text, swatch (which expands to R/G/B/A channel rows
+        /// in place), list, or an action button whose press runs <see cref="KnobButton.Press"/>.</summary>
         public KnobKind Ctl;
         /// <summary>The label (a knob's, or the consumer's), section / note text, a button's caption, or a channel's letter.</summary>
         public string Text = "";
@@ -184,7 +167,8 @@ public sealed partial class KnobPanel
     public float X, Y, W, H;
     /// <summary>The viewport the panel was laid out for.</summary>
     public float VpW, VpH;
-    /// <summary>The body face height in px: every metric is a multiple of it.</summary>
+    /// <summary>The body face height in px -- design <see cref="FacePx"/> times the game's GUI scale, never
+    /// <c>ui.font</c>. Every panel metric is a multiple of it.</summary>
     public float Em { get; private set; } = FacePx;
     /// <summary>The faces the layout measured with; the host re-fetches them by atlas epoch.</summary>
     public GlyphAtlas? Body, Small;
@@ -201,7 +185,8 @@ public sealed partial class KnobPanel
     public string[] Categories = KnobCategories;
     public int Category;
     public int Sub = -1;
-    /// <summary>The Advanced disclosure; closes when the submenu changes.</summary>
+    /// <summary>The Advanced disclosure; closes when the submenu changes. Its rows draw compact, with the
+    /// <c>(?)</c> marker and a <see cref="Tooltip"/> where they have help.</summary>
     public bool AdvOpen;
     /// <summary>One submenu: every group of the category that names it, in <see cref="KnobGroup.Order"/>.</summary>
     public sealed class SubMenu
@@ -387,10 +372,9 @@ public sealed partial class KnobPanel
     }
 
     /// <summary>Lay out the chosen submenu's rows for the current geometry and faces, then publish the list. Per
-    /// group (a shared submenu heads each with its title): the strip when an ancestor -- or its own chat-only
-    /// master -- is off, the header note, the panel status line, the User rows (master boxed first) with their
-    /// sections and any expanded swatch's channels; then one Advanced disclosure and, open, every group's
-    /// Advanced rows.</summary>
+    /// group (a shared submenu heads each with its title): the strip when an ancestor or its own chat-only master
+    /// is off, the header note, the panel status line, the User rows (master boxed first) with their sections and
+    /// any expanded swatch's channels; then one Advanced disclosure and, open, every group's Advanced rows.</summary>
     internal void LayoutRows()
     {
         if (Source != null) { Source(); return; }
@@ -1154,7 +1138,7 @@ public sealed partial class KnobPanel
     }
 
     // ---- text entry ----
-    /// <summary>The panel wants typed text: a field edit, or an open searchable list (#681).</summary>
+    /// <summary>The panel wants typed text: a field edit, or an open searchable list.</summary>
     public bool Editing => _editRow != null || Drop.Searching;
     public string EditText => _editText;
     public bool EditingRow(Row r) => ReferenceEquals(_editRow, r);
@@ -1183,10 +1167,9 @@ public sealed partial class KnobPanel
     }
 
     /// <summary>Commit: a searching list accepts its top match; a consumer text row hands the text to
-    /// <see cref="CommitLabel"/> and a consumer slider parses it for <see cref="ApplyValue"/>; a knob's text
-    /// goes through its own Parse (a slider clamps, a swatch wants rrggbbaa; a channel row takes 0–255); a list
-    /// item replaces its entry, appends from the add box, and is removed by an empty commit. Otherwise empty or
-    /// unparseable text keeps the old value.</summary>
+    /// <see cref="CommitLabel"/> and a consumer slider parses it for <see cref="ApplyValue"/>; a knob's text goes
+    /// through its own Parse (a slider clamps, a swatch wants rrggbbaa, a channel row takes 0–255); a list item
+    /// replaces its entry, appends from the add box, or is removed by an empty commit. Else the old value stands.</summary>
     public void CommitEdit() => Commit();
 
     /// <summary><see cref="CommitEdit"/>; true when a list gained or lost an item, so every row below it moved.</summary>
@@ -1275,13 +1258,14 @@ public sealed partial class KnobPanel
 
     // ---- draw (hot, zero-alloc) ----
 
-    /// <summary>The off-default dot: a small filled square centred on (<paramref name="cx"/>, <paramref name="cy"/>).</summary>
+    /// <summary>The off-default dot: a small filled square centred on (<paramref name="cx"/>, <paramref name="cy"/>),
+    /// drawn on a row whose value left its default and on a submenu holding one.</summary>
     private void Dot(VertexBatch b, float cx, float cy, float a = 1f)
         => Fill(b, cx - DotR, cy - DotR, cx + DotR, cy + DotR, Accent2, a);
 
     /// <summary>Draw the whole panel into <paramref name="b"/>: chrome, the columns clipped to their boxes,
     /// their scrollbars, then the open dropdown list and the tooltip on top. Reads cached geometry and cached
-    /// value text only.</summary>
+    /// value text only, and allocates nothing.</summary>
     public void Emit(VertexBatch b)
     {
         if (!Open || Body == null || Small == null) return;

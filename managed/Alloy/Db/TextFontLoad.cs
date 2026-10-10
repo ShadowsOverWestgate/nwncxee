@@ -3,15 +3,10 @@ using System.Globalization;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-119: the arithmetic half of loading a font CX-side -- the font-name token parse, the TTF atlas
-/// geometry, the per-glyph UV derivation, and the outline filter. Every number here is transcribed from the
-/// engine and nothing in this file touches the engine, the resource chain or GL, so all of it is checkable
-/// off-device.
-/// <para>In DB mode there is no <c>CAurFont</c> to bind to: the engine's render layer is never constructed, so
-/// no <c>CAurTextureBasic</c> ever parses a <c>.txi</c> or bakes an atlas. CX does both itself. For a TTF font
-/// that means calling the client's <b>own</b> statically linked <c>stb_truetype</c> (exported by name on both
-/// OSes) at the engine's own parameters, which is how glyph pixels match without pinning a library version --
-/// see <see cref="TextFontBake"/>.</para></summary>
+/// <summary>The arithmetic half of loading a font CX-side: the font-name token parse, the TTF atlas geometry,
+/// the per-glyph UV derivation and the outline filter. Every number is transcribed from the engine, and nothing
+/// here touches the engine, the resource chain or GL. There being no <c>CAurFont</c> to bind to, CX bakes the
+/// atlas itself through the client's own <c>stb_truetype</c> at the engine's parameters.</summary>
 public static class TextFontLoad
 {
     /// <summary>Resource types the font path reads: TTF, TXI, TGA, DDS. From the key table's restype column.</summary>
@@ -47,10 +42,9 @@ public static class TextFontLoad
     }
 
     /// <summary>The atlas CX must allocate for <paramref name="glyphs"/> glyphs at
-    /// <paramref name="pixelSize"/>, exactly as <c>CAuroraTTFTexture::Load</c> @0x11329d0 computes it:
-    /// height is the next power of two at or above <c>(int)pixelSize + 6</c>, width the next power of two at
-    /// or above <c>glyphs*3 + 3 + (int)(sqrt(glyphs) * pixelSize)</c>. It is a single-row strip, cropped
-    /// afterwards (<see cref="CropWidth"/>).</summary>
+    /// <paramref name="pixelSize"/>, as <c>CAuroraTTFTexture::Load</c> @0x11329d0 computes it: height the next
+    /// power of two at or above <c>(int)pixelSize + 6</c>, width the next at or above
+    /// <c>glyphs*3 + 3 + (int)(sqrt(glyphs) * pixelSize)</c>. A single-row strip, cropped by <see cref="CropWidth"/>.</summary>
     public static void AtlasSize(float pixelSize, int glyphs, out int width, out int height)
     {
         height = NextPow2((int)(long)pixelSize + 6);
@@ -82,11 +76,10 @@ public static class TextFontLoad
     public readonly record struct Packed(ushort X0, ushort Y0, ushort X1, ushort Y1,
                                          float XOff, float YOff, float XAdvance, float XOff2, float YOff2);
 
-    /// <summary>Turn one packed glyph into the engine's two coordinate <c>Vector</c>s, instruction for
-    /// instruction from <c>Load</c>'s loop at nm 0x1132d08. The v range is extrapolated out to the FULL line
-    /// box -- which is why <c>TextOut</c> can give every glyph the same vertical span -- and the u range
-    /// includes one padding texel on each side. <c>ul.z</c> is the left bearing, <c>lr.z</c> the advance,
-    /// both in u.</summary>
+    /// <summary>Turn one packed glyph into the engine's two coordinate <c>Vector</c>s, as <c>Load</c>'s loop at
+    /// nm 0x1132d08 does. The v range is extrapolated out to the FULL line box -- which is why <c>TextOut</c>
+    /// gives every glyph the same vertical span -- and the u range includes one padding texel each side;
+    /// <c>ul.z</c> is the left bearing, <c>lr.z</c> the advance, both in u.</summary>
     public static void GlyphCoords(in Packed p, int width, int height, int baseline, float pixelSize,
                                    out float ulU, out float ulV, out float ulZ,
                                    out float lrU, out float lrV, out float lrZ)
@@ -102,9 +95,8 @@ public static class TextFontLoad
 
     /// <summary>Texels of <see cref="GlyphCoords"/>'s v range that fall outside the glyph's own cell, above and
     /// below. The packer leaves <see cref="AtlasPadding"/> blank texels between rows and the outline filter
-    /// spreads ink one texel into them, so one texel either side of the box still belongs to this glyph and
-    /// everything past that is the next one's. Zero when the range already stops inside the cell.
-    /// <para>The answers are texels; the caller turns them into GUI units with the font's own scale.</para></summary>
+    /// spreads ink one texel into them, so one texel either side still belongs to this glyph. Zero when the
+    /// range stops inside the cell; the caller turns the texels into GUI units with the font's own scale.</summary>
     public static void GlyphTrim(in Packed p, int height, float ulV, float lrV,
                                  out float topTexels, out float botTexels)
     {

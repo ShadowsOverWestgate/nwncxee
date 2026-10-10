@@ -3,11 +3,10 @@ using System.Collections.Generic;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>One vtable CX builds and hands the game layer. The engine's concrete class, not the abstract
-/// interface: the pointer the game holds is the concrete object's, so the table it calls through carries the
-/// concrete slot count (<c>Gob</c> 94 on Linux / 93 on Windows, not <c>CAurObject</c>'s 80).
-/// <see cref="CAurString"/> and <see cref="Camera"/>'s secondary <c>Gob</c> table are reached through a
-/// second vptr inside the same shell.</summary>
+/// <summary>One vtable CX builds and hands the game layer -- the engine's CONCRETE class, not the abstract
+/// interface, so the table carries the concrete slot count (<c>Gob</c> 94 Linux / 93 Windows, not
+/// <c>CAurObject</c>'s 80). <see cref="CAurString"/> and <see cref="Camera"/>'s secondary <c>Gob</c> table sit
+/// behind a second vptr in the same shell.</summary>
 public enum SeamTable : byte
 {
     /// <summary>`Gob` -- what a `CAurObject*` points at. 94 Linux slots (0-79 the `CAurObject` interface,
@@ -29,24 +28,23 @@ public enum SeamTable : byte
     CameraGob = 5,
 }
 
-/// <summary>A CX-120 stream that owns some of the seam's vtable slots or engine-function replacements.
-/// Discovered by reflection at boot (like <c>IExtenderService</c>), so a stream adds a class implementing this
-/// and needs no edit to <see cref="SeamService"/>. <see cref="Register"/> runs on the boot thread, in type-name
-/// order, BEFORE any vtable is built and before any hook is installed -- so it may only record, never call the
-/// engine.</summary>
+/// <summary>A stream that owns some of the seam's vtable slots or engine-function replacements. Discovered by
+/// reflection at boot, so an implementor needs no edit to <see cref="SeamService"/>. <see cref="Register"/>
+/// runs on the boot thread in type-name order, before any vtable is built or hook installed -- it may only
+/// record, never call the engine.</summary>
 public interface ISeamProvider
 {
     /// <summary>Record this stream's slot implementations and engine-function replacements.</summary>
     void Register(SeamRegistry r);
 }
 
-/// <summary>CX-120's one registration surface: every seam slot implementation and every engine function the
-/// seam replaces is recorded here by its owning stream's <see cref="ISeamProvider"/>, and
-/// <see cref="SeamService"/> turns the record into per-OS vtables and one funchook batch. Boot-only; nothing
-/// here is touched again after <c>SeamService.Initialize</c> returns.</summary>
+/// <summary>The one registration surface: every seam slot implementation and every engine function the seam
+/// replaces is recorded here by its owning <see cref="ISeamProvider"/>, and <see cref="SeamService"/> turns
+/// the record into per-OS vtables and one funchook batch. Boot-only; nothing here is touched again after
+/// <c>SeamService.Initialize</c> returns.</summary>
 public sealed unsafe class SeamRegistry
 {
-    /// <summary>A recorded replacement: the engine symbol the seam answers instead of the engine, in DB mode.</summary>
+    /// <summary>A recorded replacement: the engine symbol the seam answers instead of the engine.</summary>
     internal readonly record struct Replacement(string Symbol, IntPtr Handler, int Priority, string Owner);
 
     private readonly IntPtr[] _impl = new IntPtr[SeamVtables.LogicalCount];
@@ -64,17 +62,10 @@ public sealed unsafe class SeamRegistry
     /// <summary>Every refusal this registration pass produced, logged by <see cref="SeamService"/>.</summary>
     internal readonly List<string> Refusals = new();
 
-    /// <summary>Claim slot <paramref name="linuxSlot"/> of <paramref name="table"/> for
-    /// <paramref name="impl"/>, the address of an <c>[UnmanagedCallersOnly]</c> static whose parameter list is
-    /// the slot's ABI on THIS OS (see <c>CX-183</c> section 4 for the 17 by-value
-    /// returns, which differ per OS and need a per-OS declaration).
-    /// <para>The slot index is always the LINUX index -- the canonical identity in
-    /// <c>tools/seam/aurora-seam-vtables.tsv</c>. The builder places it at the Windows index there when it
-    /// builds the Windows table, and drops it from a Windows table whose Windows home is a different vftable
-    /// of the same class (MSVC does not duplicate a secondary-base override into the primary vtable).</para>
-    /// <para>One implementation can serve several tables: slots that share an implementation symbol share one
-    /// logical id, so registering <c>(StringGob, 94)</c> also fills <c>(CAurString, 3)</c>. Registering both
-    /// with the same pointer is accepted; registering them with different pointers is refused.</para></summary>
+    /// <summary>Claim slot <paramref name="linuxSlot"/> (always the LINUX index, canonical in
+    /// <c>tools/seam/aurora-seam-vtables.tsv</c>; the builder maps it to the Windows index, or drops it where its
+    /// Windows home is another vftable) for <paramref name="impl"/>, an <c>[UnmanagedCallersOnly]</c> static with
+    /// the slot's ABI on THIS OS. Slots sharing an implementation share one logical id: one pointer, or a refusal.</summary>
     public void Slot(SeamTable table, int linuxSlot, void* impl)
     {
         int id = SeamVtables.Logical(table, linuxSlot);
@@ -99,11 +90,9 @@ public sealed unsafe class SeamRegistry
     }
 
     /// <summary>Replace engine function <paramref name="symbol"/> with <paramref name="handler"/> for the
-    /// session, in DB mode only. <see cref="SeamService"/> installs it through <c>HookService</c> in one batch
-    /// after every provider has registered; the handler never calls the original (the engine's scene graph
-    /// does not exist in DB mode), so no trampoline is handed back. A symbol two streams both claim is a
-    /// refusal, not a silent last-wins -- use <paramref name="priority"/> and <see cref="ChainEngine"/> when
-    /// sharing one is deliberate.</summary>
+    /// session; <see cref="SeamService"/> installs the batch once every provider has registered. No trampoline
+    /// comes back -- the handler never calls the original, there being no engine scene graph. Two streams
+    /// claiming one symbol is a refusal, not last-wins; share one deliberately via <see cref="ChainEngine"/>.</summary>
     public void ReplaceEngine(string symbol, void* handler)
     {
         foreach (Replacement r in _replacements)
@@ -113,7 +102,7 @@ public sealed unsafe class SeamRegistry
     }
 
     /// <summary>Share <paramref name="symbol"/> with another handler at <paramref name="priority"/>
-    /// (<c>HookService.Chain</c>, #88): the seam's stacked form, for a symbol a non-seam service also hooks.</summary>
+    /// (<c>HookService.Chain</c>): the seam's stacked form, for a symbol a non-seam service also hooks.</summary>
     public void ChainEngine(string symbol, void* handler, int priority)
         => _replacements.Add(new Replacement(symbol, (IntPtr)handler, priority, Owner));
 

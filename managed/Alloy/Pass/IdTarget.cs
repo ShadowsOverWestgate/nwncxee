@@ -4,19 +4,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #493, visibility-buffer slice 1: the vis-ID target. Alongside the depth prepass the opaque range writes a
-/// second attachment, one <c>R32UI</c> per render pixel packing the RECORD slot (the ownership slot, stable
-/// across frames -- not the per-pass draw index, which the cull reorders) and <c>gl_PrimitiveID</c>. Zero is
-/// "no owned opaque draw". Shading reads nothing from it yet; this slice proves it correct and cheap.
-/// <para>NOT the SSAO "visibility" term of <c>Issue.cs</c> -- that name was taken, so this one
-/// is the ID target / vis-ID everywhere in code and logs.</para>
-/// <para>It rides the prepass draws themselves (same FBO, same view-projection, same viewport), so render scale
-/// and the TAA jitter follow by construction: whatever the prepass depth is written at, so is this.</para>
-/// <para>Coverage is the prepass's: plain and keyhole sweeps plus the feature sweep (cutouts and wind-displaced
-/// batches discard through <c>DepthFeatFs</c>, so their IDs are cut to the same holes). The roof pair and
-/// flowmap stay out of the prepass and so out of the ID target -- forward-only, decided rather than pending.</para>
-/// <para>ponytail: 18 bits of slot (<see cref="AlloyRenderer.MaxRecords"/> + 1 &lt; 2^18) and 14 of primitive, so
-/// a single draw past 16383 triangles wraps its primitive field. RG32UI is the upgrade if a mesh is ever that big.</para>
+/// The vis-ID target: alongside the depth prepass the opaque range writes a second attachment, one
+/// <c>R32UI</c> per render pixel packing the RECORD slot (stable across frames, not the per-pass draw index
+/// the cull reorders) and <c>gl_PrimitiveID</c>. Zero is "no owned opaque draw" and coverage is the prepass's.
+/// ponytail: 18 bits of slot, 14 of primitive -- a draw past 16383 triangles wraps; RG32UI is the upgrade.
 /// </summary>
 internal static unsafe class IdTarget
 {
@@ -28,20 +19,28 @@ internal static unsafe class IdTarget
     internal static bool On => Renderer.IdTarget.V;
 
     private static ExtenderLog? _log;
-    private static uint _tex, _prog;
-    private static int _w, _h, _locTex;
-    private static bool _failed, _built, _armed, _checked;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name from the
+    /// dead context survives as a field nobody remembered to zero. <see cref="Armed"/> rides here because it
+    /// names the attachment the frame is drawing into, and no frame spans a context loss.</summary>
+    private sealed class IdTargetState
+    {
+        public uint Tex, Prog;
+        public int W, H, LocTex;
+        public bool Failed, Built, Armed, Checked;
+    }
+
+    private static IdTargetState _gl = new();
     private static int _writes;
 
     /// <summary>The vis-ID texture, 0 until the first prepass has written it at this size.</summary>
-    internal static uint Tex => _tex;
+    internal static uint Tex => _gl.Tex;
     /// <summary>Attached and cleared this pass: the retest call and the viz may rely on it.</summary>
-    internal static bool Armed => _armed;
+    internal static bool Armed => _gl.Armed;
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
     /// <summary>Context loss: the names are gone.</summary>
-    internal static void Forget() { _tex = 0; _prog = 0; _w = 0; _h = 0; _built = false; _failed = false; _armed = false; _checked = false; }
+    internal static void Forget() => _gl = new IdTargetState();
 
     /// <summary>The GLSL both halves share: the fragment output and the pack. Concatenated into every depth
     /// fragment stage so the three write the identical word.</summary>
@@ -57,28 +56,28 @@ internal static unsafe class IdTarget
     /// phase one only; the retest lands on the same image. The caller enables the colour mask.</summary>
     internal static bool Begin(int w, int h, bool clear)
     {
-        _armed = false;
-        if (!On || _failed || Gl.DrawBuffers == null || Gl.ClearBufferuiv == null) return false;
+        _gl.Armed = false;
+        if (!On || _gl.Failed || Gl.DrawBuffers == null || Gl.ClearBufferuiv == null) return false;
         if (!EnsureTarget(w, h)) return false;
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _tex, 0);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _gl.Tex, 0);
         uint* bufs = stackalloc uint[2] { Gl.NONE, Gl.COLOR_ATTACHMENT1 };
         Gl.DrawBuffers(2, bufs);
         // once per allocation, not per frame: driver-side validation is a CPU cost inside the Prepass term
-        if (!_checked)
+        if (!_gl.Checked)
         {
             uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
             if (status != Gl.FRAMEBUFFER_COMPLETE)
             {
                 End();
-                _failed = true;
+                _gl.Failed = true;
                 _log?.Info($"IdTarget: the frame FBO is incomplete with the R32UI attachment (0x{status:x}) -- the ID target stands down on this context");
                 return false;
             }
-            _checked = true;
+            _gl.Checked = true;
         }
         // draw-buffer INDEX 1, not the attachment enum; after DrawBuffers or the clear lands nowhere
         if (clear) { uint zero = 0; Gl.ClearBufferuiv(Gl.COLOR, 1, &zero); _writes++; }
-        _armed = true;
+        _gl.Armed = true;
         return true;
     }
 
@@ -97,19 +96,19 @@ internal static unsafe class IdTarget
     /// is detached by then, so sampling it is not the attached-texture feedback loop.</summary>
     internal static void Paint(int* viewport)
     {
-        bool armed = _armed;
-        _armed = false;   // per pass: a frame whose prepass stood down must not paint last frame's image
-        if (!armed || _tex == 0) return;
-        if (!_built) EnsureProgram();
-        if (_prog == 0) return;
+        bool armed = _gl.Armed;
+        _gl.Armed = false;   // per pass: a frame whose prepass stood down must not paint last frame's image
+        if (!armed || _gl.Tex == 0) return;
+        if (!_gl.Built) EnsureProgram();
+        if (_gl.Prog == 0) return;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, PostChain.Fbo);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.BindVertexArray(PostChain.FullscreenVao);
         new PassState(depth: false, depthWrite: false).Apply();
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _tex);
-        Gl.UseProgram(_prog);
-        Gl.Uniform1i(_locTex, 0);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.Tex);
+        Gl.UseProgram(_gl.Prog);
+        Gl.Uniform1i(_gl.LocTex, 0);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthMask(1);
@@ -119,26 +118,26 @@ internal static unsafe class IdTarget
     internal static string Stats(int frames)
     {
         int n = _writes; _writes = 0;
-        return _failed ? "idtarget STOOD DOWN" : !On ? "idtarget off" : n == 0 ? "idtarget idle"
-             : $"idtarget {(float)n / System.MathF.Max(frames, 1):F2} writes/frame at {_w}x{_h} R32UI";
+        return _gl.Failed ? "idtarget STOOD DOWN" : !On ? "idtarget off" : n == 0 ? "idtarget idle"
+             : $"idtarget {(float)n / System.MathF.Max(frames, 1):F2} writes/frame at {_gl.W}x{_gl.H} R32UI";
     }
 
     private static bool EnsureTarget(int w, int h)
     {
-        if (_tex != 0 && w == _w && h == _h) return true;
+        if (_gl.Tex != 0 && w == _gl.W && h == _gl.H) return true;
         if (w <= 0 || h <= 0) return false;
         // an integer texture under LINEAR is incomplete and samples zero
-        RenderTarget.Create(ref _tex, Gl.R32UI, w, h, Gl.NEAREST);
-        _w = w; _h = h; _checked = false;
+        RenderTarget.Create(ref _gl.Tex, Gl.R32UI, w, h, Gl.NEAREST);
+        _gl.W = w; _gl.H = h; _gl.Checked = false;
         _log?.Info($"IdTarget: vis-ID target {w}x{h} R32UI");
         return true;
     }
 
     private static void EnsureProgram()
     {
-        _built = true;
-        _prog = GlProgram.Graphics(PostChain.FullscreenVs, VizFs, _log, "IdTarget viz");
-        if (_prog != 0) _locTex = GlProgram.Loc(_prog, "uId");
+        _gl.Built = true;
+        _gl.Prog = GlProgram.Graphics(PostChain.FullscreenVs, VizFs, _log, "IdTarget viz");
+        if (_gl.Prog != 0) _gl.LocTex = GlProgram.Loc(_gl.Prog, "uId");
     }
 
     /// <summary>Integer hash (lowbias32) of the whole word to rgb: neighbouring triangles land on unrelated
@@ -154,7 +153,7 @@ internal static unsafe class IdTarget
         check.Expect(Slot(Pack(top, 16383)) == top && Prim(Pack(top, 16383)) == 16383, "slot and primitive round-trip at the ceilings");
         check.Expect(Pack(0, 0) != 0 && Slot(Pack(0, 0)) == 0, "slot 0 packs non-zero (zero is the empty pixel)");
         check.Expect((long)AlloyRecordsPlusOne() << PrimBits <= uint.MaxValue, "MaxRecords + 1 fits above the primitive bits");
-        check.Expect(OutDecl.Contains("<< 14") && PrimBits == 14, "the GLSL pack and PrimBits agree");
+        check.Expect(OutDecl.Contains($"<< {PrimBits}"), "the GLSL pack and PrimBits agree");
         check.Expect(AlloyRenderer.DepthFs.Contains(OutDecl) && AlloyRenderer.DepthKeyFs.Contains(OutDecl) && AlloyRenderer.DepthFeatFs.Contains(OutDecl),
           "every depth fragment stage declares the vis-ID output");
         check.Expect(AlloyRenderer.DepthFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);") && AlloyRenderer.DepthKeyFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);")

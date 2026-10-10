@@ -4,20 +4,10 @@ using CX.Framework;
 namespace CX.Services.Chat.Core;
 
 /// <summary>
-/// Time-driven chatbox animation state + curves (map #13 polish). Pure math + a few static floats, no
-/// native refs, so it self-checks off-device. Two moving parts:
-/// <list type="bullet">
-/// <item><b>Fade</b> -- a per-line alpha: fully visible for <see cref="HoldSec"/>, then ramped to 0 over
-/// <see cref="FadeSec"/>. Age is measured from <c>max(line, lastScroll)</c>, so a scroll
-/// resets that window's lines (the messages reappear, then fade again a minute later).</item>
-/// <item><b>Residual</b> -- one shared pixel offset applied to the whole body, eased toward 0 each frame.
-/// Slide-in (a new line pushes the column up) and smooth scroll (a wheel notch slides the gesture out) are
-/// the same mechanism: bump the residual, let it decay. Frame-rate independent (exponential toward 0).</item>
-/// </list>
-/// Read hot (the SwapBuffers draw), written cold (ingest / scroll). <see cref="Residual"/> is lock-free: the
-/// compound bumps (+=, *=) aren't atomic, so a bump landing exactly under a Tick's read-modify-write can
-/// rarely be lost -- one line then skips its slide, purely cosmetic. ponytail: a lock/Interlocked isn't
-/// worth stalling the hot draw to close a cosmetic miss. All values allocation-free.
+/// Time-driven chatbox animation: a per-line fade (full for <see cref="HoldSec"/>, then ramped to 0 over
+/// <see cref="FadeSec"/>, aged from <c>max(line, lastScroll)</c> so a scroll resets a window's lines) and one
+/// shared body <see cref="Residual"/> offset eased exponentially toward 0, bumped by both slide-in and smooth
+/// scroll. Read hot (draw), written cold. ponytail: Residual is lock-free -- a lost bump skips one slide.
 /// </summary>
 public static class ChatAnim
 {
@@ -47,7 +37,7 @@ public static class ChatAnim
     }
 
     /// <summary>Advance the residual to <paramref name="nowMs"/> (monotonic ms) and return it. Called once
-    /// per frame in the hot draw. <paramref name="tauMs"/> comes from the focused window (#41).</summary>
+    /// per frame in the hot draw. <paramref name="tauMs"/> comes from the focused window.</summary>
     public static float Tick(long nowMs, float tauMs = 70f)
     {
         double tau = tauMs / 1000.0 <= 0 ? 0.001 : tauMs / 1000.0;
@@ -102,7 +92,7 @@ public static class ChatAnim
         check.Expect(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 1), t0, never, false, holdSec, fadeSec) == 1f, "disabled: fully faded line stays opaque");
         Residual = 0f; _primed = false; _lastTickMs = 0;
 
-        // Span stability predicate (#53): all-in-hold -> stable; mid-fade -> not; mixed 0/1 -> stable.
+        // Span stability predicate: all-in-hold -> stable; mid-fade -> not; mixed 0/1 -> stable.
         check.Expect(FadeAlpha(t0, t0, never, true, holdSec, fadeSec) == 1f, "stability: fresh line at 1.0");
         float mid = FadeAlpha(t0.AddSeconds(holdSec + fadeSec / 2), t0, never, true, holdSec, fadeSec);
         check.Expect(mid > 0f && mid < 1f, "stability: mid-fade not at 0 or 1");

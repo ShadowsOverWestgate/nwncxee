@@ -4,30 +4,20 @@ using CX.Engine;
 namespace CX.Framework;
 
 /// <summary>
-/// A safe front door to <c>AurTextureGetTID</c>. A <c>CAurTexture*</c> is BORROWED -- the engine frees it on
-/// an area transition or a module unload -- and <c>AurTextureGetTID</c> @0x48e080 opens by dereferencing the
-/// object's vtable and calling through slot 0x18. Hand it a freed pointer and the call lands wherever the
-/// reused heap now says, a SIGSEGV rather than a wrong texture. "Never cache the pointer, re-fetch every
-/// frame" (#33) is not enough: <c>Material::GetTexture</c> @0x4c5810 is a plain FIELD READ (<c>this +
-/// slot*0x10</c>, or the SharedMaterial's table at <c>this+0xd0</c>) and returns whatever pointer the
-/// material was left holding, live or not.
-/// <para>So the pointer is checked instead of trusted. The engine has exactly TWO texture vtables --
-/// <c>_ZTV11CAurTexture</c> and <c>_ZTV16CAurTextureBasic</c> -- so "is this object still a texture" is two
-/// compares against the values those symbols put in a live object's first word. A freed-and-reused object
-/// has a heap pointer there (confirmed on the core dump behind this fix: the faulting object's vtable slot
-/// held 0x55ae2000d7a8, a heap address, against 2237 live CAurTexture and 309 CAurTextureBasic objects in
-/// the same image all carrying the right one).</para>
-/// <para>ponytail: a whitelist of two, not a mapped-range test. A range test would also admit a freed object
-/// reused as some OTHER engine class, which is a wrong-vtable call rather than a wild one -- quieter, and no
-/// cheaper to check.</para>
+/// A safe front door to <c>AurTextureGetTID</c>. A <c>CAurTexture*</c> is BORROWED (the engine frees it on an area
+/// transition or a module unload) and the call opens by dereferencing the object's vtable, so a freed pointer is a
+/// SIGSEGV; re-fetching per frame does not help, because <c>Material::GetTexture</c> @0x4c5810 is a plain field read
+/// of whatever the material still holds. So the pointer is CHECKED against the engine's two texture vtables.
 /// </summary>
 public static unsafe class AurTex
 {
     /// <summary>Resolved once: <see cref="Tid"/> runs per Alloy part per frame, so the lazy resolve's compare
     /// does not belong in it.</summary>
     private static AurTextureGetTIDFn _getTid;
-    /// <summary>The two values a live texture's first word may hold: each class's vtable symbol plus the
-    /// 0x10 the Itanium ABI puts before the function pointers.</summary>
+    /// <summary>The two values a live texture's first word may hold: each class's vtable symbol plus the 0x10 the
+    /// Itanium ABI puts before the function pointers.
+    /// ponytail: a whitelist of two, not a mapped-range test -- a range test would also admit a freed object reused
+    /// as another engine class. Ceiling: revisit if a third texture class ever appears.</summary>
     private static IntPtr _vtbl, _vtblBasic;
     private static long _refused;
 
@@ -35,10 +25,9 @@ public static unsafe class AurTex
     /// no texture id, so no Alloy draw for that part.</summary>
     public static bool Ready { get; private set; }
 
-    /// <summary>How many dangling texture pointers have been refused this session. Nonzero is not an error
-    /// to chase in this code -- it is the engine handing out a field it has already freed -- but a number
-    /// that climbs every frame means something upstream is holding a dead material, not a dead texture.
-    /// </summary>
+    /// <summary>How many dangling texture pointers have been refused this session. Nonzero is the engine handing
+    /// out a field it already freed, not a bug here; a number that climbs every frame means something upstream
+    /// holds a dead MATERIAL.</summary>
     public static long Refused => _refused;
 
     public static void Attach(ExtenderLog log)
@@ -52,7 +41,7 @@ public static unsafe class AurTex
             return;
         }
         // Itanium ABI: the vtable SYMBOL points at the RTTI pair; an object's first word is symbol + 0x10.
-        // MSVC's vftable symbol is the first word itself (#419).
+        // MSVC's vftable symbol is the first word itself.
         int skew = OperatingSystem.IsWindows() ? 0 : 0x10;
         _vtbl = v + skew; _vtblBasic = b + skew;
         Ready = true;
@@ -70,11 +59,10 @@ public static unsafe class AurTex
         return false;
     }
 
-    /// <summary>Would <c>AurTextureGetTID</c> survive this live texture? It resolves <see cref="EngineLayout.TexReferenced"/>
-    /// (null = the object itself) and reads +0x6c off <c>AsCAurTextureBasic()</c>, which is NULL on a plain
-    /// CAurTexture: a wrapper whose target is unset or not a basic faults in the engine (a mid-rebuild part
-    /// texture, the 2026-09-27 appearance-change crash). A freed target fails the same compare. Counted as a
-    /// refusal.</summary>
+    /// <summary>Would <c>AurTextureGetTID</c> survive this live texture? It resolves
+    /// <see cref="EngineLayout.TexReferenced"/> (null = the object itself) and reads +0x6c off
+    /// <c>AsCAurTextureBasic()</c>, which is NULL on a plain CAurTexture -- so a wrapper whose target is unset, not
+    /// a basic, or freed faults in the engine. Counted as a refusal.</summary>
     private static bool Resolves(IntPtr tex)
     {
         IntPtr r = new CAurTexture(tex).Referenced.Ptr;
@@ -88,20 +76,18 @@ public static unsafe class AurTex
     /// basic texture. Hot -- called per Alloy part per frame.</summary>
     public static int Tid(IntPtr tex) => Live(tex) && Resolves(tex) ? _getTid(tex) : 0;
     /// <summary>The guard alone, for a caller about to read the object through an engine call other than
-    /// <c>AurTextureGetTID</c> (#331's controller lookup).</summary>
+    /// <c>AurTextureGetTID</c> -- the texture controller lookup, say.</summary>
     public static bool IsLive(IntPtr tex) => Live(tex);
 
-    /// <summary>A resman texture's GL id by RESREF -- the resolve and the guard in one call, for the handful
-    /// of engine textures an owned pass wants by name rather than off a material (#339's <c>solid_noise</c>,
-    /// which is the wave field vanilla's water shader samples). Re-resolves every call and caches NOTHING:
-    /// the pointer is borrowed and the engine frees it on an area transition. Cold-ish -- once per pass, not
-    /// per part -- and allocates nothing (the name is marshalled on the stack).</summary>
+    /// <summary>A resman texture's GL id by RESREF -- the resolve and the guard in one call, for the handful of
+    /// engine textures an owned pass wants by name rather than off a material (<c>solid_noise</c>, the wave field
+    /// vanilla's water shader samples). Re-resolves every call and caches NOTHING, because the pointer is borrowed.
+    /// Once per pass, not per part, and allocates nothing: the name is marshalled on the stack.</summary>
     public static int TidByName(string resref) => Tid(FindByName(resref));
 
-    /// <summary>...and the CAurTexture the resman answered with, which is what a caller needs to ask the
-    /// object its own name (#456: Windows and Linux resolve <c>solid_noise</c> to different-looking
-    /// textures, and only the object can say whether that is a different RESOURCE or a different upload).
-    /// Borrowed, never cached -- the engine frees it on an area transition.</summary>
+    /// <summary>...and the CAurTexture the resman answered with, which is what a caller needs to ask the object its
+    /// own name: Windows and Linux can resolve the same resref to different-looking textures, and only the object
+    /// says whether that is a different RESOURCE or a different upload. Borrowed, never cached.</summary>
     public static IntPtr FindByName(string resref)
     {
         if (!Ready || EngineFn.AurTextureGet == null || resref.Length == 0) return IntPtr.Zero;
@@ -112,22 +98,16 @@ public static unsafe class AurTex
         return EngineFn.AurTextureGet(name, IntPtr.Zero, null, null, 0, 0);
     }
 
-    /// <summary>Is this pointer a live <c>CAurTextureBasic</c> specifically? <see cref="Live"/> admits both
-    /// texture classes, which is right for <c>AurTextureGetTID</c> and wrong for anything that reads a
-    /// BASIC field off the object -- the per-cell GL name array at <c>+0x50</c> and the resolved name at
-    /// <c>+0xa8</c> exist on the subclass only. #259 reads both at the upload funnel, so it asks the
-    /// narrower question. Cold: once per engine texture upload.</summary>
+    /// <summary>Is this pointer a live <c>CAurTextureBasic</c> specifically? <see cref="Live"/> admits both texture
+    /// classes, which is right for <c>AurTextureGetTID</c> and wrong for anything reading a BASIC field: the
+    /// per-cell GL name array at <c>+0x50</c> and the resolved name at <c>+0xa8</c> exist on the subclass only.
+    /// Cold: once per engine texture upload.</summary>
     public static bool IsBasic(IntPtr tex) => Ready && tex != IntPtr.Zero && *(IntPtr*)tex == _vtblBasic;
 
-    /// <summary>Off-device: the guard, in both directions, with SYNTHETIC vtables -- so it runs identically
-    /// on a machine with no client, which is where a silent inversion would otherwise go unnoticed until it
-    /// admitted a freed pointer on someone's live session. The real vtable ADDRESSES cannot be asserted here
-    /// (they belong to a client this build may not be running against); what can, and what matters, is that
-    /// an exact match is admitted, that anything else is refused and counted, and that a null and an unarmed
-    /// AurTex are both refused without dereferencing anything.
-    /// <para><see cref="Live"/> rather than <see cref="Tid"/> deliberately: a match must be admissible to
-    /// test at all, and admitting one through Tid would call an engine function that is not there.</para>
-    /// </summary>
+    /// <summary>Off-device: the guard in both directions, with SYNTHETIC vtables, so it runs on a machine with no
+    /// client. The real vtable addresses cannot be asserted here; what can is that an exact match is admitted, that
+    /// anything else is refused and counted, and that a null or an unarmed AurTex is refused without a deref.
+    /// <see cref="Live"/> rather than <see cref="Tid"/>: admitting a match through Tid would call into no engine.</summary>
     public static bool SelfCheck(ExtenderLog log)
     {
         bool wasReady = Ready; IntPtr wv = _vtbl, wb = _vtblBasic;

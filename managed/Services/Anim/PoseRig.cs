@@ -8,13 +8,13 @@ using CX.Engine;
 
 namespace CX.Services.Anim;
 
-/// <summary>The pose layer's rig access, one vocabulary over both scene layers. In mode 0 a part is an engine
-/// <c>Part*</c> and a body its <c>Gob*</c>; in DB mode (<c>alloy.scenedb=1</c>) a body is the facade shell the
-/// game holds, and a part is a <see cref="SceneDb"/> part index carried as <c>index + 1</c> -- a handle, never
-/// dereferenced. The modules' maths does not know which.</summary>
+/// <summary>The pose layer's rig access, one vocabulary over both sessions it can run in. With Alloy on, a
+/// body is the facade shell the game holds and a part a <see cref="SceneDb"/> part index carried as
+/// <c>index + 1</c> -- a handle, never dereferenced; in a vanilla session (<c>alloy.enabled=0</c>) a part is
+/// an engine <c>Part*</c> and a body its <c>Gob*</c>. The modules' maths does not know which.</summary>
 internal static unsafe class PoseRig
 {
-    /// <summary>DB mode, latched when the layer arms.</summary>
+    /// <summary>Is Alloy drawing (so the rig is the scene database's)? Latched when the layer arms.</summary>
     internal static bool Db;
     private static bool _wrote;
 

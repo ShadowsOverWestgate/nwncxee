@@ -11,34 +11,10 @@ using EngCamera = CX.Engine.Camera;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// The camera layer (#536; CX-137 §8 option A). Chains on the engine's one camera
-/// solve, <c>CAurBehaviorCameraFollow::Control</c>, lets it run, then rewrites its answer -- the pose at
-/// Camera+0xb0/+0xbc and the view angle at +0x4c4 -- from the same behavior state plus three feels the engine
-/// lacks: an FOV knob, a critically damped position/rotation/zoom lag (the engine's zoom is a one-frame
-/// impulse per wheel notch, so the rendered distance is damped toward the behavior's), and pitch as a function
-/// of distance. A free lateral/vertical offset of the rig from the focus has its own spring arm; the engine's
-/// pull-in predicts from the un-offset pose, so it is switched off through <see cref="SettleCollision"/> while
-/// an offset is active, and at 0 0 the engine's collision is left alone (#538). The behavior's own
-/// yaw/pitch/dist are never written, so dialog framing, cutscenes, Store/RestoreCameraFacing and the server's
-/// locks keep reading the truth. The one exception goes through the engine's own input channel: the
-/// auto-recenter (<see cref="Recenter"/>) adds a yaw <i>velocity</i> before Control, the same field the
-/// engine's chase drivers write, with those drivers held down by the two module flags they honour (#541).
-/// <para><b>Stand-down gates</b>, checked every call and reported under <c>/knobs</c>: not the module camera
-/// (a GUI panel's), dialog camera, cutscene interpolation, clear-view pending, attached to something other
-/// than the player, any server lock (photo mode locks all three axes), unknown mode byte, and the mode's own
-/// master <c>&lt;mode&gt;.enabled</c> off -- the stock camera for that mode: feel, recenter and the drive all
-/// stand aside, and the view angle goes back to the first one read (the engine has no restorer for it). When
-/// a gate is up the engine's answer passes through untouched, and the frame after it lifts is a cut
-/// (<see cref="AlloyRenderer.CameraCut"/>).</para>
-/// <para><b>Hot.</b> Runs inside <c>CNWCArea::Update</c> once per world frame: pointer reads, float math, no
-/// allocation. The knobs are plain field reads (ADR 0025); every string lives on the frame-end tick and the
-/// <c>/knobs</c> note.</para>
-/// <para>CX-107 put Alloy's own port of the solve UNDER this layer, at the bottom of the same funchook chain
-/// (<c>CX.Alloy.BehaviorSolvers</c>, priority -100), so <c>*_next</c> is now the port rather than the
-/// trampoline whenever <c>behav.owned</c> is on. Nothing here changed and nothing here needs to: the port
-/// writes the same behaviour fields and the same <c>Camera+0xb0</c>/<c>+0xbc</c> pose, and
-/// <see cref="Recenter"/>'s yaw velocity is consumed by it exactly as the engine consumed it. That is the
-/// whole point of chaining below rather than replacing the hook.</para>
+/// The camera layer: chains on the engine's one camera solve, <c>CAurBehaviorCameraFollow::Control</c>, lets it run,
+/// then rewrites its answer -- the pose at <c>Camera+0xb0</c>/<c>+0xbc</c> and the view angle at <c>+0x4c4</c> --
+/// adding an FOV knob, damped position/rotation/zoom lag, pitch by distance and a sprung rig offset. The behaviour's
+/// own yaw/pitch/dist are never written, so locks and cutscenes read the truth. Hot (per world frame), no allocation.
 /// </summary>
 public sealed unsafe class CameraService : IExtenderService
 {
@@ -67,7 +43,7 @@ public sealed unsafe class CameraService : IExtenderService
     private static float _arm = 1f;
     private static bool _offsetOn, _wantNoCollision, _weSetFlag;
 
-    // ---- #541 recenter state: the policy's clocks ----
+    // ---- recenter state: the policy's clocks ----
     private static float _grace, _idle, _recenterVel;
     private static bool _pursuing;
     /// <summary>Why the recenter did nothing on the last call, for the /knobs note.</summary>
@@ -86,9 +62,9 @@ public sealed unsafe class CameraService : IExtenderService
     private static float _sYaw, _sPitch, _vYaw, _vPitch, _sDist, _vDist;
     private static Vector3 _sFocus, _vFocus;
 
-    // ---- §9 instruments (logs=1): Control cadence per present, runtime FOV writers ----
+    // ---- instruments (logs=1): Control cadence per present, runtime FOV writers ----
     private static int _calls, _callsMin = int.MaxValue, _callsMax, _frames, _fovRewrites;
-    /// <summary>§9.5: frames the engine's pull-in shortened dist without the user zooming, offset off / on.</summary>
+    /// <summary>Frames the engine's pull-in shortened dist without the user zooming, offset off / on.</summary>
     private static int _pullIns, _pullInsOffset;
     /// <summary>Spring-arm frames that cast, and frames it wanted to and had no scene to cast against -- the
     /// one way to tell an unobstructed arm from an arm that is not testing anything (which is what DB mode
@@ -121,12 +97,11 @@ public sealed unsafe class CameraService : IExtenderService
                                   "CClientExoAppInternal", "CClientOptions", "Camera", "CNWCObject")) return;
         if (!SymbolMap.Require(log, "CameraService", SymbolMap.CameraFollowControl, SymbolMap.AppManager,
                                SymbolMap.GetModule, SymbolMap.GetGameObject)) return;
-        // CX-120: the one other mode-0 chain that can be ENTERED with a facade. The follow behaviour the game
-        // installs is a real engine-layout CAurBehaviorCameraFollow, so its Control is this hooked function;
-        // forwarding to `next` would reach the engine's own solve, which reads the owner at behavior+0x18 -- a
-        // facade in DB mode. DbAnim solves camera-follow over the database's columns instead, so funchook is
-        // not used there at all: the layer takes the two edges DbAnimCamera offers around that solve, which
-        // are the same two places in the frame the chain occupied.
+        // The one engine-side chain that can be ENTERED with a facade. The follow behaviour the game installs is a
+        // real engine-layout CAurBehaviorCameraFollow, so its Control is this hooked function; forwarding to `next`
+        // would reach the engine's own solve, which reads the owner at behavior+0x18 -- a facade with Alloy on.
+        // DbAnim solves camera-follow over the database's columns instead, so funchook is not used there at all:
+        // the layer takes the two edges DbAnimCamera offers around that solve, the same two places in the frame.
         if (CX.Alloy.Renderer.On)
         {
             DbAnimCamera.FeelBefore = &DbBefore;
@@ -177,9 +152,8 @@ public sealed unsafe class CameraService : IExtenderService
         SettleCollision(Module());
     }
 
-    /// <summary>The one-shot boot probe of the module rows (#536 AC: Windows offsets get a probe, not a hope).
-    /// In mode 0 it runs on the first <c>Control</c> to return; in DB mode on the first solve to begin, which
-    /// is the same frame.</summary>
+    /// <summary>The one-shot boot probe of the module rows -- Windows offsets get a probe, not a hope. It runs on
+    /// the first solve to begin, or -- with Alloy off -- on the first <c>Control</c> to return, the same frame.</summary>
     private static void FirstCall()
     {
         if (_live) return;
@@ -210,8 +184,8 @@ public sealed unsafe class CameraService : IExtenderService
         return r;
     }
 
-    /// <summary>The one writer of <c>CAMERA_FLAG_DISABLE_COLLISION</c>: set while the spring arm (#538) or the
-    /// occlusion fade (#537) wants the engine's pull-in off, cleared only if this session set it, never
+    /// <summary>The one writer of <c>CAMERA_FLAG_DISABLE_COLLISION</c>: set while the spring arm or the
+    /// occlusion fade wants the engine's pull-in off, cleared only if this session set it, never
     /// rewritten when it already holds -- the server's own bits stay untouched.</summary>
     public static void SettleCollision(IntPtr module)
     {
@@ -225,12 +199,10 @@ public sealed unsafe class CameraService : IExtenderService
         else if (_weSetFlag) { flags &= ~EngineLayout.CameraFlagDisableCollision; _weSetFlag = false; }
     }
 
-    /// <summary>Where the layer reads and writes the camera pose. Mode 0 is the engine's one <c>Camera</c>
-    /// object. In DB mode (ADR 0028) a <c>Camera</c> is split three ways -- a camera record, the
-    /// <c>CAurObject</c> record its <c>Gob</c> half IS, and the layout-compatible shell the game holds -- and
-    /// <see cref="DbCamera.PosOf"/>/<c>RotOf</c> are the truth: a write through the engine view would land in
-    /// the shell alone, which <c>DbCamera.PublishShell</c> overwrites from the columns on the next frame.
-    /// The DB setters write every home, so either mode reads back what the layer just wrote.</summary>
+    /// <summary>Where the layer reads and writes the camera pose. With Alloy off it is the engine's one
+    /// <c>Camera</c> object; with Alloy on (ADR 0028) a camera is split three ways and
+    /// <see cref="DbCamera.PosOf"/>/<c>RotOf</c> are the truth -- a write through the engine view would land in the
+    /// layout-compatible shell alone, which <c>DbCamera.PublishShell</c> overwrites from the columns next frame.</summary>
     internal readonly struct CamSink
     {
         private readonly IntPtr _cam;
@@ -254,8 +226,8 @@ public sealed unsafe class CameraService : IExtenderService
             if (!CX.Alloy.Renderer.On) { var c = new EngCamera(_cam); c.Rot = rot; c.Pos = pos; return; }
             DbCamera.SetOrientation(_db, rot);
             DbCamera.SetPosition(_db, pos);
-            // ...and into the shell now, not at the next frame's walk: mode 0's readers see this write in the
-            // frame it happens, and the nameplate fade and the aim assist's projector are two of them.
+            // ...and into the shell now, not at the next frame's walk: the readers have to see this write in
+            // the frame it happens, and the nameplate fade and the aim assist's projector are two of them.
             DbCamera.Publish(_db);
         }
 
@@ -293,7 +265,7 @@ public sealed unsafe class CameraService : IExtenderService
         _pos = c.Pos;
         if (FreeCameraService.Active)
         {
-            // #543: the free camera owns the pose; the frame it lets go is a weld (snap + cut) like any gate's.
+            // The free camera owns the pose; the frame it lets go is a weld (snap + cut) like any gate's.
             // _fovWritten is kept: Leave() puts the entry angle back, which is the layer's last write or nothing.
             FreeCameraService.Frame(c, g, dt);
             if (FreeCameraService.Active) { _welded = true; _wantNoCollision = true; _offsetOn = false; _arm = 1f; return; }
@@ -305,7 +277,7 @@ public sealed unsafe class CameraService : IExtenderService
             _welded = true; _offsetOn = _wantNoCollision = false; _arm = 1f; return;
         }
 
-        // §9.2: anything rewriting the view angle between our writes shows up here.
+        // Anything rewriting the view angle between our writes shows up here.
         if (!float.IsNaN(_fovWritten) && _fovRead != _fovWritten) _fovRewrites++;
         if (float.IsNaN(_fovFirst)) _fovFirst = _fovRead;
 
@@ -350,7 +322,7 @@ public sealed unsafe class CameraService : IExtenderService
         c.SetViewAngle(fov); _fovWritten = fov;
     }
 
-    /// <summary>#584: the mode's master went off, or the mode changed into one whose master is off, with the layer's
+    /// <summary>The mode's master went off, or the mode changed into one whose master is off, with the layer's
     /// view angle still in the camera. <c>Camera+0x4c4</c> has no engine restorer, so the first angle read goes back,
     /// once, and the frame is a cut. NaN = the layer never wrote it (nothing to restore); the on edge needs nothing
     /// here, <see cref="Adjust"/> writes the slider again on its first Active frame.</summary>
@@ -362,19 +334,10 @@ public sealed unsafe class CameraService : IExtenderService
         AlloyRenderer.CameraCut();
     }
 
-    /// <summary>#541: the auto-recenter, in place of the engine's chase (Nesky's rules). Runs before Control on the
-    /// world camera's behavior: the engine's own chase is held down through the two module flags it honours
-    /// (<see cref="EngineLayout.ModuleChaseSuppressed"/> up, its idle edge down), so its 30°-then-snap never fires,
-    /// and the policy adds a yaw velocity in the slot it would have used. Moving (a locomotion animation on the
-    /// player) eases the camera behind the creature's facing -- which is the movement direction for both
-    /// click-to-move and #540's drive -- at most <c>recenter.rate</c> deg/s once the error leaves the dead-zone;
-    /// standing still for <c>recenter.idle</c> seconds eases it there at <c>recenter.idlerate</c>. Any yaw the user
-    /// put in this frame (an impulse or a velocity already in the behavior: mouse-look, middle-drag, the turn
-    /// keys) suspends it and starts the grace clock; a drive with no forward component (strafe, back-pedal) holds it
-    /// (a spiral is not a recenter, and a 180° swing has no side to take).
-    /// Dialog, cutscene, locks and the rest are the same gates as the pose rewrite (<see cref="Check"/>, run here
-    /// too so a gate that went up this frame is honoured before, not after, the solve); under the mode's master off
-    /// the chase flags are not held either, so the engine's own chase runs (#584).</summary>
+    /// <summary>The auto-recenter, in place of the engine's chase. Runs before Control on the world camera's
+    /// behavior: the engine's own chase is held down through the two module flags it honours
+    /// (<see cref="EngineLayout.ModuleChaseSuppressed"/> up, its idle edge down) and the policy adds a yaw velocity
+    /// in the slot it would have used. Any yaw the user put in this frame suspends it and starts the grace clock.</summary>
     private static void Recenter(IntPtr self, float dt)
     {
         var b = new CAurBehaviorCameraFollow(self);
@@ -398,7 +361,7 @@ public sealed unsafe class CameraService : IExtenderService
         bool orbiting = vel != 0f || b.YawImpulse != 0f;
         if (aim)
         {
-            // The tab-target's aim (CX-636): the camera looks from behind the player toward the target, fast and
+            // The tab-target's aim: the camera looks from behind the player toward the target, fast and
             // with no dead zone, grace, movement, idle or orbit gate -- the hand's impulse still adds, the aim's
             // velocity pulls the view back. The lock key (or a cleared lock) is what ends a lock-on.
             IntPtr me = PlayerCreature();
@@ -441,13 +404,10 @@ public sealed unsafe class CameraService : IExtenderService
     /// turn lands in well under half a second -- a look, not a drift.</summary>
     private const float AimRate = 720f, AimGain = 8f;
 
-    /// <summary>The aim's pitch: the player's own tilt (<paramref name="basePitch"/>, the pitch the aim found plus
-    /// every hand tilt since) unless it puts the target more than <paramref name="band"/> degrees off the middle of
-    /// the view -- then the nearest pitch that holds it on the band's edge: flatter for a far or raised target,
-    /// steeper for one below. The camera sits <c>dist</c> behind the focus at <c>(dist sin p, dist cos p)</c> (pitch
-    /// from vertical) looking at the focus, so a target <paramref name="r"/> out and <paramref name="h"/> up sits
-    /// <c>atan2(h - dist cos p, r + dist sin p) - (p - 90)</c> above the centre: falling in p, solved by bisection
-    /// inside the behavior's own clamp range (the engine clamps the same way after Control).</summary>
+    /// <summary>The aim's pitch: <paramref name="basePitch"/> unless that puts the target more than
+    /// <paramref name="band"/>° off the middle of the view -- then the nearest pitch holding it on the band's edge.
+    /// With the camera at <c>(d sin p, d cos p)</c> (pitch from vertical) looking at the focus, a target <c>r</c> out
+    /// and <c>h</c> up sits <c>atan2(h-d cos p, r+d sin p)-(p-90)</c> above the centre, falling in p: hence bisection.</summary>
     private static float AimPitch(IntPtr self, float r, float h, float band, ref float basePitch)
     {
         var b = new CAurBehaviorCameraFollow(self);
@@ -554,20 +514,20 @@ public sealed unsafe class CameraService : IExtenderService
         return mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
     }
 
-    /// <summary>#539: a gate the mouse-look must let go for -- dialog, cutscene, clear-view, attach, a server lock.
+    /// <summary>A gate the mouse-look must let go for -- dialog, cutscene, clear-view, attach, a server lock.
     /// ponytail: reads the last Control's verdict; a GUI 3D panel's camera (NotWorldCamera) is not a gate here
     /// because its Control interleaves with the world's and would flap the flag every frame, and a mode's master
     /// off (<see cref="Gate.Off"/>) is not one either: mouse-look and the free camera have masters of their own.</summary>
     public static bool GateUp => _live && _probeOk && _gate is not (Gate.Active or Gate.NotWorldCamera or Gate.Off);
-    /// <summary>#543: the last Control's verdict by name, and whether the layer is live at all.</summary>
+    /// <summary>The last Control's verdict by name, and whether the layer is live at all.</summary>
     internal static string GateName => GateNames[(int)_gate];
     internal static bool Live => _live && _probeOk;
-    /// <summary>#543: the pose the layer last wrote (the rendered one: lag, curve, offset and arm included), the
+    /// <summary>The pose the layer last wrote (the rendered one: lag, curve, offset and arm included), the
     /// seed for a free camera that must not jump on entry.</summary>
     internal static void Rendered(out Vector3 pos, out float yaw, out float pitch, out float fov)
     { pos = _pos; yaw = _sYaw; pitch = _outPitch; fov = _fovRead; }
 
-    /// <summary>#540: the mode byte the last Control saw (-1 before the first).</summary>
+    /// <summary>The mode byte the last Control saw (-1 before the first).</summary>
     internal static int Mode => _mode;
     /// <summary>The spring arm's current fraction of the offset rig, for the <c>/walls</c> status line.</summary>
     internal static float ArmFraction => _arm;
@@ -603,11 +563,10 @@ public sealed unsafe class CameraService : IExtenderService
     private const float ArmMin = 0.05f;
     private const int ArmRays = 5, ArmHops = 3;
 
-    /// <summary>#538: keep the offset camera out of walls. The pivot is the player, not the offset focus (an
-    /// offset can put the focus itself inside a wall); a fan of <see cref="ArmRays"/> parallel segments from
-    /// there to <paramref name="want"/> is marched through <see cref="SceneRay"/>, creatures skipped, and the
-    /// camera slides along the segment to the nearest hit minus the margin. Snaps (or eases, walls.armin) in
-    /// and eases (walls.armout) back out. At most 15 casts, only while an offset is on.</summary>
+    /// <summary>Keep the offset camera out of walls. The pivot is the player, not the offset focus (an offset can
+    /// put the focus itself inside a wall); a fan of <see cref="ArmRays"/> parallel segments from there to
+    /// <paramref name="want"/> is marched through <see cref="SceneRay"/>, creatures skipped, and the camera slides
+    /// to the nearest hit minus the margin. Snaps or eases in (walls.armin), eases out. At most 15 casts.</summary>
     private static Vector3 SpringArm(IntPtr self, Vector3 pivot, Vector3 want, float dt)
     {
         float radius = Walls.ArmRadius.V;
@@ -674,7 +633,7 @@ public sealed unsafe class CameraService : IExtenderService
         if (c < _callsMin) _callsMin = c;
         if (c > _callsMax) _callsMax = c;
         if (++_frames < 600 || !ExtenderLog.Enabled) return;
-        // §9.3 / §9.2 under logs=1, once per 600 presents.
+        // Under logs=1, once per 600 presents.
         _log?.Info(Inv($"[camera] Control {_callsMin}..{_callsMax} call(s)/present over {_frames} presents; ")
                  + Inv($"view angle first read {_fovFirst:0.##}, {_fovRewrites} rewrite(s) between ours; gate: {GateNames[(int)_gate]}, ")
                  + Inv($"mode {_mode}, offset {(_offsetOn ? "on" : "off")}; ")

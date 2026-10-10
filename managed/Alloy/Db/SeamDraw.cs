@@ -5,30 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 (seam-scene): the frame boundary in DB mode, and the two threads' halves of it.
-///
-/// <para><b>The boundary.</b> Today the frame ends at <c>GLRender::SwapBuffers</c>, which
-/// <c>UiHostService.OnSwap</c> owns and <c>ScreenOwner.Present</c> presents from. In DB mode the engine's
-/// scene layer never ran, so the Alloy frame has no <c>RenderSinglePass</c> to hang off -- the boundary IS the
-/// frame. This registers as a <c>PrePresent</c> participant one priority ahead of
-/// <see cref="GlContextService"/>'s 4.6 bracket (which is deliberately last), so the order per frame is:
-/// latch the window state, fold the dirty sets, publish, draw, then the UI and the present.</para>
-///
-/// <para><b>The two paths are ONE path.</b> Fold, publish, draw -- in that order, in both modes; the only
-/// difference is which thread runs the draw. <see cref="DbFeed.Present"/> is deliberately NOT called: it
-/// folds AND draws, and the fold has to happen inside <see cref="RenderSnapshot.Publish"/> (ahead of
-/// <c>TakeDirty</c>) or it sees an empty dirty list. So the seam registers
-/// <see cref="DbFeed.Draw"/> as the contract asks, drives it off the snapshot's view list, and hands the feed
-/// its fold through <see cref="RenderSnapshot.Fold"/>. <c>DbFeed.Present</c> still works for any other
-/// caller; nothing here calls it.</para>
-///
-/// <para><b>Who draws what.</b> A GUI panel view draws itself out of the database -- seam-feed's
-/// <see cref="DbGui"/> walks the scene's controls in creation order and issues their quads, which is exactly
-/// what the engine's <c>Scene::RenderOnlyGobs</c> did -- so the main menu and every panel are complete here.
-/// A WORLD view needs Alloy's pass chain, and <see cref="Pass"/> is where the renderer registers it; nothing
-/// sets it yet, because that chain is still driven by the engine-scene path's <c>RenderSinglePass</c> hook.
-/// Until it is set, a world frame folds and publishes correctly and draws nothing, and the absence is ONE
-/// loud line rather than a black screen with no explanation.</para></summary>
+/// <summary>The frame boundary: a <c>PrePresent</c> participant one priority ahead of
+/// <see cref="GlContextService"/>'s 4.6 bracket (deliberately last), so the order is latch the window state,
+/// fold, publish, draw, UI, present. <see cref="DbFeed.Present"/> is NOT used -- the fold must run inside
+/// <see cref="RenderSnapshot.Publish"/>, ahead of <c>TakeDirty</c>, or it sees an empty dirty list.</summary>
 internal static class SeamDraw
 {
     private static ExtenderLog? _log;
@@ -37,11 +17,9 @@ internal static class SeamDraw
     private static Action<DbId, DbId>? _perView;
     private static bool _saidReasserted, _saidOrder;
 
-    /// <summary>The renderer's per-view draw in DB mode: run Alloy's pass chain for one view of one scene,
-    /// with the frame's hoisted engine terms. Set by the renderer when DB mode arms.
-    /// <para>CX-188: a delegate TYPE rather than <c>Action</c> because the hoist crosses by <c>in</c>
-    /// reference -- the point of the struct is that the renderer reads values the game thread folded, and a
-    /// boxing copy per view would be a per-frame allocation on a hot path.</para></summary>
+    /// <summary>The renderer's per-view draw: Alloy's pass chain for one view of one scene, with the frame's
+    /// hoisted engine terms. A delegate TYPE rather than <c>Action</c> because the hoist crosses by <c>in</c>
+    /// reference -- a boxing copy per view would be a per-frame allocation on a hot path.</summary>
     internal static DbViewPass? Pass;
 
     /// <summary><see cref="Pass"/>'s signature.</summary>
@@ -150,9 +128,9 @@ internal static class SeamDraw
         finally
         {
             // CX's own 2D UI (chat, the settings panel, nameplates, combat text) goes LAST, after every view
-            // the game asked for. In mode 0 it is drawn during the engine's GUI render, before the world
-            // frame; in DB mode the whole frame runs here at PrePresent, so drawing it at its usual site put
-            // it UNDER the world and it disappeared the moment the world started drawing.
+            // the game asked for. The whole frame runs here at PrePresent, so drawing it where the engine's
+            // GUI render sits -- before the world -- put it UNDER the world and it disappeared the moment the
+            // world started drawing.
             // CX-188: the same rule, the other side of the publish -- see the `live` arm above. The ONE
             // invariant both arms keep is "the 2D UI is drawn after the world frame it composites over"; what
             // the knob changes is which frame that is, because a pipelined draw is not finished yet.
@@ -266,7 +244,7 @@ internal static class SeamDraw
             // objects in its own scene and its text is CX-119's glyph runs, so there is no pass chain to run
             // and no world verdict to wait for. The view's own view*proj is what the quads sit on.
             _guiViews++;
-            // CX-120 (gui): panel geometry AND text, both on mode 0's GuiPass/GuiCapture path, which already
+            // CX-120 (gui): panel geometry AND text, both on the GuiPass/GuiCapture path, which already
             // owns the per-rect viewport and the GUI depth convention. Not the owned pass chain: that is not
             // re-entrant per view -- every BeginOwnedFrame clears the HDR target and ends by compositing the
             // WHOLE display -- so running it once per panel made the last panel's empty composite overwrite

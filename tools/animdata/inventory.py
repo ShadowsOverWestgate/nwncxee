@@ -2,7 +2,7 @@
 """Locomotion inventory for one supermodel chain: where each name resolves, plus its shape.
 
     ./inventory.py --stock pmh0 > loco_pmh0_stock.tsv
-    ./inventory.py pmh0                       # live (SoW haks)
+    ./inventory.py pmh0                       # live (the HAKS chain)
     ./inventory.py --all --stock pmh0         # every animation, not just locomotion
 """
 import re, sys

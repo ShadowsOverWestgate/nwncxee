@@ -5,41 +5,18 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-102: page residency and the cost of moving it. The resident pages are ONE immutable
-/// <c>TEXTURE_2D_ARRAY</c> triple, so a page more means a bigger array: allocate, copy every live layer across,
-/// delete the old names. That migration was the client's freeze -- the five growths of the 2026-09-30 session
-/// are four of the six frames that spent over 20 ms in <c>Zone.Lightmap</c>, and they scale with the layers
-/// copied (86 / 458 / 573 / 733 ms for 1 / 2 / 3 / 4 layers at 192 MiB a layer), while the bake's own GPU cost
-/// is ~3 ms a page. Here the migration is a state machine: <see cref="GrowSlice"/> layers a frame, the new
-/// arrays published only when the last one is across. A growth from NO pages copies nothing, so it still
-/// finishes in the frame that asks -- an area's first pages, and every adopted plan's, cost no window at all.
-/// <para><b>The hazard is a WRITE to the retiring array.</b> A layer is copied once, ascending, so texels
-/// landed on the old pages after their layer has gone across are thrown away with the old names -- permanently
-/// unlit surfaces with no re-bake path. Every writer of the resident triple therefore stands still for the
-/// window, as <see cref="Pack"/> does: the page bake (<see cref="Step"/>, whose <see cref="FinishPage"/>
-/// converts into a resident layer), the cache adopt (<see cref="Adopt"/>) and the area plan's upload
-/// (<see cref="AreaUpload"/>). Reads are safe and are not gated -- the old arrays stay complete and resident
-/// until the publish -- so the frame keeps sampling the lightmap throughout and <c>AreaSnap</c> may still read
-/// a page back.</para>
-/// <para><b>Why residency climbs.</b> "pages 4/10" half an hour into an area is not a starved cap: the
-/// baseline packs onto one page at the load and the tier walk (#679) opens a fine page whenever a refining
-/// rect finds no room. <see cref="EvictFine"/> can only drop a page whose NEAREST rect is past the next
-/// tier's radius, and in a dense area every fine page keeps one rect near the player -- the 2026-09-30
-/// session evicted a fine page twice in an hour -- so the fine class accrues a page at a time up to the cap,
-/// and each of those pages used to cost a freeze. Nothing here bounds the class; what it fixes is the
-/// price.</para>
-/// <para>Also the pass's own accounting: which phase of <see cref="Run"/> a frame spent its time in, and the
-/// worst single frame of the period, so "no frame spends more than a small budget in Lightmap" is a number
-/// the log prints rather than a claim.</para></summary>
+/// <summary>Page residency and the cost of moving it. The resident pages are ONE immutable
+/// <c>TEXTURE_2D_ARRAY</c> triple, so a page more means a bigger array -- allocate, copy every live layer
+/// across, delete the old names -- and that migration was the client's freeze, so it is a state machine:
+/// <see cref="GrowSlice"/> layers a frame, published once the last is across, and every WRITER stands still.</summary>
 internal static unsafe partial class LightmapBake
 {
     /// <summary>Layers a frame may move when a page array grows; 0 = the whole migration in one frame, which
-    /// is the pre-CX-102 behaviour and the A/B.</summary>
+    /// is the old behaviour and the A/B.</summary>
     private static int GrowSlice => Lightmap.GrowSlice.V;
 
     /// <summary>What <see cref="Grow"/> answers. <b>Pending is not a refusal</b>: the pages are on their way
-    /// and the caller must ask again next frame -- reading it as "the card said no" killed CX-56's adopt path
-    /// and made a false CX-45 claim in the log.</summary>
+    /// and the caller must ask again next frame -- reading it as "the card said no" kills the adopt path.</summary>
     private enum Grew { Resident, Pending, Refused }
 
     /// <summary>The migration in flight: the new arrays and the layer the slice is at. The resident names

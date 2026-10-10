@@ -4,23 +4,10 @@ using System.Runtime.InteropServices;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-117: the PLT file, decoded to the two channels the shader resolves from -- and nothing else.
-/// A PLT pixel is (intensity, layer); vanilla turns that into RGBA per character by looking each texel up in
-/// the master palette (<c>ImageDecode</c> @0x4b6580, called from <c>ConstructImage</c> @0x48a5d0 when
-/// <c>g_bGeneratePLTOnGPU</c> is clear). Alloy uploads the pairs AS a texture (RG8) and does the lookup in
-/// the fragment shader, so the file is loaded once however many creatures wear it and a colour change costs
-/// no pixels at all.
-/// <para>Format, read off <c>CResPLT::OnResourceServiced</c> @0x1136640 and
-/// <c>CAuroraLayeredTexture::LoadTexture</c> @0x1134930: a 24-byte header -- the magic (the engine compares
-/// the first dword against <c>'PLT '</c> alone), the layer count at +8, a compression flag at +0x0c, width at
-/// +0x10 and height at +0x14 -- then <c>width*height</c> pairs of (intensity, layer), one byte each, no
-/// padding and no vertical flip. A non-zero flag means the pairs are RLE-packed
-/// (<c>CResPLT::ReadRLEPLT</c> @0x1136560). The engine refuses a side past 0x2000 or a layer count past
-/// 0x20. No stock file sets the flag, and the engine's own compressed branch never writes the decoded size
-/// before it unpacks, so a compressed PLT decodes into a zero-length buffer there and still reports
-/// success; this reader decodes it properly.</para>
-/// <para>Engine-free by contract: nothing here reads engine memory or calls GL, which is what lets the
-/// off-device check (<c>tools/pltcheck</c>) run it over every PLT in the base BIFs.</para></summary>
+/// <summary>The PLT file decoded to the two channels the shader resolves from. A PLT pixel is (intensity,
+/// layer); vanilla looks each texel up in the master palette (<c>ImageDecode</c> @0x4b6580), while Alloy
+/// uploads the pairs AS an RG8 texture and resolves in the fragment shader, so the file loads once however
+/// many creatures wear it. Engine-free, so <c>tools/pltcheck</c> runs it off-device over the base BIFs.</summary>
 internal static unsafe class PltImage
 {
     /// <summary>Bytes per PLT pixel on the GPU: R = intensity, G = layer, as RG8.</summary>
@@ -29,18 +16,17 @@ internal static unsafe class PltImage
     /// <summary><c>'PLT '</c>, the dword <c>OnResourceServiced</c> compares. The shipped files carry
     /// <c>"PLT V1  "</c>; the engine never looks past the first four bytes.</summary>
     internal const uint Magic = 0x20544c50;   // not-an-offset: the file's magic dword
-    /// <summary>Header fields: layer count, compression flag, width, height.</summary>
+    /// <summary>Header fields of <c>CResPLT::OnResourceServiced</c> @0x1136640: layer count, compression
+    /// flag, width, height. Then <c>width*height</c> (intensity, layer) byte pairs, no padding and no
+    /// vertical flip; a non-zero flag means they are RLE-packed.</summary>
     internal const int OffLayers = 8, OffCompressed = 12, OffWidth = 16, OffHeight = 20;
     /// <summary>What the engine itself refuses past (<c>LoadTexture</c>: side &lt; 0x2001, layers &lt;
     /// 0x21).</summary>
     internal const int MaxSide = 0x2000, MaxFileLayers = 0x20;   // not-an-offset: the engine's own limits, LoadTexture @0x1134930
-    /// <summary>Layers Alloy's per-instance row block carries (<see cref="SceneDb.PltLayers"/>). Ten is not a
+    /// <summary>Layers Alloy's per-instance row block carries (<see cref="SceneDb.PltLayers"/>). Not a
     /// budget: <c>CNWCAnimBaseParts::ReplaceTexture</c> @0x9d8c80 takes the PLT branch <b>only</b> when the
-    /// count is exactly 10 and otherwise logs "Bad palette (scheme) info." and drops the call, so ten is what
-    /// the game layer can ever ask for. (The engine's scheme array is fifteen ints -- <c>SetScheme</c>
-    /// @0x485f90 allocates 0x3c -- and <c>ImageDecode</c>'s stack cache fifteen rows; neither is reachable
-    /// past ten.) A file declaring more layers is loaded and counted, and its upper layers resolve against
-    /// layer 9's row -- where the engine reads stale stack.</summary>
+    /// count is exactly 10 and otherwise drops the call, so ten is all the game layer can ask for. A file
+    /// declaring more is loaded and counted, and its upper layers resolve against layer 9's row.</summary>
     internal const int Layers = SceneDb.PltLayers;
 
     /// <summary>PLT files seen declaring more than <see cref="Layers"/> layers, and files with a pixel that
@@ -139,22 +125,10 @@ internal static unsafe class PltImage
         return true;
     }
 
-    /// <summary>The PLT mip chain, built once at load. <b>The choice:</b> intensity is AVERAGED, the layer is
-    /// the MAJORITY of the four children, and the average is taken only over the children that carry the
-    /// winning layer. Averaging the layer index would be meaningless -- halfway between hair and skin is
-    /// metal, not a blend -- and taking the top-left child alone shimmers on a seam. Majority keeps a layer
-    /// boundary crisp at every level and never invents a layer that is not there, which is why the sampler
-    /// is NEAREST on a PLT and the bilinear is done in <c>cx_plt.glsl</c> over RESOLVED colours.
-    /// <para>A 2-2 TIE is broken by the destination texel's parity, not by the layer index. Taking the
-    /// lower index looks neutral and is not: every boundary 2x2 is a tie, so the lower-numbered layer wins
-    /// half of each boundary and loses none, and a region grows one texel per level. Measured on
-    /// <c>pmh0_chest004</c> that walked the metal layer from 63% of the texels at level 0 to 79% at level 5,
-    /// which is a trim becoming a surface as the creature walks away. Alternating along the boundary leaves
-    /// each layer its share, and the shader's four taps over resolved colours turn the alternation into the
-    /// blend vanilla's composite mips would have had.</para>
-    /// <para>Vanilla has no equivalent: it mips the COMPOSITE, so its lower levels blend colours across a
-    /// layer boundary. Alloy's blend across such a boundary happens in the shader's four taps instead, at
-    /// full resolution.</para></summary>
+    /// <summary>The PLT mip chain, built once at load: the layer is the MAJORITY of the four children and the
+    /// intensity the mean over those carrying it. Averaging a layer index is meaningless, so a PLT samples
+    /// NEAREST and the bilinear happens in <c>cx_plt.glsl</c> over RESOLVED colours. A 2-2 tie goes by the
+    /// destination texel's parity; taking the lower index walked <c>pmh0_chest004</c>'s metal 63% -> 79%.</summary>
     internal static void BuildMips(byte* chain, int w, int h, int levels)
     {
         long srcOff = 0;
@@ -210,10 +184,8 @@ internal static unsafe class PltImage
     }
 
     /// <summary>The shader's resolve, on the CPU: <c>colour = master[row[layer]][intensity]</c>, which is
-    /// <c>ImageDecode</c>'s <c>palette[(rows[layer] &lt;&lt; 10) + intensity*4]</c> one lookup at a time. The
-    /// off-device check compares this against the engine's own composite arithmetic, and the live check
-    /// compares it against a readback. Returns RGBA8 packed little-endian, exactly as
-    /// <c>RasterReader.DecodePlt</c> reads it.</summary>
+    /// <c>ImageDecode</c>'s <c>palette[(rows[layer] &lt;&lt; 10) + intensity*4]</c> one lookup at a time.
+    /// Returns RGBA8 packed little-endian, exactly as <c>RasterReader.DecodePlt</c> reads it.</summary>
     internal static uint Resolve(ReadOnlySpan<byte> master, ReadOnlySpan<ushort> rows, byte intensity, byte layer)
     {
         int l = layer < rows.Length ? layer : rows.Length - 1;

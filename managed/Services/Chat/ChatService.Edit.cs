@@ -13,10 +13,10 @@ namespace CX.Services.Chat;
 /// submit, key + text routing, clipboard, and the keyboard-ownership handshake with the arbiter.</summary>
 public sealed unsafe partial class ChatService
 {
-    /// <summary>Slice #20: EditBuffer + IsTyping + focus suppression. Filled by build slice 3.</summary>
+    /// <summary>Wires the edit buffer, typing state, history file and focus suppression.</summary>
     private static void InitEditControl(ExtenderLog log, HookService hooks)
     {
-        RegisterCommands();            // #165: chat's own commands go on the shared registry like anyone's
+        RegisterCommands();            // chat's own commands go on the shared registry like anyone's
         _histPath = HistoryFile.PathBeside(Settings.Path);
         if (ChatKnobs.HistSave.V) Edit.LoadHistory(HistoryFile.Load(_histPath, log));
         ChatKnobs.HistSave.Changed = () =>
@@ -126,12 +126,10 @@ public sealed unsafe partial class ChatService
         }
     }
 
-    /// <summary>One-shot: swallow the SDL_TEXTINPUT that the very keypress which OPENED chat still delivers.
-    /// <para>Starting text input mid-keypress does not retract the character -- SDL hands it to the freshly
-    /// opened line as well, so inserting the prefix ourselves produced "//". We keep the explicit insert (the
-    /// prefix is then guaranteed regardless of whether SDL delivers) and drop the echo here.</para>
-    /// <para>ponytail: cleared by the first text event either way, so at worst a prefix SDL never echoed costs
-    /// the next identical character. Track the opening keypress properly if that is ever observed.</para></summary>
+    /// <summary>One-shot: swallow the SDL_TEXTINPUT that the keypress which opened chat still delivers. Starting
+    /// text input mid-keypress does not retract the character, and the prefix is inserted explicitly, so without
+    /// this the line opens with it twice. ponytail: cleared by the first text event either way, so at worst a
+    /// prefix SDL never echoed eats the next identical character.</summary>
     private static byte _eatEcho;
 
     /// <summary>Open chat with <paramref name="prefix"/> already typed. Used by the "/" chord to start a
@@ -146,12 +144,10 @@ public sealed unsafe partial class ChatService
         Rebuild();
     }
 
-    /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
-    /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does, and
-    /// whenever the line could not be seen: out of game (the chatbox is not drawn), with the app unfocused (a
-    /// compositor may still deliver Enter), or with a NUI window over the box -- each would eat every key unseen.
-    /// <paramref name="draft"/>: take back the line parked on the target tab (<c>chat.drafts</c>); a prefilled open
-    /// starts fresh and leaves it parked.</summary>
+    /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the focused
+    /// window, falling back to Main; refuses if neither has a sendable channel, and whenever the line would not
+    /// be visible (out of game, app unfocused, a NUI window over the box) -- each would eat every key unseen.
+    /// <paramref name="draft"/> takes back the line parked on the target tab (<c>chat.drafts</c>).</summary>
     private static void Open(bool draft = true)
     {
         if (_layout == null || !GameGate.InGame) return;
@@ -260,8 +256,8 @@ public sealed unsafe partial class ChatService
         Rebuild();
     }
 
-    /// <summary>Register the chat service's own window-management commands (#41) into the shared registry
-    /// (#165). Every other command on the surface belongs to the service that implements it.</summary>
+    /// <summary>Register the chat service's own window-management commands into the shared registry. Every
+    /// other command on the surface belongs to the service that implements it.</summary>
     private static void RegisterCommands()
     {
         var r = CommandRegistry.Global;
@@ -301,7 +297,7 @@ public sealed unsafe partial class ChatService
         Rebuild();   // reflect the new text in the footer
     }
 
-    /// <summary>The framework key delegate (#64): route the key to the edit line only while chat owns the
+    /// <summary>The framework key delegate: route the key to the edit line only while chat owns the
     /// keyboard (typing or editing a settings field), consuming it; otherwise decline so it falls to gameplay.
     /// The arbiter routes here first via the keyboard-owner path when <see cref="WantsKey"/> is set.</summary>
     private static bool OnChatKey(uint key, int mods)
@@ -415,9 +411,9 @@ public sealed unsafe partial class ChatService
         else if (!IsTyping) KeyboardMode(false);
     }
 
-    /// <summary>Take/release the keyboard by asserting this window's keyboard ownership on the arbiter, which
-    /// drives the centralized engine gate (KeyboardModeOn/Off + the #34 drive-latch reset) once for all
-    /// consumers (#64). The gate logic itself moved to <c>UiInputService</c>; chat now only declares intent.</summary>
+    /// <summary>Take/release the keyboard by asserting this window's keyboard ownership on the arbiter. The
+    /// engine gate itself (KeyboardModeOn/Off plus the drive-latch reset) lives in <c>UiInputService</c>, once
+    /// for all consumers; chat only declares intent.</summary>
     private static void KeyboardMode(bool on)
     {
         if (_uiWindow != null) UiHost.RequestKeyboard(_uiWindow, on);

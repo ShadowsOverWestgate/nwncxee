@@ -8,15 +8,10 @@ using CX.Ui;
 
 namespace CX.Services.Radial;
 
-/// <summary>One persisted layout row (CX-692): a <b>hoist</b> (<see cref="Fn"/> set: a leaf or submenu deep in the
-/// tree spliced into the top list, validated by <c>(Fn, Param)</c> at <see cref="Path"/>), a <b>reorder</b>
-/// (<see cref="Fn"/> empty: the slot row at <see cref="Path"/> fixed at <see cref="At"/> within its own list, no
-/// validator -- it only repositions whatever the engine put there), or a <b>hide</b> (CX-694, <see cref="Hidden"/>:
-/// the slot row at <see cref="Path"/> dropped from its list; claims no index), or a <b>folder</b> (CX-694,
-/// <see cref="Folder"/> set, no path: a named submenu row in the top list whose members are the hoists with
-/// <see cref="In"/> = its name). <see cref="At"/> is the row's index among the slot rows of its list, written back
-/// after every compose. A hoist is copied to another root kind as a row of that kind with the same path and
-/// validator ("Also show on"): the engine builds the same subtree under every world root, with that root's target.</summary>
+/// <summary>One persisted layout row: a <b>hoist</b> (<see cref="Fn"/> set: a leaf or submenu deep in the tree spliced
+/// into the top list, validated by <c>(Fn, Param)</c> at <see cref="Path"/>), a <b>reorder</b> (<see cref="Fn"/> empty:
+/// the slot row at <see cref="Path"/> fixed at <see cref="At"/> within its own list, no validator), a <b>hide</b>
+/// (<see cref="Hidden"/>: dropped from its list, claiming no index), or a <b>folder</b> (<see cref="Folder"/> set).</summary>
 internal sealed class RadialPin
 {
     public RootKind Root;
@@ -26,19 +21,20 @@ internal sealed class RadialPin
     public string Folder = "";
     /// <summary>The folder this hoist sits in ("" = the top list).</summary>
     public string In = "";
-    /// <summary>The <see cref="PlayerIdentity.Key"/> this row belongs to (CX-694); "" = a row written before the key
+    /// <summary>The <see cref="PlayerIdentity.Key"/> this row belongs to; "" = a row written before the key
     /// existed, adopted by the first identity that loads.</summary>
     public string Who = "";
     /// <summary>The Itanium name of the leaf's handler, <c>vt:&lt;off&gt;:&lt;_ZTV&gt;+&lt;n&gt;</c> for a virtual one,
     /// <c>rva:&lt;hex&gt;</c> on Windows, <see cref="RadialPins.SubToken"/> for a hoisted submenu; "" = a reorder.</summary>
     public string Fn = "";
     public long Param;
+    /// <summary>The row's index among the slot rows of its list, written back after every compose.</summary>
     public int At;
     /// <summary>The breadcrumb as seen at pin time (<c>Cast Spell &gt; Wizard &gt; 3 &gt; Fireball</c>): the greyed row's text.</summary>
     public string Label = "";
     /// <summary>The leaf's icon resref at pin time: a self pin has no live leaf to read one from.</summary>
     public string Icon = "";
-    /// <summary>A self pin (CX-694, <c>fn=self:&lt;key&gt;</c>): fired on a stand-in of the self menu wherever it is shown,
+    /// <summary>A self pin (<c>fn=self:&lt;key&gt;</c>): fired on a stand-in of the self menu wherever it is shown,
     /// never walked; its path is the source breadcrumb only.</summary>
     public bool IsSelf => Fn.StartsWith(SelfActions.Prefix, StringComparison.Ordinal);
     /// <summary>The leaf label alone.</summary>
@@ -63,22 +59,10 @@ internal sealed class RadialRowTag
 }
 
 /// <summary>
-/// The persisted radial layout (CX-692, spec §4.2, ADR 0025 amendment): the <c>radial.p&lt;N&gt;.*</c> bag parsed
-/// into <see cref="RadialPin"/> rows at first open, replaced whole on every change. Pure parts (parse/format, the
-/// position model <see cref="Compose"/>, <see cref="Validate"/>) are self-checked; the engine-facing part is
-/// <see cref="FnToken"/>, the address-to-name step a persisted handler needs: Linux <c>dladdr</c> gives the exported
-/// Itanium name of the leaf's fn (or the <c>_ZTV</c> of the handler's class for a virtual thunk). Linux-only by design:
-/// the Windows handlers are not exported (research §6), so there the token is the fn's RVA, compared against the
-/// current tree's fn at the same path -- which is what "never fire the wrong action" needs.
-/// <para>Position model: a list is its vanilla slot rows in slot order plus this root's hoists; a persisted row claims
-/// index <see cref="RadialPin.At"/> (ascending, first free at or after it), the unclaimed vanilla rows fill the
-/// gaps in slot order. No rows = vanilla order; reset = drop the root's rows. Leading rows with a null tag (the
-/// item root's header) are anchored and not counted.</para>
-/// <para>One layout per (server, character): every row carries the <see cref="PlayerIdentity.Key"/> it was made
-/// under; <see cref="Load"/> keeps the current key's rows live and the rest aside, and a save writes both back.</para>
-/// <para>Folders (CX-694): one level of named rows in the top list; a hoist's <see cref="RadialPin.In"/> names its
-/// folder, and the folder's member list is a list of its own for the position model (<see cref="RadialPin.SameList"/>).
-/// ponytail: one level -- a folder in a folder is a cascade again.</para>
+/// The persisted radial layout: the <c>radial.p&lt;N&gt;.*</c> bag parsed into <see cref="RadialPin"/> rows at first
+/// open, replaced whole on every change, one layout per (server, character) by <see cref="PlayerIdentity.Key"/>. A list
+/// is its vanilla slot rows in slot order plus this root's hoists; a persisted row claims index
+/// <see cref="RadialPin.At"/> (first free at or after it), unclaimed vanilla rows fill the gaps, and leading rows with a null tag (the item root's header) are anchored.
 /// </summary>
 internal static unsafe partial class RadialPins
 {
@@ -99,7 +83,7 @@ internal static unsafe partial class RadialPins
 
     /// <summary>Parse the bag once, then on every open split the rows by <paramref name="who"/>: the current
     /// identity's rows are the live set, the rest wait in <see cref="_other"/>. Rows with no key are adopted by the
-    /// first identity that loads (the pre-CX-694 file) and take its key at the next save.</summary>
+    /// first identity that loads and take its key at the next save.</summary>
     public static void Load(ExtenderLog? log, string who)
     {
         if (_who == who) return;
@@ -144,7 +128,7 @@ internal static unsafe partial class RadialPins
         return r;
     }
 
-    /// <summary>The top-level reorders of <paramref name="root"/> filed in a folder (CX-694): their slots leave the top list.</summary>
+    /// <summary>The top-level reorders of <paramref name="root"/> filed in a folder: their slots leave the top list.</summary>
     public static List<RadialPin> Filed(RootKind root)
     {
         var r = new List<RadialPin>();
@@ -254,7 +238,7 @@ internal static unsafe partial class RadialPins
         moved.At = to;
     }
 
-    /// <summary>Hide the slot row at <paramref name="path"/> (CX-694): its reorder, if any, goes with it.</summary>
+    /// <summary>Hide the slot row at <paramref name="path"/>: its reorder, if any, goes with it.</summary>
     public static RadialPin Hide(RootKind root, int[] path)
     {
         RadialPin? old = Find(root, path, hoist: false);
@@ -361,7 +345,8 @@ internal static unsafe partial class RadialPins
     }
 
     /// <summary>The fn's exported name (Linux, exact <c>dladdr</c> hit only; a virtual thunk names the handler's
-    /// <c>_ZTV</c> and the vptr's offset into it), or its RVA on Windows. "" = an entry-less slot or an unnamed fn.</summary>
+    /// <c>_ZTV</c> and the vptr's offset into it), or its RVA on Windows, where the handlers are not exported.
+    /// "" = an entry-less slot or an unnamed fn.</summary>
     private static string EntryToken(in RadialSlot s)
     {
         if (s.Fn == IntPtr.Zero) return "";

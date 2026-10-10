@@ -8,11 +8,9 @@ namespace CX.Services.Inventory;
 
 /// <summary>
 /// The "how much gold" prompt the inventory's gold button opens, in place of the stock <c>CGuiItemStackSplitPanel</c>
-/// (TLK 63448, max = the player's gold, OK starts the gold drag): an amount box you type into, a slider with − / +,
-/// preset chips (1, 10, 100, 1000, half, all) and Cancel / Drop. GL- and engine-free: the service draws what
-/// <see cref="Emit"/> writes and routes the input here. Keys: digits type (the first one replaces), Backspace / Delete,
-/// Up / Down ±1 (Shift ×10, Ctrl ×100), PageUp / PageDown ±10 %, Home / End, Enter drops, Esc cancels. Design px ×
-/// <see cref="S"/>, like the inventory window.
+/// (TLK 63448, max = the player's gold, OK starts the gold drag): an amount box, a slider with − / +, preset chips and
+/// Cancel / Drop, typed with digits, Backspace/Delete, Up/Down ±1 (Shift ×10, Ctrl ×100), PageUp/PageDown ±10 %,
+/// Home/End, Enter, Esc. GL- and engine-free: the service draws <see cref="Emit"/>'s output and routes input here.
 /// </summary>
 internal sealed class GoldPrompt
 {

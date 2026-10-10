@@ -6,12 +6,10 @@ using CX.Alloy;
 namespace CX.Services.Perf;
 
 /// <summary>
-/// #79 (map #68, spec #77 M1): always-available on-screen FPS + frame-time readout -- the measurement
-/// instrument for every M1 A/B gate. One small top-right window drawn through the shared batch rig.
-/// <c>fps.enabled</c> (<see cref="FpsKnobs"/>: the panel row, <c>/fps enabled 1</c>, <c>cx.cfg</c>) is its
-/// visibility, and persists; it ships off.
-/// <para>Hot path (every in-game frame) allocates nothing: dt accumulation is four longs; the text +
-/// vertex bake runs every <see cref="UpdateEvery"/> frames and writes into preallocated arrays.</para>
+/// The on-screen FPS + frame-time readout, the measurement instrument every A/B comparison leans on: one small
+/// top-right window drawn through the shared batch rig. <c>fps.enabled</c> (<see cref="FpsKnobs"/>: the panel row,
+/// <c>/fps enabled 1</c>, <c>cx.cfg</c>) is its visibility and persists; it ships off. The hot path allocates nothing:
+/// dt accumulation is four longs, and the text + vertex bake runs every <see cref="UpdateEvery"/> frames into preallocated arrays.
 /// </summary>
 public sealed class FpsOverlayService : IExtenderService
 {
@@ -107,14 +105,14 @@ public sealed class FpsOverlayService : IExtenderService
         Append("FPS "); AppendNum(fps, 0);
         Append("  "); AppendNum(avgMs, 1); Append(" ms");
         Append("  max "); AppendNum(maxMs, 1);
-        // #83 acceptance: the Alloy path's clustered light rig has to show its GPU cost and its light count
-        // where the frame budget is read, not only in the period log.
+        // The light rig has to show its GPU cost and its light count where the frame budget is read, not only
+        // in the period log.
         if (AlloyLights.LastLightCount > 0)
         {
             Append("  L"); AppendNum(AlloyLights.LastLightCount, 0);
             Append(" cl "); AppendNum(AlloyLights.LastBuildMs, 2); Append(" ms");
         }
-        // #187: every view is a bake, so "sh n" is views baked this frame -- the number the removal's cost is
+        // every view is a bake, so "sh n" is views baked this frame -- the number the removal's cost is
         // read off. The ms is CPU submission only (see CasterPass.LastShadowMs).
         if (CasterPass.LastViews > 0)
         {

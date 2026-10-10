@@ -4,12 +4,10 @@ using System.Collections.Generic;
 namespace CX.Ui;
 
 /// <summary>
-/// Accumulates interleaved 8-float vertices (x,y,u,v,r,g,b,a) for the owned GL text/UI pass.
-/// One primitive set feeds the whole chatbox: <see cref="Rect"/> for chrome (samples a solid white
-/// atlas texel so alpha comes straight from the vertex) and <see cref="Glyph"/> for text. Built cold
-/// (ingest / input / resize thread), then handed to <c>ChatRenderer.Publish</c>; the hot draw
-/// only uploads. Pooled per thread via <c>WindowRenderer</c> (#53): <see cref="Reset"/> clears
-/// + reconfigures the solid UV, so the internal <c>List&lt;float&gt;</c> keeps its capacity across rebuilds.
+/// Accumulates interleaved 8-float vertices (x,y,u,v,r,g,b,a) for the owned GL text/UI pass. One primitive set
+/// feeds a whole window: <see cref="Rect"/> for chrome (it samples a solid white atlas texel, so alpha comes
+/// straight from the vertex) and <see cref="Glyph"/> for text. Built cold on the ingest / input / resize thread;
+/// the hot draw only uploads. <see cref="Reset"/> clears and re-points the solid UV, keeping the list's capacity.
 /// </summary>
 public sealed class VertexBatch
 {
@@ -105,7 +103,7 @@ public sealed class VertexBatch
         V(to, x0+dx,y0, gl.U0,gl.V0, r,g,b,a); V(to, x1,y1, gl.U1,gl.V1, r,g,b,a);    V(to, x0,y1, gl.U0,gl.V1, r,g,b,a);
     }
 
-    /// <summary>One baked glyph as a sprite (#593): its box centred on (<paramref name="cx"/>, <paramref name="cy"/>)
+    /// <summary>One baked glyph as a sprite: its box centred on (<paramref name="cx"/>, <paramref name="cy"/>)
     /// and rotated by <paramref name="angle"/> radians (clockwise on the y-down screen). Ignores the clip band.</summary>
     public void GlyphSprite(in Glyph gl, float cx, float cy, float angle, float r, float g, float b, float a)
     {
@@ -129,11 +127,10 @@ public sealed class VertexBatch
         Quad(_v, x0, y0, x1, y1, u0, v0, u1, v1, r, g, b, a);
     }
 
-    /// <summary>Nine-slice (native-gui-skinning §4.2b): the texture's <paramref name="l"/>/<paramref name="t"/>/
-    /// <paramref name="r"/>/<paramref name="bt"/> texel border keeps its size × <paramref name="scale"/> on screen, the
-    /// edges stretch along one axis, the centre along both. Engine textures are bottom-up (v = 1 is the top row).
-    /// A rect narrower than its borders shrinks them proportionally. <paramref name="tw"/>/<paramref name="th"/>
-    /// are the texture's texel size.</summary>
+    /// <summary>Nine-slice: the texture's <paramref name="l"/>/<paramref name="t"/>/<paramref name="r"/>/
+    /// <paramref name="bt"/> texel border keeps its size × <paramref name="scale"/> on screen, the edges stretch
+    /// along one axis, the centre along both. Engine textures are bottom-up (v = 1 is the top row). A rect narrower
+    /// than its borders shrinks them proportionally; <paramref name="tw"/>/<paramref name="th"/> are its texel size.</summary>
     public void NineSlice(float x0, float y0, float x1, float y1, int tw, int th, int l, int t, int r, int bt,
                           float scale, float cr, float cg, float cb, float ca)
     {

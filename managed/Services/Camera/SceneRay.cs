@@ -9,20 +9,14 @@ using static CX.Framework.EngineLayout;
 
 namespace CX.Services.Camera;
 
-/// <summary>One segment test through the engine's own <c>Scene::HitCheck</c> -- tile BSP parts then gobs,
-/// nearest hit wins -- with the one <c>CHitInfo</c> its users share (#537 occlusion fade, #538
-/// spring arm, CX-29 foot placement from inside <c>Gob::Animate</c>). The record is allocated once and never moves: a hit links it into the gob's SafePointer
-/// list, so <see cref="Release"/> must unlink it before the frame ends. Hot: no allocation per cast.
-/// <para><b>DB mode</b> (ADR 0028) routes the same cast through <see cref="HitTest"/> -- CX-118's own
-/// <c>HitQuery.Ray</c>, which names the camera spring arm and the footstep as its callers. The engine function
-/// is not an option there: it would run engine code over a facade scene. The <c>IntPtr scene</c> callers pass
-/// around stays an opaque handle; in DB mode it is the world scene's facade, so nothing above this file
-/// changes. Without this every caster stood down silently, because a facade's <c>Scene+0x188</c> is never
-/// written and <see cref="WorldScene"/>'s BSP-root test therefore read zero for every DB scene.</para></summary>
+/// <summary>One segment test through the engine's own <c>Scene::HitCheck</c> -- tile BSP parts then gobs, nearest
+/// hit wins -- with the one <c>CHitInfo</c> its users share. The record is allocated once and never moves: a hit
+/// links it into the gob's SafePointer list, so <see cref="Release"/> must unlink it before the frame ends; no
+/// allocation per cast. With Alloy on it routes through <see cref="HitTest"/>: the engine's would run over a facade.</summary>
 public static unsafe class SceneRay
 {
     private static SceneHitCheckFn _hitCheck;
-    /// <summary>Resolved once: a cast runs per creature per frame (CX-29) and up to 15 times per spring arm.</summary>
+    /// <summary>Resolved once: a cast runs per creature per frame and up to 15 times per spring arm.</summary>
     private static HitInfoResetFn _reset;
     private static IntPtr* _scene;
     private static int* _statics;
@@ -85,7 +79,7 @@ public static unsafe class SceneRay
     {
         if (CX.Alloy.Renderer.On) return DbCast(scene, from, to, ignore, out hit, out gob, statics);
         var info = new CHitInfo((IntPtr)_info);
-        // mode 0 = BSP parts then gobs; -0x40000001 and box 0 are the camera's own arguments
+        // hit-test mode 0 = BSP parts then gobs; -0x40000001 and box 0 are the camera's own arguments
         _reset((IntPtr)_info, 0, -0x40000001L, 0);
         *(IntPtr*)(_info + SizeOfHitInfo) = ignore;
         info.IgnoreList = (IntPtr)(_info + SizeOfHitInfo);

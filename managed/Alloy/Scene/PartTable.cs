@@ -3,11 +3,9 @@ using CX.Engine;
 using CX.Framework;
 namespace CX.Alloy;
 
-/// <summary>The engine reads the frame still makes: the keyhole aperture's box test (the port of
-/// <c>Camera::GetCanKeyholeDissolve</c>'s arithmetic, which <c>DbKeyhole</c> runs over the database's own
-/// boxes), <c>g_nEnableBumpyWater</c>, and the material/part accessors resolved once at
-/// <see cref="Resolve"/>. The part-record table that gave the class its name went with the engine-scene
-/// path, and CX-188 took the rest of the camera plumbing with <c>AlloyRenderer.ReadKeyholeCamera</c>.</summary>
+/// <summary>The engine reads the frame still makes: the keyhole aperture's box test (the arithmetic of
+/// <c>Camera::GetCanKeyholeDissolve</c>, which <c>DbKeyhole</c> runs over the database's own boxes),
+/// <c>g_nEnableBumpyWater</c>, and the material/part accessors resolved once at <see cref="Resolve"/>.</summary>
 internal static unsafe class PartTable
 {
     internal static PartGetIsOpaqueFn _isOpaque;
@@ -44,24 +42,18 @@ internal static unsafe class PartTable
         return _isOpaque != null && _hasEnvMap != null && _hasBumpyShiny != null && _getTexture != null && _primTable != null;
     }
     /// <summary>A <c>PartDanglyMesh</c>, which reaches this hook because <c>PartDanglyMesh::Draw</c> @0x451b60
-    /// calls <c>PartTriMesh::Draw</c> outright. An identity for the census and the per-frame re-harvest; not a
-    /// reason to refuse the part. The CPU re-solve is <c>PartDanglyMesh::Animate(float)</c> @0x49bbb0 -- a
-    /// separate per-frame pass, NOT the draw, so suppressing the draw does not freeze the sway -- and it
-    /// writes per-part into that part's own VDO item (<c>GetItemDynamicData(vp+0x58, vp+0x60)</c>, the DYNAMIC
-    /// vertex pool at vdo+0x30, stride vdo+0x38, through the same item-offset table at vdo+0x48 the static
-    /// pool uses), so a harvest off the engine's own VAO inherits whichever pool the engine bound. Tested by
-    /// vtable, which is exact -- the class has no flag to read (#135).</summary>
+    /// calls <c>PartTriMesh::Draw</c> outright. Not a reason to refuse the part: the CPU re-solve is
+    /// <c>PartDanglyMesh::Animate(float)</c> @0x49bbb0, a separate pass that writes the part's own DYNAMIC
+    /// vertex pool, so a harvest off the engine's VAO inherits whichever pool it bound. Tested by vtable.</summary>
     internal static bool IsDangly(IntPtr part)
     {
         if (_danglyVtbl == IntPtr.Zero || part == IntPtr.Zero) return false;
         return new PartRef(part).Vtbl == _danglyVtbl;
     }
-    /// <summary>#336: the engine's verdict reproduced from a cached box. <c>Camera::GetCanKeyholeDissolve</c>
-    /// @0x4a6f70 decompiled: <c>cam+0xe50 &amp;&amp; part+0x50 == 0 &amp;&amp; part+0x78 &gt; cam+0xe64 &amp;&amp;
-    /// BoxAbovePlane(min, max, plane@cam+0xe54) &lt; 0</c>; <c>BoxAbovePlane</c> @0x5b32d0 evaluates the
-    /// plane at the box corner that minimises it (x = a &gt; 0 ? min : max, y = b &gt; 0 ? min : max, z =
-    /// c &gt; 0 ? min : max) as <c>y*b + a*x + c*z + d</c>, in that order, in floats. The caller has
-    /// already required a gobless part; <paramref name="box"/> is its six floats.</summary>
+    /// <summary>The engine's verdict reproduced from a cached box. <c>Camera::GetCanKeyholeDissolve</c>
+    /// @0x4a6f70 requires a gobless part above the cut and <c>BoxAbovePlane</c> @0x5b32d0 negative;
+    /// <c>BoxAbovePlane</c> evaluates the plane at the box corner that minimises it (each axis takes min when
+    /// its coefficient is positive) as <c>y*b + a*x + c*z + d</c>, in that order, in floats.</summary>
     internal static bool KeyholeDissolvesBox(float* box, byte keyholeOn, float* plane, float cut)
     {
         if (keyholeOn == 0 || !(box[5] > cut)) return false;

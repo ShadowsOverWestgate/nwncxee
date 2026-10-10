@@ -6,24 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 (seam-scene): the one place the scene and camera hit slots meet CX-118's cast
-/// (<c>CX-186</c>). Three slots take a world-space segment and have to answer in three
-/// different shapes -- <c>Scene::HitCheck</c> returns the <c>CHitInfo</c> KIND, <c>Camera::HitCheck(Vector,
-/// ...)</c> returns the <c>CAurObject*</c> hit, and <c>Camera::HitCheck(int, int, ...)</c> builds its segment
-/// from a pixel first -- so the cast, the point write-back and the <c>CHitInfo</c> fill are shared here and
-/// each slot keeps only its own return.
-///
-/// <para><b>The engine's reentrancy hazard is deliberately NOT inherited.</b> The engine keeps the record in
-/// a <c>CurrentHitInfo</c> global, so a cast issued from inside a cast's callback overwrites its caller's
-/// answer. The record is passed explicitly here, and nothing holds one between calls.</para>
-///
-/// <para><b>Which query shape.</b> Every pick the game issues is BOX-ONLY with the door fade honoured --
-/// <c>GameCameraHitCheck</c> forces <c>CHitInfo+0x20 = 1</c> and the pickers build their record with
-/// <c>Reset(0, -0x40000001, 0)</c> -- which is <see cref="HitQuery.Pick"/>. A camera's own geometry cast
-/// (a spring arm, a floor probe) wants triangles, which is <see cref="HitQuery.Ray"/>. The slots that arrive
-/// with a <c>CHitInfo</c> the GAME filled take their mask and their flags from it rather than from either
-/// default, because the real client replaces the mask with
-/// <c>CClientExoApp::GetHitCheckMaterialMask</c>'s value.</para></summary>
+/// <summary>Where the scene and camera hit slots meet the cast: three slots take a world-space segment and
+/// answer in three shapes -- the <c>CHitInfo</c> KIND, the <c>CAurObject*</c> hit, or that from a pixel -- so
+/// the cast, the point write-back and the <c>CHitInfo</c> fill are shared here. The record is passed, never held
+/// in a <c>CurrentHitInfo</c> global, so a cast inside a cast's callback cannot clobber its caller's answer.</summary>
 internal static unsafe class SeamHit
 {
     /// <summary>Cast a world-space segment through <paramref name="scene"/>: write the hit point to
@@ -76,12 +62,13 @@ internal static unsafe class SeamHit
     {
         HitQuery q = HitQuery.Pick(scene, from, to);
         if (info == 0) return q;
-        q.SurfaceMask = (ulong)*(long*)(info + EngineLayout.HitInfoSurfaceMask);
-        q.BoxOnly = *(int*)(info + EngineLayout.HitInfoBoxOnly) != 0;
+        var h = new CHitInfo(info);
+        q.SurfaceMask = (ulong)h.SurfaceMask;
+        q.BoxOnly = h.BoxOnly != 0;
         // CHitInfo+0x00 non-zero is the engine's "statics only": Scene::HitCheck runs the BSP pass and stops.
-        q.Objects = *(int*)(info + EngineLayout.HitInfoMode) == 0;
-        int n = *(int*)(info + EngineLayout.HitInfoIgnoreCount);
-        nint* list = *(nint**)(info + EngineLayout.HitInfoIgnoreList);
+        q.Objects = h.Mode == 0;
+        int n = h.IgnoreCount;
+        nint* list = (nint*)h.IgnoreList;
         // HitPartOnBSPNode's ground arm is gated on BOTH ignore words being zero, so a record that carries
         // an ignore list (every mouse pick: the followed creature) does not fall through to the plane.
         q.Ground = HitTest.GroundPlane && n == 0 && list == null;
@@ -98,8 +85,9 @@ internal static unsafe class SeamHit
     private static void Ignore(nint info, ulong[] bits, bool on)
     {
         if (info == 0) return;
-        int n = *(int*)(info + EngineLayout.HitInfoIgnoreCount);
-        nint* list = *(nint**)(info + EngineLayout.HitInfoIgnoreList);
+        var h = new CHitInfo(info);
+        int n = h.IgnoreCount;
+        nint* list = (nint*)h.IgnoreList;
         if (n <= 0 || list == null) return;
         for (int i = 0; i < n; i++)
         {

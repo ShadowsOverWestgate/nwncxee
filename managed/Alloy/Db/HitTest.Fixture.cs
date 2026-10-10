@@ -6,9 +6,9 @@ namespace CX.Alloy.Db;
 
 public static unsafe partial class HitTestCheck
 {
-    /// <summary>Synthetic scenes built straight into the real tables, because the part-tree builder (CX-114)
-    /// and the parser (CX-112) are other streams' and the hit test must be checkable without either. Every
-    /// record is freed again by <see cref="Tear"/>, so one run leaves the database as it found it.</summary>
+    /// <summary>Synthetic scenes built straight into the real tables, so the hit test is checkable without
+    /// the part-tree builder or the parser. Every record is freed again by <see cref="Tear"/>, so one run
+    /// leaves the database as it found it.</summary>
     internal static class Fixture
     {
         /// <summary>The value a trigger part reports at <c>CHitInfo+0x70</c> in the fixture.</summary>
@@ -310,7 +310,7 @@ public static unsafe partial class HitTestCheck
         }
 
         /// <summary>The benchmark fixture: <paramref name="n"/> unit boxes on a lattice over a 500m square,
-        /// which is the footprint of a large SoW exterior.</summary>
+        /// which is the footprint of a large persistent-world exterior.</summary>
         internal static World BuildGrid(int n)
         {
             var w = new World { Scene = NewScene() };

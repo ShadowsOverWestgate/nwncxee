@@ -8,19 +8,18 @@ using CX.Services.Radial;
 
 namespace CX.Services.Inventory;
 
-/// <summary>
-/// The inventory window's engine side (CX-146 §10 has every address, both builds): the
-/// <c>SetInventoryVisible</c> hook, the backpack set learned from <c>CGuiMultiPageMultiInvbox::AddItem</c>, the per-frame
-/// copy of items / equip slots / gold / weight into the <see cref="InventoryModel"/>, the vanilla panel's own labels (AC,
-/// name, max weight -- filled by <c>SetCharacterData</c>, which is side-effect free on the player's own panel), and the
-/// stock senders. Nothing engine-side is held across a frame: every object is re-resolved by id.
-/// </summary>
 /// <summary>What a world pick hit: nothing, the ground, or a game object.</summary>
 internal enum WorldKind { None, Ground, Object }
 
 /// <summary>A world pick: the kind, the object's id and <c>GetGameobjectHit</c> type (0 for ground), and the hit point.</summary>
 internal readonly record struct WorldHit(WorldKind Kind, uint Oid, int Type, System.Numerics.Vector3 Point);
 
+/// <summary>
+/// The inventory window's engine side: the <c>SetInventoryVisible</c> hook, the backpack set learned from
+/// <c>CGuiMultiPageMultiInvbox::AddItem</c>, the per-frame copy of items / equip slots / gold / weight into the
+/// <see cref="InventoryModel"/>, the vanilla panel's own labels (filled by <c>SetCharacterData</c>, side-effect free on
+/// the player's own panel), and the stock senders. Nothing is held across a frame: every object is re-resolved by id.
+/// </summary>
 internal static unsafe class InventoryNative
 {
     private static ExtenderLog? _log;
@@ -63,7 +62,7 @@ internal static unsafe class InventoryNative
     };
 
     /// <summary>Resolve, then install the funnel hook, the repository chain and the container page-count hook. False =
-    /// every piece stands down together (a half-live inventory is the failure CX-45 forbids).</summary>
+    /// every piece stands down together: a half-live inventory is not a state this ships in.</summary>
     public static bool Attach(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -228,11 +227,9 @@ internal static unsafe class InventoryNative
     // ---- the per-frame copy ----
 
     /// <summary>Copy the player's inventory into <paramref name="m"/>. Render thread; allocates nothing (the label
-    /// re-read is cold, on a change of gold, weight or worn items only). "Worn" is the creature's own slot array, not the
-    /// item's <c>equipSlot</c>: that is the stock panel's box field, left stale when the appearance update unequips
-    /// before the unequip confirm (the confirm then misses and never resets it). A container's items reach the same
-    /// <c>AddItem</c> and carry the player as possessor; <see cref="EngineLayout.ItemInContainer"/> sends them away (a
-    /// later repository <c>'A'</c> brings one back).</summary>
+    /// re-read is cold, on a change of gold, weight or worn items only). "Worn" is the creature's own slot array, not
+    /// the item's <c>equipSlot</c>, the stock panel's box field, which is left stale when the appearance update unequips
+    /// before the confirm. A container's items reach the same <c>AddItem</c>; <see cref="EngineLayout.ItemInContainer"/> sends them away.</summary>
     public static void Fill(InventoryModel m)
     {
         IntPtr app = App();
@@ -308,14 +305,10 @@ internal static unsafe class InventoryNative
     private static ulong _lootSig;
     private static bool _lootGridOdd, _lootFull;
 
-    /// <summary>Mirror the player's open container into <paramref name="m"/>: the page on the stock grid is read live, and
-    /// every page seen before is kept (the server streams one). A multi-page container's page is fresh when the server's
-    /// <c>'P'</c> for it arrived (<see cref="OnContainerPagenum"/>) -- the server sends one on open, so page 0 is asked for
-    /// then; a single page (or a bag, whose pages the server never turns) when an item shows or <paramref name="grace"/>
-    /// ticks pass, as an empty one sends nothing. From then until the next turn the grid is the whole page, so an item
-    /// recorded on it that the grid no longer holds is gone (someone else took it). An item that left for a backpack
-    /// (<see cref="EngineLayout.ItemInContainer"/> cleared) or the world leaves at once. Render thread; allocates nothing but
-    /// the title read, once per container.</summary>
+    /// <summary>Mirror the player's open container into <paramref name="m"/>: the page on the stock grid is read live
+    /// and every page seen before is kept (the server streams one). A multi-page container's page is fresh once the
+    /// server's <c>'P'</c> for it arrived (<see cref="OnContainerPagenum"/>), a single page or a bag once an item shows
+    /// or <paramref name="grace"/> ticks pass; an item the live grid no longer holds is gone. Render thread, no allocation.</summary>
     public static void FillLoot(LootModel m, IntPtr panel, long now, long grace)
     {
         var p = new CPanelInventory(panel);
@@ -483,6 +476,7 @@ internal static unsafe class InventoryNative
         return msg;
     }
 
+    /// <summary>The <c>GuiInventory_Status</c> the stock panel owes the server, sent from the CX window in its place.</summary>
     public static void Status(bool visible)
     {
         if (ExtenderLog.Enabled) _log?.Info($"[inv] status open={visible}");
@@ -608,10 +602,9 @@ internal static unsafe class InventoryNative
     }
 
     /// <summary>What a backpack, worn or looted item dropped on <paramref name="w"/> does, as the stock
-    /// <c>CGuiInvbox::HandleDropAsSource</c> decides it: the ground drops it there; a potion on the player or the player's
-    /// own associate is used on it; any other creature (an associate too, for a non-potion), from the backpack only (not
-    /// <paramref name="notBackpack"/>), opens a barter with it. Null: nothing happens (a placeable, the player with a
-    /// non-potion, a worn item on a creature).</summary>
+    /// <c>CGuiInvbox::HandleDropAsSource</c> decides it: the ground drops it there; a potion on the player or the
+    /// player's own associate is used on it; any other creature, from the backpack only (not
+    /// <paramref name="notBackpack"/>), opens a barter with it. Null: nothing happens.</summary>
     public static string? DropVerb(uint oid, bool notBackpack, in WorldHit w)
     {
         if (w.Kind == WorldKind.Ground) return "drop";

@@ -5,7 +5,7 @@ using System.Text;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112's off-device suite: one embedded ASCII model and one hand-built binary one, asserted on
+/// <summary>The off-device suite: one embedded ASCII model and one hand-built binary one, asserted on
 /// known values -- the node tree, the weld, the derived normals, the adjacency, the surface area, the
 /// controllers and the child reorder. No engine, no GL, no files, so it runs under <c>run-demo.sh</c> and
 /// under <c>tools/mdlcheck --selfcheck</c> unchanged.</summary>
@@ -123,7 +123,7 @@ public static class MdlSelfCheck
         endwalkmeshgeom
         """;
 
-    /// <summary>CX-118: the walkmesh parses, and it parses as something the hit test can use -- an
+    /// <summary>The walkmesh parses, and parses as something the hit test can use -- an
     /// <c>aabb</c> node with a tree and per-face surface ids. Without this the tile floor is silently absent
     /// and the symptom is a creature nine metres in the air.</summary>
     private static void Wok(Action<bool, string> expect)

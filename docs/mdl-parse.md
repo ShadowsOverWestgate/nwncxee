@@ -3,7 +3,7 @@
 CX reads models itself. `managed/Alloy/Mdl/` is a complete, engine-free port of the engine's own model reader:
 the binary container, the ASCII interpreter and the post-process that turns authored geometry into render
 geometry. Nothing in that directory touches engine memory, which is what lets `tools/mdlcheck` run the whole
-parse off the device -- over the game's own containers, over the SoW content corpus, and against the engine's
+parse off the device -- over the game's own containers, over a content corpus (`CONTENT_MODELS`), and against the engine's
 own compiled output as an oracle.
 
 ## The files
@@ -88,7 +88,7 @@ corpus's `.mtr` files; a session can point it at the engine's own lookup.
   against recorded values, so the binary offsets are a regression lock and not a round trip of one belief.
 - **bifs** -- **32832 of 32832** models in the base game's containers parse; 422178 nodes, 19.9M vertices,
   1.68 GiB at ~400 MiB/s wall across the pool, 0 out-of-range indices.
-- **ascii** -- **31848 of 31848** files in the SoW content corpus parse (9391 of them binary), 2.19 GiB.
+- **ascii** -- **31848 of 31848** files in a persistent world's content corpus parse (9391 of them binary), 2.19 GiB.
   278 out-of-range face/UV indices and 3 models with a clamped count: malformed content, counted and named
   rather than quietly clamped.
 - **fuzz** -- **14400 mutations** (truncations and bit flips) of 240 real models: 0 throws, 0 over 4 s,

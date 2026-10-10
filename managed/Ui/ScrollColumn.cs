@@ -3,12 +3,10 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>
-/// A vertically scrolling box (#587): a viewport rect, the height of the content laid out inside it, and the
-/// scroll <see cref="Offset"/> the owner subtracts from its content y when drawing and adds to a pointer y when
-/// hit-testing. Owns the scrollbar (chat's chrome: 8 px gutter at the right edge, always visible while the
-/// content overflows), the thumb drag, the track page-jump and the wheel step. The owner draws its content
-/// between <see cref="VertexBatch.ClipY"/> / <see cref="VertexBatch.ClearClip"/> on the viewport band, then
-/// calls <see cref="Draw"/> for the bar. Pure and zero-alloc: pixels in, offset out.
+/// A vertically scrolling box: a viewport rect, the height of the content laid out inside it, and the scroll
+/// <see cref="Offset"/> the owner subtracts from its content y when drawing and adds to a pointer y when
+/// hit-testing. Owns the scrollbar, the thumb drag, the track page-jump and the wheel step; the owner clips its
+/// content to the viewport band with <see cref="VertexBatch.ClipY"/>, then calls <see cref="Draw"/> for the bar.
 /// </summary>
 public sealed class ScrollColumn
 {
@@ -110,7 +108,8 @@ public sealed class ScrollColumn
 
     public void Reset() { Offset = 0f; _drag = false; }
 
-    /// <summary>Draw the track + thumb at the right edge (nothing when the content fits).</summary>
+    /// <summary>Draw the track + thumb in the gutter at the right edge (nothing when the content fits). Pure and
+    /// zero-alloc, like every input here: pixels in, offset out.</summary>
     public void Draw(VertexBatch b, (float r, float g, float b, float a) thumb)
     {
         if (!ThumbRect(out float top, out float h)) return;

@@ -160,7 +160,7 @@ Chat channels that get **no** bubble: `5`, `0x0c`, `0x0f`. Object types 7/9/10 g
 1. `SetChatBubbleMode(int)` — record the requested value as the user's display mode
    (this is the `ui.text-bubble-mode` parity knob), then **call the original with 0**.
    Also call it once at first frame so the initial state is suppressed. This is why no
-   draw hook is needed: mode 0 guards every activation path, yet `UpdatePopUpBubble`
+   draw hook is needed: bubble mode 0 guards every activation path, yet `UpdatePopUpBubble`
    keeps refreshing `bubble+0x154` for every bubble-owning object, every tick.
 2. `CNWCCreature::ShowFeedbackBubbleText` and `CNWCPlaceable::ShowFeedbackBubbleText` —
    set a static `_inPlate = true`, call the original (it sets `+0x468`/`+0x218` and drives
@@ -170,7 +170,7 @@ Chat channels that get **no** bubble: `5`, `0x0c`, `0x0f`. Object types 7/9/10 g
    (that was the plate's own text, we build our own); else it is **chat** — read the
    `CExoString`, `ColorRunParser.Parse` it, record it against `this`'s id with the decay
    above, and then **reset `*(int*)(bubble + 0x14c) = 0`**.
-   *That reset is load-bearing*: under mode 0 nothing else ever clears it, and
+   *That reset is load-bearing*: under bubble mode 0 nothing else ever clears it, and
    `MouseOver` refuses to build a plate while it is 1 — without the reset a creature's
    plate dies permanently the first time it speaks. We enforce chat-wins ourselves.
 4. `CNWCMessage::HandleServerToPlayerChat(uchar)` — latch the channel byte in a static for
@@ -210,7 +210,7 @@ Every one of these must hold, and each gets a line in the commit message:
 
 1. `internal+0x180` bit 0 off ⇒ no plate on plain hover; **Tab still plates** (the engine
    tests the whole word, so bit 1 overrides). Reproduce that exactly.
-2. Mode 0 = nothing; 1 = text only, no portrait, no background; 2 = portrait + background.
+2. Bubble mode 0 = nothing; 1 = text only, no portrait, no background; 2 = portrait + background.
 3. Font follows the game's large-font/UI scale via `Metrics.Scale`. There is **no plate-specific size knob**
    -- vanilla has none either, and the shared glyph atlas is baked once at the effective px, so a scale factor
    would only inflate chrome around unchanged glyphs.
@@ -229,7 +229,7 @@ Every one of these must hold, and each gets a line in the commit message:
 Deliberate divergences from vanilla, to be stated in the commit message:
 - bubbles **queue** (`BubbleQueue`, default 2) instead of the last line overwriting;
 - distance fade / max distance (vanilla has neither);
-- our own overlap separation replaces `BumpAllBubbles`, which mode 0 disables. Two rules of ours:
+- our own overlap separation replaces `BumpAllBubbles`, which bubble mode 0 disables. Two rules of ours:
   a box in its FADE-OUT takes no part (it neither pushes nor is pushed, and fades where it stands, so
   sweeping the cursor over a crowd leaves no trail of dying plates shoving the live one), and the boxes
   that do take part stack by SEND TIME -- newest nearest its speaker, older riding above, so a

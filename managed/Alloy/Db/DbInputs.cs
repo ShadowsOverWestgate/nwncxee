@@ -5,22 +5,13 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>what the non-mesh consumers read in DB mode.</b> Lights, emitters, beams, the
-/// sky, the highlight set and the lightmap key all used to be answered by walking engine objects -- a BSP node
-/// list, a draw bucket, three gobs off <c>Scene+0x18/+0x38</c>, a <c>Gob</c> flag. Each is a database question
-/// here, and this is where it is asked.
-/// <para><b>Why a side table rather than more <see cref="SceneDb"/> columns.</b> A light part is one in a
-/// thousand, so a column over <see cref="SceneDb.MaxParts"/> would cost megabytes to answer a question about a
-/// few thousand records. The two side tables below are built from the SAME dirty fold the record feed runs, so
-/// they are change-driven in exactly the same way and cannot drift from it.</para>
-/// <para><b>What is a seam, not an answer.</b> The consumers themselves (<c>LightmapBake</c>,
-/// <c>EmitterSim</c>, <c>Particles</c>, <c>Beams</c>, <c>SkyBox</c>,
-/// <c>LightmapBake</c>) are still keyed on engine pointers. Retargeting them is theirs to do; what is here is
-/// the engine-free input they take, in the shape they take it, so that retarget is a key change and not a
-/// re-derivation.</para></summary>
+/// <summary>What the non-mesh consumers read: lights, emitters, beams, the sky, the highlight set and the
+/// lightmap key, each asked of the database here instead of by walking engine objects.
+/// <para>Side tables rather than <see cref="SceneDb"/> columns because a light part is one in a thousand, and
+/// they are built from the SAME dirty fold the record feed runs, so they cannot drift from it.</para></summary>
 internal static partial class DbInputs
 {
-    /// <summary>Light and emitter parts held at once. A heavy SoW area measured a few hundred lights; the
+    /// <summary>Light and emitter parts held at once. A heavy persistent-world area measured a few hundred lights; the
     /// ceiling is loud (<see cref="Spilled"/>) rather than silent.</summary>
     internal const int MaxLights = 1 << 12, MaxEmitters = 1 << 12;
 
@@ -53,13 +44,10 @@ internal static partial class DbInputs
 
     internal static int LightCount => _lightN;
 
-    /// <summary>CX-120: bumped by every write that can change what <see cref="DbLights.Walk"/> produces -- a
-    /// light registered or dropped, a tile light's record bound to a part, a light column animated, a light's
-    /// part moving. <see cref="DbLights"/> rebuilds the rig only when this moves (plus the area edge and the
-    /// scene it is asked for), instead of once per world frame.
-    /// <para>It is a WRITER's counter rather than a dirty list because a dirty list is consumed, and a second
-    /// consumer taking it first would silently freeze the lighting. A missed writer is the failure mode here,
-    /// which is why <c>DbLights</c> re-walks periodically and SHOUTS if the answer changed.</para></summary>
+    /// <summary>Bumped by every write that can change what <see cref="DbLights.Walk"/> produces -- a light
+    /// registered or dropped, a tile light bound to a part, a light column animated, a light's part moving --
+    /// so the rig rebuilds on that edge instead of once per frame. A WRITER's counter, not a dirty list: a
+    /// list is consumed, and a second consumer taking it first would silently freeze the lighting.</summary>
     internal static uint LightRev => _lightRev;
     private static uint _lightRev = 1;
 
@@ -68,12 +56,9 @@ internal static partial class DbInputs
     internal static int EmitterCount => _emitN;
 
     /// <summary>Light <paramref name="k"/>: which part carries it, its model-declared parameters, and its
-    /// world placement.
-    /// <para>R1-41 closed: the colour, radius and multiplier come from the part's animated columns when an
-    /// animation has written them (seam-anim's pose step samples <c>LightColor</c>/<c>LightRadius</c>/
-    /// <c>LightMultiplier</c> like any other controller) and from the node's REST keys until then -- so a
-    /// guttering torch gutters and a light with no such controller costs exactly what it did.
-    /// See <c>cx-wt/notes/seam-anim-light-columns.md</c>.</para></summary>
+    /// world placement. Colour, radius and multiplier come from the part's animated columns once an animation
+    /// has written them and from the node's REST keys until then, so a guttering torch gutters and a light
+    /// with no such controller costs exactly what it did.</summary>
     internal static bool Light(int k, out DbLight light)
     {
         light = default;
@@ -153,7 +138,7 @@ internal static partial class DbInputs
         return lp < 0 || !SceneDb.Parts.LiveAt(lp) || !DbAnim.LitMoving(lp) && DbAnim.Settled(SceneDb.PartObj[lp]);
     }
 
-    /// <summary>The bake's static verdict for an object light, mode 0's <c>LightmapBake.Classify</c> rule: any
+    /// <summary>The bake's static verdict for an object light: any
     /// light present at the close that is not carried by a creature and that no multi-key track drives, once
     /// its object's runs have settled -- a placeable's lamp included, Static flag or not.</summary>
     private static bool ObjLitStatic(int p)
@@ -191,11 +176,10 @@ internal static partial class DbInputs
         return true;
     }
 
-    /// <summary>R1-5: the light controller ids come from <see cref="Ctl"/>, the parser's own table, not from a
-    /// private copy. <c>ControllerTrack.Type</c> carries the BINARY FILE's numbering (CX-112), which is not the
-    /// numbering the engine's ASCII parser registers the same controllers under (colour 100, radius 0x70,
-    /// multiplier 0xa4 there) and cannot be derived from it -- the geometry position is 8 here and 0x10 there,
-    /// a different delta again. One table, so the two cannot drift.</summary>
+    /// <summary>The light controller ids come from <see cref="Ctl"/>, the parser's own table, not a private
+    /// copy. <c>ControllerTrack.Type</c> carries the BINARY FILE's numbering, which is not what the engine's
+    /// ASCII parser registers the same controllers under (colour 100, radius 0x70, multiplier 0xa4 there) and
+    /// cannot be derived from it. One table, so the two cannot drift.</summary>
     private const int CtlColor = Ctl.LightColor, CtlRadius = Ctl.LightRadius,
                       CtlMultiplier = Ctl.LightMultiplier;
 
@@ -280,25 +264,23 @@ internal static partial class DbInputs
             }
     }
 
-    /// <summary>TILE lights. A tileset's lights do not hang off an object's part tree -- the tiles stream owns
-    /// the tile records and registers their lights here, because the renderer must see one light list however
-    /// a light arrived. SEAM: <c>tar/tiles</c> calls this; until it does the list is the object lights alone,
-    /// which is a visible difference and is why the count is on the period line.</summary>
-    /// <summary>CX-116: is part <paramref name="p"/> a LIGHT part, the way <c>Part::AsPartLight()</c> answers
-    /// it -- the node's kind, not this table's membership. The two differ: a part is filed here only when its
-    /// node also carries parsed light FIELDS (<see cref="NodeDef.Light"/>), while the engine's cast succeeds
-    /// for any light node. A recolour has to follow the engine, because <c>fx_placeable01</c>'s
-    /// <c>auroralight01</c> -- which every placeable lamp's colour goes through -- is exactly such a node.</summary>
+    /// <summary>Is part <paramref name="p"/> a LIGHT part, the way <c>Part::AsPartLight()</c> answers it --
+    /// the node's kind, not this table's membership. The two differ: a part is filed here only when its node
+    /// also carries parsed light FIELDS (<see cref="NodeDef.Light"/>), while the engine's cast succeeds for
+    /// any light node, and <c>fx_placeable01</c>'s <c>auroralight01</c> is exactly such a node.</summary>
     internal static bool IsLight(int p) => NodeOf(p)?.Kind == NodeKind.Light;
 
-    /// <summary>CX-116: the <see cref="SceneDb.Lights"/> row part <paramref name="p"/> reads as a TILE light,
-    /// or -1. The feed walks that table directly for tile lights, so a setter has to write there too.</summary>
+    /// <summary>The <see cref="SceneDb.Lights"/> row part <paramref name="p"/> reads as a TILE light, or -1.
+    /// The feed walks that table directly for tile lights, so a setter has to write there too.</summary>
     internal static int LitOf(int p)
     {
         for (int k = 0; k < _lightN; k++) if (_lightPart[k] == p) return _lightLit[k];
         return -1;
     }
 
+    /// <summary>A TILE light. A tileset's lights do not hang off an object's part tree -- the tiles stream
+    /// owns the tile records and registers them here, because the renderer must see ONE light list however a
+    /// light arrived. Idempotent, and the count is on the period line.</summary>
     internal static void RegisterTileLight(int part, int lit)
     {
         _lightRev++;
@@ -344,11 +326,10 @@ internal static partial class DbInputs
         return r >= 0 && (DrawRecipe.Flags(r) & RecipeFlag.Beaming) != 0;
     }
 
-    /// <summary>The lightmap bake's instance key. CX-120 changes what a bake is keyed ON: the engine path used
-    /// <c>(vao, item)</c>, which is an address pair that an area change invalidates, where the content pair
-    /// below survives it -- two instances of one mesh at one placement share a bake across areas and across
-    /// sessions. The placement is rounded to the record's own move step so a matrix rebuilt from a quaternion
-    /// does not key as a different placement.</summary>
+    /// <summary>The lightmap bake's instance key, keyed on CONTENT rather than an address pair: two instances
+    /// of one mesh at one placement share a bake across areas and across sessions, where a <c>(vao, item)</c>
+    /// pair is invalidated by an area change. The placement is rounded to the record's own move step so a
+    /// matrix rebuilt from a quaternion does not key as a different placement.</summary>
     internal static ulong LightmapKey(int p)
     {
         int r = SceneDb.PartRecipe[p];

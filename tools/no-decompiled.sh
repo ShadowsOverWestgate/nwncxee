@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refuses decompiled engine code anywhere in the tracked tree (sow-platform ADR-0064).
+# Refuses decompiled engine code anywhere in the tracked tree.
 #
 # Committing decompiler or disassembler output is not legal for us, so no
 # repository holds it, in any form. Symbol names, addresses, engine constants and
@@ -27,7 +27,7 @@ signatures='WARNING: Decompi[l]|\b[iulbcp]Var[0-9]+\b|\blocal_[0-9a-f]{2,}\b|\bp
 found=0
 report() {
   [[ -n "$2" ]] || return 0
-  echo "no-decompiled: $1 (sow-platform ADR-0064):" >&2
+  echo "no-decompiled: $1:" >&2
   printf '%s\n' "$2" | sed 's/^/  /' >&2
   found=1
 }

@@ -42,7 +42,7 @@ jobs:
           echo "build=$([ -n "$code" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   # Every pull request, whatever it touches: a listing can hide in any file,
-  # Markdown included, so this job never asks `affected` (sow-platform ADR-0064).
+  # Markdown included, so this job never asks `affected`.
   no-decompiled:
     runs-on: nix-docker
     timeout-minutes: 2
@@ -50,6 +50,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: No decompiled code in the tree
         run: bash tools/no-decompiled-contract.sh && bash tools/no-decompiled.sh
+      # CX-192: the rule gates (tools/gates/), here too so a PR that skips the local build still fails.
+      - name: Rule gates
+        run: bash tools/gates/run.sh
 
   ci:
     needs: affected

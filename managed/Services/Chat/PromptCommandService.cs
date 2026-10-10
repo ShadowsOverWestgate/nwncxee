@@ -6,21 +6,11 @@ using CX.Framework;
 namespace CX.Services.Chat;
 
 /// <summary>
-/// #580: CX commands dispatch from the game's OWN chat prompt (spec §3 door 1). A chain on
-/// <c>CGuiInGameChatPrompt::HandleEnter</c> reads the line vanilla is about to send; when the registry knows it,
-/// the prompt's text is emptied BEFORE the original runs, so vanilla closes the prompt exactly as it does on an
-/// empty Enter -- clear, <c>CGuiEdit::LoseFocus</c>, <c>ParseChatString</c> returning at length 0 (decompiled:
-/// nothing reaches a send), then the unfocus GUI event the server needs to drop its "typing" state -- and the
-/// command runs after the prompt has closed. Any other line is forwarded untouched. Installs whenever its symbols
-/// resolve; with the CX chatbox up the vanilla prompt never opens, so this fires only while the chatbox is stood
-/// down (<c>chat.enabled=0</c>). Cold hook (one Enter per line), so it may allocate.
+/// CX commands dispatched from the game's OWN chat prompt, so live only while the CX chatbox is stood down
+/// (<c>chat.enabled=0</c>). A chain on <c>CGuiInGameChatPrompt::HandleEnter</c> empties a known command line
+/// before the original runs, so vanilla closes the prompt exactly as on an empty Enter -- including the unfocus
+/// GUI event the server needs to drop its "typing" state -- and the command runs after; others go untouched.
 /// </summary>
-/// <remarks>
-/// Not a skip: skipping the original would also skip the unfocus GUI event and the vanilla close, both of which
-/// this then would have to re-implement from three more anchors. Emptying the prompt and letting vanilla close it
-/// is the same outcome from one write. The reply goes where the engine puts its own client-side command output:
-/// <c>AppendToMsgBuffer</c> on the console channel, which is the vanilla chat window -- the only one up.
-/// </remarks>
 public sealed unsafe class PromptCommandService : IExtenderService
 {
     /// <summary>Below the hotkey observer's layer on the same symbol: the observer sees every Enter first and always
@@ -43,14 +33,15 @@ public sealed unsafe class PromptCommandService : IExtenderService
     [StructLayout(LayoutKind.Sequential, Size = 24)]
     private struct CResRef24 { public ulong A, B, C; }
     // Left raw: AppendToMsgBuffer's last parameter has a DIFFERENT shape per ABI, so no single
-    // [Fn] signature describes it (CX-37).
+    // [Fn] signature describes it.
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void> _append;
 #else
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef24, void> _append;
 #endif
 
-    /// <summary>The unit (#419 shape): the Enter chain, the text read, the echo path and the app walk to it.</summary>
+    /// <summary>The unit -- every symbol this cannot run without: the Enter chain, the text read, the echo
+    /// path and the app walk to it.</summary>
     private static readonly string[] RequiredSymbols =
     {
         SymbolMap.ChatHandleEnter, SymbolMap.GuiEditGetText, SymbolMap.AppendToMsgBuffer, SymbolMap.AppManager,

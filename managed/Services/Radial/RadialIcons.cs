@@ -7,28 +7,16 @@ using CX.Ui;
 
 namespace CX.Services.Radial;
 
-/// <summary>What a <c>CGuiIcon</c> is at runtime, by vptr (CX-162 §5).
+/// <summary>What a <c>CGuiIcon</c> is at runtime, by vptr.
 /// <see cref="Plain"/> is <c>CGuiIcon</c> itself and every subclass not listed (<c>CSpellIcon</c>): one texture
 /// by resref. The other three are what the item root's centre icon can be.</summary>
 public enum IconKind { Plain, Layered, Composite, Armor }
 
 /// <summary>
-/// The item root's composite icon (CX-693): the engine draws an item's <c>CGuiIcon</c> as a model of one to six
-/// stacked textured quads (<c>GUI_ICON_%dX%dL</c> / <c>..LC</c> / <c>GUI_ICON_ARMR%dL</c>, each layer a child of the
-/// previous at +0.01 toward the viewer), so this draws the same layers, bottom to top, as
-/// <see cref="TextRig.DrawIconTid"/> quads. A plain layer's texture is the resref's (<c>AurTextureGet</c>, as
-/// <see cref="TextRig.DrawIcon"/>); a PLT layer's is the one <c>Material::ReplaceTexturePLT</c> @0x4c7a10 keyed under
-/// (resref, palette scheme), found again per frame by the engine's own <c>AurTextureFind</c> hash -- never created
-/// here, never cached (a <c>CAurTexture*</c> is borrowed, <see cref="AurTex"/>); <see cref="BuildModel"/> only asks the
-/// engine to build the icon's own model, whose load mints it.
-/// <para>The handle the dropdown carries is the item's OBJECT ID, not its <c>CGuiIcon*</c>: <c>CNWCItem::UpdateIcons</c>
-/// @0x7cbc50 deletes and rebuilds that icon on every item update the server sends, which can land while the menu
-/// is open, so <see cref="Draw"/> re-resolves id -&gt; <c>CNWCItem</c> -&gt; <see cref="EngineLayout.ItemGuiIcon"/> every
-/// frame and an item that is gone (picked up, destroyed) simply draws nothing. The icon's textures live until the
-/// area edge, where the menu closes anyway; a texture the engine has not built yet (tid 0 until the next
-/// <c>Scene::Render</c>'s <c>AurTextureBuildAndStoreAll</c>) is skipped silently and appears a frame later.</para>
-/// <para>Hot path (<see cref="Draw"/>): no allocation -- names are marshalled on the stack, schemes widened on the
-/// stack. The one exception is a single one-shot log line per open under <c>logs=1</c>.</para>
+/// The item root's composite icon: the engine draws an item's <c>CGuiIcon</c> as one to six stacked textured quads
+/// (<c>GUI_ICON_%dX%dL</c> / <c>..LC</c> / <c>GUI_ICON_ARMR%dL</c>), so this draws the same layers, bottom to top, as
+/// <see cref="TextRig.DrawIconTid"/> quads. The handle is the item's OBJECT ID, not its <c>CGuiIcon*</c>, which
+/// <c>CNWCItem::UpdateIcons</c> @0x7cbc50 rebuilds on every item update; a <c>CAurTexture*</c> is borrowed, never cached.
 /// </summary>
 internal static unsafe class RadialIcons
 {
@@ -40,7 +28,7 @@ internal static unsafe class RadialIcons
     /// <summary>CGameObject type byte for an item (<c>CClientExoAppInternal::GetItemByGameObjectID</c> @0x63f3a0).</summary>
     private const byte GameObjTypeItem = 6;
 
-    /// <summary>CX-120: per layer of the LAST <see cref="Layers"/> walk, the master-palette rows CX resolved
+    /// <summary>Per layer of the LAST <see cref="Layers"/> walk, the master-palette rows CX resolved
     /// the layer with, and whether it did. Scratch, not state: <see cref="Layers"/> clears it on entry and
     /// <see cref="Draw"/> reads it immediately after, both on the UI thread, which is the same contract the
     /// stack-allocated tid span already has.</summary>
@@ -133,8 +121,7 @@ internal static unsafe class RadialIcons
     /// <summary><see cref="Draw(IntPtr, float, float, float, float)"/> of a <paramref name="cellsW"/>×<paramref name="cellsH"/>
     /// inventory item into a <paramref name="w"/>×<paramref name="h"/> rect, cropped as the engine's <c>GUI_ICON_%dX%dL</c> model
     /// crops it: the sheet is the cell size (32 px a cell) padded to powers of two, content top-left, so u runs to
-    /// <c>W*32/pow2(W*32)</c> and v from <c>1 - H*32/pow2(H*32)</c>. Cell-derived, not pixel-derived, so a 2x override keeps
-    /// its proportions (CX-146 §2.6).</summary>
+    /// <c>W*32/pow2(W*32)</c> and v from <c>1 - H*32/pow2(H*32)</c>. Cell-derived, so a 2x override keeps its proportions.</summary>
     public static void Draw(IntPtr handle, float x, float y, float w, float h, float alpha, int cellsW, int cellsH,
                             bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
@@ -174,11 +161,9 @@ internal static unsafe class RadialIcons
     }
 
     /// <summary>The icon's layers as live GL texture ids, bottom to top; returns the layer count (an existing layer
-    /// whose texture is not built yet reports 0 and still counts). Plain: the resref. Layered: the resref as a PLT
-    /// under the icon's scheme. Composite: three plain resrefs. Armour: up to six PLT resrefs, an empty slot
-    /// skipped; the per-layer scheme table, when present, is indexed by the compacted layer exactly as
-    /// <c>CArmorIcon::LoadArmorLayeredIconModel</c> @0x58d7c0 indexes it -- and since the engine only made a texture
-    /// for a layer that exists as a PLT, a find miss IS its skip, so the compacted index advances on a hit only.</summary>
+    /// whose texture is not built yet reports 0 and still counts). Plain: the resref. Layered: the resref as a PLT under
+    /// the icon's scheme. Composite: three plain resrefs. Armour: up to six PLT resrefs, an empty slot skipped and the
+    /// scheme table indexed by the COMPACTED layer, as <c>CArmorIcon::LoadArmorLayeredIconModel</c> @0x58d7c0 does.</summary>
     internal static int Layers(IntPtr icon, Span<int> tids)
     {
         Span<byte> resref = new CGuiIcon(icon).Resref;
@@ -260,10 +245,9 @@ internal static unsafe class RadialIcons
 
     private static int TidPlt(ReadOnlySpan<byte> resref, ushort* scheme, int count) => AurTex.Tid(FindPlt(resref, scheme, count));
 
-    /// <summary>CX-120: the layer CX resolves itself when the engine has no composited texture for it -- DB
-    /// mode, where no <c>CAurTextureBasic</c> is ever built. Returns the PAIR texture's GL name and records
-    /// this item's scheme as the rows the fragment stage looks up with; 0 leaves the layer skipped exactly as
-    /// before, so mode 0 and a still-loading texture both behave as they did.</summary>
+    /// <summary>The layer CX resolves itself, since the engine has no composited texture for it -- no
+    /// <c>CAurTextureBasic</c> is ever built. Returns the PAIR texture's GL name and records this item's scheme as the
+    /// rows the fragment stage looks up with; 0 leaves the layer skipped, as a still-loading texture does.</summary>
     private static int CxPlt(ReadOnlySpan<byte> resref, ushort* scheme, int count, int layer)
     {
         if (scheme == null || (uint)count > MaxScheme || (uint)layer >= MaxLayers) return 0;
@@ -360,12 +344,9 @@ internal static unsafe class RadialIcons
     private static string LastName() { int n = 0; while (n < ResRefLen && _fakeLastName[n] != 0) n++; return System.Text.Encoding.ASCII.GetString(_fakeLastName, 0, n); }
 
     /// <summary>Off-device: the vptr classification and the layer walk over fake icon blobs laid out per the resolved
-    /// <see cref="EngineLayout"/> rows, with the two resman calls swapped for managed fakes that record (name,
-    /// scheme) -- plain = one get; layered = one hashed find with the widened scheme; composite = three gets in
-    /// 01/02/03 order; armour = an empty slot skipped and a missing PLT (find miss) NOT advancing the per-layer
-    /// scheme index. The GL draw and the item walk are engine calls with no fake -- live-unverified. Skipped when
-    /// <see cref="AurTex"/> is already armed: every fake hit would then be a counted vtable refusal, and that
-    /// counter is the maintainer's stale-holder signal on the <c>[owned]</c> line.</summary>
+    /// <see cref="EngineLayout"/> rows, with the two resman calls swapped for managed fakes that record (name, scheme)
+    /// -- plain = one get; layered = one hashed find; composite = three gets in 01/02/03 order; armour = an empty slot
+    /// skipped and a find miss NOT advancing the scheme index. Skipped when <see cref="AurTex"/> is already armed.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         if (AurTex.Ready) { log.Info("RadialIcons.SelfCheck: skipped (AurTex armed -- the fake walk would count refusals)"); return; }

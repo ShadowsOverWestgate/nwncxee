@@ -5,16 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-anim: the arena's DYNAMIC half -- a range whose vertices one instance owns, because a
-/// dangly mesh and an animmesh move the vertices themselves and so cannot share a content-keyed range with
-/// another instance of the same model.
-/// <para>Two additions, and no change to how a draw reads a range: the range is built by the arena's own
-/// <c>Build</c> under a caller-chosen key (so nothing dedups onto it), and a solve patches the POSITIONS in
-/// the host mirror and queues the range; the patch reaches the GPU from <see cref="MeshArena.Pump"/>, on the
-/// render thread, inside the same bracket and under the same lock as every other upload. Positions only, which
-/// is also all the engine's two producers write.</para>
-/// <para>NEW FILE in the parts stream's pattern (CX-114 owns <c>MeshArena.cs</c>): the only edits to that file
-/// are the <c>partial</c> keyword and the one <c>DynUpload()</c> call in <c>Pump</c>.</para></summary>
+/// <summary>The arena's DYNAMIC half -- a range whose vertices one instance owns, because a dangly mesh and an
+/// animmesh move the vertices themselves and cannot share a content-keyed range with another instance of the
+/// same model. <c>Build</c> takes a caller-chosen key so nothing dedups onto it; a solve patches the POSITIONS
+/// in the host mirror and queues the range, which <see cref="MeshArena.Pump"/> uploads on the render thread.</summary>
 public static unsafe partial class MeshArena
 {
     /// <summary>Ranges whose vertices changed since the last <see cref="Pump"/>. Small: one entry per dangly or
@@ -133,11 +127,9 @@ public static unsafe partial class MeshArena
     }
 }
 
-/// <summary>CX-120 seam-anim: a recipe whose geometry is ONE instance's. Interned outside
-/// <c>DrawRecipe</c>'s per-(model, node) table, so it is never handed to another part, and carrying a range
-/// the pose step owns.
-/// <para>This is what lets a dangly part draw its solved vertices with no change at all to the record feed:
-/// the feed reads the part's recipe, and the part's recipe is this one.</para></summary>
+/// <summary>A recipe whose geometry is ONE instance's: interned outside <c>DrawRecipe</c>'s per-(model, node)
+/// table so it is never handed to another part, and carrying a range the pose step owns. A dangly part draws
+/// its solved vertices with no change to the record feed -- the feed reads the part's recipe, and this is it.</summary>
 internal static partial class DrawRecipe
 {
     /// <summary>Retired dynamic recipe slots, waiting to be handed out again. Only recipes
@@ -160,18 +152,10 @@ internal static partial class DrawRecipe
         _dynFree.Push(r);
     }
 
-    /// <summary>A private copy of node <paramref name="node"/>'s recipe pointing at <paramref name="range"/>.
-    /// -1 when the node draws nothing or the table is full.
-    /// <para>CX-120: this is the one interning call made from the GAME thread (the dangly solve's first frame)
-    /// rather than from the feed's fold, so it was on the render-thread brief as "move into the fold". It does
-    /// NOT have to move. Both the fold and this run on the game thread, so there is no second WRITER; the
-    /// table is fixed-size and never reallocates, so a reader of another recipe cannot be torn by an append;
-    /// and a fresh recipe reaches the renderer only through <c>SceneDb.PartRecipe</c> + the dirty fold, which
-    /// is published under <c>RenderSnapshot</c>'s lock -- the happens-before edge this needs. What IS left is
-    /// RECYCLING: a recipe released and re-interned for a different mesh while the renderer still holds a
-    /// frame referencing it draws the new recipe against the old range for one frame. Bounded indices into
-    /// fixed arrays, so a glitch and not a corruption. ponytail: fix it by deferring the free to the frame
-    /// after the last one that referenced it, if it is ever seen.</para></summary>
+    /// <summary>A private copy of node <paramref name="node"/>'s recipe pointing at <paramref name="range"/>;
+    /// -1 when the node draws nothing or the table is full. Called from the game thread like the fold, so no
+    /// second writer and the fixed-size table never reallocates. <para>ponytail: a slot freed and re-interned
+    /// draws the new recipe against the old range for one frame the renderer still holds -- a glitch, not a corruption.</para></summary>
     internal static int InternDynamic(ModelDef model, int node, int range)
     {
         if ((uint)node >= (uint)model.Nodes.Length || range < 0) return -1;

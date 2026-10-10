@@ -5,15 +5,10 @@ using CX.Alloy.Db;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 seam-obj: the native half of the <c>CAurString</c> interface -- one
-/// <c>[UnmanagedCallersOnly]</c> entry point per slot, resolving the facade and calling CX-119's
-/// <see cref="TextSlots"/>, which holds the semantics. The shell is <c>StringGob</c>-sized with the
-/// <c>CAurString</c> vptr at +0x4c0, so <c>this</c> for every slot here is the sub-object pointer and
-/// <see cref="Facade.Shell"/> normalises it through the table's offset-to-top word -- no per-slot thunk.
-/// <para>Three slots differ per OS and are registered accordingly: slot 6's <c>Vector SetPosition(Vector)</c>
-/// (Win64 takes a hidden buffer in rdx and returns it in rax; SysV returns xmm0:xmm1 and takes none), and the
-/// two <c>int(Vector)</c> slots, where a by-value <c>Vector</c> argument is registers on Linux and a pointer
-/// to a caller copy on Windows -- that one the compiler handles from the declaration.</para></summary>
+/// <summary>The native half of <c>CAurString</c>: one <c>[UnmanagedCallersOnly]</c> entry point per slot,
+/// resolving the facade and calling <see cref="TextSlots"/> for the semantics. The shell is <c>StringGob</c>-sized
+/// with the <c>CAurString</c> vptr at +0x4c0, so <c>this</c> is a sub-object pointer that <see cref="Facade.Shell"/>
+/// normalises; slot 6's <c>Vector SetPosition(Vector)</c> is per-OS (Win64 sret in rdx/rax, SysV xmm0:xmm1).</summary>
 public sealed unsafe class StringSlots : ISeamProvider
 {
     private const SeamTable T = SeamTable.CAurString;
@@ -28,7 +23,7 @@ public sealed unsafe class StringSlots : ISeamProvider
     public void Register(SeamRegistry r)
     {
         bool win = OperatingSystem.IsWindows();
-        // CX-119: the two destructors are NOT the same call. Slot 0 is the complete-object destructor and
+        // the two destructors are NOT the same call. Slot 0 is the complete-object destructor and
         // leaves the storage alive; only slot 1 deletes. Binding both to the deleting form retires shells the
         // game still uses (the options panel destructs its labels, then re-attaches them).
         r.Slot(T, 0, (void*)(delegate* unmanaged<nint, void>)&DestructBody);
@@ -144,7 +139,7 @@ public sealed unsafe class StringSlots : ISeamProvider
         return id;
     }
 
-    /// <summary>A NUL-terminated engine string as the codepage bytes CX-119's layout works in -- no transcode,
+    /// <summary>A NUL-terminated engine string as the codepage bytes the text layout works in -- no transcode,
     /// because the engine's text is a single-byte codepage and the span is read, not stored.</summary>
     private static ReadOnlySpan<byte> Bytes(nint p)
     {
@@ -158,8 +153,8 @@ public sealed unsafe class StringSlots : ISeamProvider
     private static string Text(nint p) => p == 0 ? "" : Marshal.PtrToStringUTF8(p) ?? "";
 
     /// <summary>Slot 0: the complete-object destructor. It runs the body and leaves the object allocated, so
-    /// the facade is NOT retired (CX-119; <c>StringGob::~StringGob</c> @0x494be0 ends in <c>~Gob</c>, not in
-    /// <c>operator delete</c>).</summary>
+    /// the facade is NOT retired -- <c>StringGob::~StringGob</c> @0x494be0 ends in <c>~Gob</c>, not in
+    /// <c>operator delete</c>.</summary>
     [UnmanagedCallersOnly]
     private static void DestructBody(nint self)
     {

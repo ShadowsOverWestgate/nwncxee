@@ -4,7 +4,7 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-24: sorts each cell of a 2x2 grass atlas into BLADE (procedural blades can stand in for it) or
+/// <summary>Sorts each cell of a 2x2 grass atlas into BLADE (procedural blades can stand in for it) or
 /// CARD (keep the alpha-tested card), biased toward CARD -- a flower drawn as blades is visible, grass drawn
 /// as a card is not. A port of <c>tools/grass/classify.py</c>; its thresholds and tests are that file's.
 /// A BLADE cell also yields its root/mid/tip colour ramp (display space), what a blade is tinted with.</summary>

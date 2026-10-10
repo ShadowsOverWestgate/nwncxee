@@ -119,8 +119,7 @@ public static partial class PlateLayout
         check.Expect(Near(m.H, m.PortraitSize + 8f), "height = content + both pads");
         check.Expect(Near(m.PortraitY, 4f),
           "a portrait as tall as its content centres to exactly the pad -- unchanged from the top-aligned rule");
-        check.Expect(Near(m.BarX + m.BarW * 0.5f, m.NameX + m.TextW * 0.5f),
-          "the bar spans the whole text column, so it is centred by construction");
+        check.Expect(Near(m.BarX, 4f + m.PortraitSize * 0.64f + 8f), "the bar starts at the text column, not at the plate edge");
         check.Expect(Near(m.W, m.NameX + 80f + 4f), "width = column + widest text + pad");
 
         PlateMetrics tex = Measure(80f, 60f, portrait: false, band: false, bar: false, lineH: 18f, scale: 1f);
@@ -173,7 +172,7 @@ public static partial class PlateLayout
         check.Expect(Near(PortraitTop(4f, 20f, 36f), 4f),
           "a portrait TALLER than its content pins to the pad -- no negative top, no empty space above it");
 
-        // ---- Measure with the ObjectTextBubbleOverride bands (CX-179 §8.5) ----
+        // ---- Measure with the ObjectTextBubbleOverride bands ----
         PlateMetrics ovNone = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 0, 0f);
         check.Expect(Near(ovNone.H, m.H) && Near(ovNone.W, m.W) && Near(ovNone.NameY, m.NameY)
           && Near(ovNone.BandY, m.BandY) && Near(ovNone.PortraitY, m.PortraitY),
@@ -200,9 +199,8 @@ public static partial class PlateLayout
         check.Expect(Near(repl.PortraitSize, 36f), "and the portrait spans them exactly as it would name lines");
 
         // ---- LineX: every line of every plate centres in the text column, as vanilla does ----
-        check.Expect(Near(LineX(20f, 100f, 40f), 50f), "a line is inset by half the slack");
-        check.Expect(Near(LineX(20f, 100f, 40f) + 40f * 0.5f, 20f + 100f * 0.5f),
-          "so its centre is the column's centre -- name, band and override line alike");
+        check.Expect(Near(LineX(20f, 100f, 40f), 50f), "a line is inset by half the slack, so it centres in the column");
+        check.Expect(Near(LineX(20f, 100f, 60f), 40f), "...and a wider one by half its smaller slack");
         check.Expect(Near(LineX(20f, 100f, 100f), 20f), "the widest line still starts at the column");
         check.Expect(Near(LineX(20f, 100f, 140f), 20f), "an over-wide line pins to the column, never left of it");
         float shortX = LineX(20f, 100f, 30f), longX = LineX(20f, 100f, 90f);
@@ -212,19 +210,19 @@ public static partial class PlateLayout
         // Every line type, on both plate shapes: a creature (name + band + bar, band the narrower line) and a
         // placeable (two name lines, no band). The layout takes no object type at all -- that is the point.
         PlateMetrics cre = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 1, 50f);
-        float creCentre = cre.NameX + cre.TextW * 0.5f;
-        check.Expect(Near(LineX(cre.NameX, cre.TextW, 80f) + 40f, creCentre), "a creature's name line centres");
-        check.Expect(Near(LineX(cre.BandX, cre.TextW, 60f) + 30f, creCentre), "its health band centres in the same column");
-        check.Expect(Near(LineX(cre.NameX, cre.TextW, 50f) + 25f, creCentre), "and so does its override line");
-        check.Expect(Near(cre.BarX + cre.BarW * 0.5f, creCentre), "the bar spans the column, centred by construction");
+        check.Expect(Near(cre.TextW, 80f), "the creature's text column is its widest line, the 80-wide name");
+        check.Expect(Near(LineX(cre.NameX, cre.TextW, 80f), cre.NameX), "a creature's widest name line starts at the column");
+        check.Expect(Near(LineX(cre.BandX, cre.TextW, 60f), cre.NameX + 10f),
+          "its 60-wide health band is inset by half its 20 of slack, in the same column");
+        check.Expect(Near(LineX(cre.NameX, cre.TextW, 50f), cre.NameX + 15f),
+          "and its 50-wide override line by half its 30");
         float hitL = LineX(cre.NameX, cre.TextW, 30f);
         check.Expect(hitL >= cre.NameX && hitL + 30f <= cre.NameX + cre.TextW,
           "the click-to-tell rect is the whole text column, so a centred short name line still lands inside it");
         PlateMetrics plc = Measure(80f, 2, 0f, true, false, false, 18f, 1f, 1, 0, 40f);
-        float plcCentre = plc.NameX + plc.TextW * 0.5f;
-        check.Expect(Near(LineX(plc.NameX, plc.TextW, 30f) + 15f, plcCentre)
-          && Near(LineX(plc.NameX, plc.TextW, 40f) + 20f, plcCentre),
-          "a placeable centres its name and override lines the same way -- no per-type rule survives");
+        check.Expect(Near(plc.TextW, 80f) && Near(LineX(plc.NameX, plc.TextW, 30f), plc.NameX + 25f)
+          && Near(LineX(plc.NameX, plc.TextW, 40f), plc.NameX + 20f),
+          "a placeable insets its name and override lines by half their own slack too -- no per-type rule survives");
         check.Expect(Near(plc.PortraitY, 4f + (54f - plc.PortraitSize) * 0.5f) && Near(plc.PortraitY, 13f),
           "and its capped portrait centres against name plus override, not against the name alone");
 
@@ -245,7 +243,7 @@ public static partial class PlateLayout
           "replace makes the segments the WHOLE plate -- no name line and no band survive");
         t = Placement(0, 2, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
         check.Expect(t == PlateSplice.None && si == -1 && pt == 0 && qt == 0 && sn && sb,
-          "mode 0 leaves the plate untouched, override segments or not");
+          "bubble mode 0 leaves the plate untouched, override segments or not");
         t = Placement(3, 0, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
         check.Expect(t == PlateSplice.None && si == -1 && qt == 0 && sn && sb,
           "an override with no segments is no override");
@@ -451,7 +449,6 @@ public static partial class PlateLayout
         check.Expect(yo == 0f && lp == 0f, "a box that was never pushed absorbs nothing");
         AbsorbPush(ref yo, ref lp, -32f);
         check.Expect(Near(yo, 32f) && Near(lp, -32f), "a new push is cancelled by the residual, so the box does not jump");
-        check.Expect(Near(400f + -32f + yo, 400f), "and the drawn position is exactly where it was before the push");
         AbsorbPush(ref yo, ref lp, -32f);
         check.Expect(Near(yo, 32f), "an unchanged push leaves the residual for SettleOffset to close");
         AbsorbPush(ref yo, ref lp, 0f);

@@ -1,0 +1,283 @@
+using System.Collections.Generic;
+using System;
+using System.Numerics;
+using System.Runtime.InteropServices;
+using CX.Alloy.Db;
+using CX.Engine;
+using CX.Framework;
+using CX.Graphics;
+
+namespace CX.Alloy;
+
+/// <summary>The pass's GL resources: the buffers the scatter and the draws share, the colour, depth and scatter
+/// programs with their uniform locations, and the shader resrefs an override replaces.</summary>
+internal static unsafe partial class GrassField
+{
+    private static uint _vao, _faceBuf, _patchBuf, _matBuf, _outBuf, _cmdBuf, _statBuf, _prog, _progDepth;
+    private static uint _progScatter, _progBlade, _progBladeDepth;
+    /// <summary>The persistent map of <see cref="_statBuf"/>: the command counts copied after every draw, read
+    /// by <see cref="Stats"/> a frame or more late without a sync.</summary>
+    private static uint* _stat;
+
+    private struct Loc
+    {
+        public int Look, Segments, Width, Probe;
+        public int WxMapXf, WxMapP;   // R2: the area wetness map's fit and look
+        public int CoverVp, CoverLayer, WxEdge, WxCache;   // R5: the cover map's own shelter test, shared with the lit stage
+        public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Viz, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
+        public int PushTex, PushGain, PushWindow;
+        public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
+    }
+    private static Loc _loc, _locD, _locB, _locBD;
+    private static AlloyRenderer.FeatLoc _featLoc, _featLocD, _featLocB, _featLocBD;
+    /// <summary>The scatter's uniforms.</summary>
+    private struct ScatterLoc { public int Planes, Eye, Lod, Fade, SnowThin, Clamp, PushTex, PushWindow, Near, Clump, CardKeep, BladeCap; }
+    private static ScatterLoc _locS;
+
+    // ---- GL resources ------------------------------------------------------------------------
+
+    private static bool EnsureBuffers()
+    {
+        if (_vao != 0) return true;
+        _faces ??= new float[MaxFaces * FaceFloats];
+
+        // The card template: two crossed quads in blade-local space. x/y span [-0.5, 0.5] (one quad along x,
+        // one along y), z runs 0 at the root to 1 at the tip, and the UVs are the 0..1 of one atlas cell.
+        // Corner order per quad: (-half, root) (+half, root) (+half, tip) then (-half, root) (+half, tip)
+        // (-half, tip). v runs 0 at the root to 1 at the tip, matching the engine's own corner order --
+        // CreateTriangleGrass puts root corners at the atlas sub-rect origin and tip corners half a cell
+        // above it, so a flipped v would show the blades upside down.
+        // sized for the longest draw off this VAO (a near blade strip) though only the cards read it: an enabled
+        // array shorter than the draw is out of bounds on a strict driver whether or not it is consumed
+        const int templateCap = 2 * NearSegments + 1;
+        float* t = stackalloc float[templateCap * 5];
+        new Span<float>(t, templateCap * 5).Clear();
+        int k = 0;
+        for (int q = 0; q < 2; q++)
+        {
+            float ax = q == 0 ? 0.5f : 0f, ay = q == 0 ? 0f : 0.5f;
+            for (int i = 0; i < 6; i++)
+            {
+                float side = Corner[i * 3], z = Corner[i * 3 + 1], u = Corner[i * 3 + 2];
+                t[k++] = side * ax; t[k++] = side * ay; t[k++] = z; t[k++] = u; t[k++] = z;
+            }
+        }
+
+        uint vao;
+        uint* b = stackalloc uint[7];
+        Gl.CreateVertexArrays(1, &vao);
+        Gl.CreateBuffers(7, b);
+        for (int i = 0; i < 7; i++)
+            if (b[i] == 0) return _down.Fail(_log, "the grass buffers could not be created", "no grass draws");
+        if (vao == 0) return _down.Fail(_log, "the grass buffers could not be created", "no grass draws");
+        uint template = b[0];
+        _faceBuf = b[1]; _patchBuf = b[2]; _matBuf = b[3]; _outBuf = b[4]; _cmdBuf = b[5]; _statBuf = b[6];
+        Gl.NamedBufferData(_faceBuf, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.NamedBufferData(_cmdBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        const uint flags = Gl.MAP_READ_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
+        Gl.NamedBufferStorage(_statBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, flags);
+        _stat = (uint*)Gl.MapNamedBufferRange(_statBuf, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), flags);
+
+        // binding 0 = the template (attribs 0, 1); binding 1 = the scatter's output, read back as a divisor-1
+        // instance stream (attribs 2..4): each indirect command's baseInstance is its material's region, so one
+        // VAO serves every slot
+        Gl.NamedBufferData(template, (IntPtr)(templateCap * 5 * sizeof(float)), t, Gl.STATIC_DRAW);
+        Gl.VertexArrayVertexBuffer(vao, 0, template, IntPtr.Zero, 5 * sizeof(float));
+        Gl.VertexArrayAttribFormat(vao, 0, 3, Gl.FLOAT, 0, 0);
+        Gl.VertexArrayAttribFormat(vao, 1, 2, Gl.FLOAT, 0, 3 * sizeof(float));
+        Gl.NamedBufferData(_outBuf, (IntPtr)((long)RecordCap * InstFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.VertexArrayVertexBuffer(vao, 1, _outBuf, IntPtr.Zero, InstFloats * sizeof(float));
+        Gl.VertexArrayBindingDivisor(vao, 1, 1);
+        for (uint a = 0; a < 5; a++)
+        {
+            if (a >= 2) Gl.VertexArrayAttribFormat(vao, a, 4, Gl.FLOAT, 0, (a - 2) * 4 * sizeof(float));
+            Gl.VertexArrayAttribBinding(vao, a, a < 2 ? 0u : 1u);
+            Gl.EnableVertexArrayAttrib(vao, a);
+        }
+        _vao = vao;
+
+        // The displacement field. LINEAR so the push varies smoothly between texels (a nearest-sampled one
+        // makes blades snap between neighbouring directions as a creature walks), CLAMP_TO_EDGE so a blade
+        // just outside the window reads the border rather than wrapping to the far side of it.
+        if (_push == null)
+        {
+            _push = new byte[PushRes * PushRes * PushChannels];
+            _pushClear = new byte[_push.Length];
+            for (int i = 0; i < _pushClear.Length; i += PushChannels)
+            { _pushClear[i] = 128; _pushClear[i + 1] = 128; }
+            // Neutral from the start: the rebuild only undoes the rectangle the last list wrote, so anything
+            // it never wrote has to already be neutral rather than zero (which is a full push toward -x, -y).
+            Array.Copy(_pushClear, _push, _push.Length);
+        }
+        uint tex;
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
+        if (tex != 0)
+        {
+            Gl.TextureStorage2D(tex, 1, Gl.RGBA8, PushRes, PushRes);
+            RenderTarget.Clamp(tex, Gl.LINEAR);
+            _pushTex = tex;
+        }
+        return true;
+    }
+
+    /// <summary>The composed embedded fragment stage -- what an override REPLACES. Named so
+    /// <c>AlloyRenderer.SelfCheck</c> can assert the embedded text satisfies the guards it is checked
+    /// against, which it must, or every session rebuilds from it.</summary>
+    internal static string EmbeddedFs => ShaderStages.Source(ShdGrassFs);
+    /// <summary>...and the procedural blade's, for the suites that assert both carry one wetness path.</summary>
+    internal static string EmbeddedBladeFs => ShaderStages.Source(ShdBladeFs);
+
+    /// <summary>The grass stage splices content too; the module edge drops it for a rebuild.</summary>
+    internal static void DropProgram()
+    {
+        foreach (uint p in (ReadOnlySpan<uint>)[_prog, _progDepth, _progScatter, _progBlade, _progBladeDepth])
+            if (p != 0) Gl.DeleteProgram(p);
+        _prog = 0; _progDepth = 0; _progScatter = 0; _progBlade = 0; _progBladeDepth = 0;
+    }
+
+    private static bool EnsureProgram()
+    {
+        if (_prog != 0) return true;
+        if (_down.Failed) return false;
+        string fs = EmbeddedFs, vs = ShaderStages.Source(ShdGrassVs);
+        uint prog = GlProgram.Graphics(ShdGrassVs, vs, ShdGrassFs, fs, _log,
+                                       "GrassField instanced grass", out _, out string fsSrc);
+        // #132: an override written before the linear flip still ends in CxRevert, links cleanly, and
+        // gets encoded a second time by the resolve -- a washed-out lawn, silently. Rebuilt from the
+        // embedded text rather than logged and shipped, like every other Alloy stage's guard.
+        if (prog != 0 && !(ShaderContract.LinearSafe(fsSrc) && ShaderContract.SlotSafe(fsSrc, "uTex")))
+        {
+            Gl.DeleteProgram(prog);
+            _log?.Info("GrassField: grass override still encodes to display space -- rebuilding from the "
+                     + "embedded default");
+            vs = GrassVs;
+            prog = GlProgram.Graphics(vs, fs, _log, "GrassField instanced grass (embedded)", content: false);
+        }
+        if (prog == 0)
+            return _down.Fail(_log, "the grass program is unavailable",
+                              "grass falls back to the engine's own draw");
+        _prog = prog;
+        // The prepass program: the SAME vertex text (an override applies to both), the alpha-only stage.
+        // Not fatal: without it the colour pass writes depth itself, the pre-#355 shape.
+        _progDepth = GlProgram.Graphics(vs, GrassDepthFs, _log, "GrassField grass depth prepass");
+        if (_progDepth == 0) _log?.Info("GrassField: the depth prepass program is unavailable -- grass draws single-pass");
+        else
+        {
+            _locD = Locate(_progDepth);
+            _featLocD = Programs.FeatLocs(_progDepth);
+            Gl.UseProgram(_progDepth);
+            Gl.Uniform1i(_locD.Tex, 0);
+            // the per-vertex rig's shadow samplers live in the shared vertex text: unassigned they sit on unit 0
+            // beside uTex and GL refuses every depth draw
+            ShadowUnits(in _locD);
+        }
+        if (!EnsureScatter()) return false;
+        _loc = Locate(prog);
+        _featLoc = Programs.FeatLocs(prog);
+        // Same reason the lit program does it here: a sampler left at its default points at unit 0, and GL
+        // refuses a draw whose samplers of different types share an image unit.
+        Gl.UseProgram(prog);
+        Gl.Uniform1i(_loc.Tex, 0);
+        return EnsureProgramTail(prog);
+    }
+
+    /// <summary>The scatter every grass draw reads (without it the pass stands down), and the procedural
+    /// blade pair, colour and cascade depth off one vertex text (without it every atlas draws as cards).</summary>
+    private static bool EnsureScatter()
+    {
+        string bvs = ShaderStages.Source(ShdBladeVs), bfs = ShaderStages.Source(ShdBladeFs);
+        uint b = GlProgram.Graphics(ShdBladeVs, bvs, ShdBladeFs, bfs, _log, "GrassField procedural blades", out string bvsSrc, out string bfsSrc);
+        if (b != 0 && !ShaderContract.LinearSafe(bfsSrc))
+        {
+            Gl.DeleteProgram(b);
+            _log?.Info("GrassField: blade override still encodes to display space -- rebuilding from the embedded default");
+            bvsSrc = bvs;
+            b = GlProgram.Graphics(bvs, bfs, _log, "GrassField procedural blades (embedded)", content: false);
+        }
+        _progBlade = b;
+        if (b == 0) _log?.Info("GrassField: the blade program is unavailable -- every grass atlas draws as cards");
+        else
+        {
+            _locB = Locate(b);
+            _featLocB = Programs.FeatLocs(b);
+            Gl.UseProgram(b);
+            ShadowUnits(in _locB);
+            _progBladeDepth = GlProgram.Graphics(bvsSrc, ShaderSource.Get("cx_gblade_df.glsl"), _log, "GrassField blade cascade depth");
+            if (_progBladeDepth != 0)
+            {
+                _locBD = Locate(_progBladeDepth);
+                _featLocBD = Programs.FeatLocs(_progBladeDepth);
+                Gl.UseProgram(_progBladeDepth);
+                ShadowUnits(in _locBD);
+            }
+        }
+        uint c = GlProgram.Compute(ScatterCs, _log, "GrassField scatter");
+        if (c == 0) return _down.Fail(_log, "the grass scatter program is unavailable", "grass falls back to the engine's own draw");
+        _progScatter = c;
+        _locS = new ScatterLoc
+        {
+            Planes = GlProgram.Loc(c, "uPlanes"), Eye = GlProgram.Loc(c, "uEyePos"), Lod = GlProgram.Loc(c, "uLod"),
+            Fade = GlProgram.Loc(c, "uFade"), SnowThin = GlProgram.Loc(c, "uSnowThin"), Clamp = GlProgram.Loc(c, "uClamp"),
+            PushTex = GlProgram.Loc(c, "uPushTex"), PushWindow = GlProgram.Loc(c, "uPushWindow"),
+            Near = GlProgram.Loc(c, "uNear"), Clump = GlProgram.Loc(c, "uClump"), CardKeep = GlProgram.Loc(c, "uCardKeep"),
+            BladeCap = GlProgram.Loc(c, "uBladeCap"),
+        };
+        return true;
+    }
+
+    internal static string ScatterCs => ShaderSource.Get("cx_grass_c.glsl");
+
+    private static Loc Locate(uint prog)
+        => new Loc
+        {
+            Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"), Frame = GlProgram.Loc(prog, "uFrame"),
+            Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
+            Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"), Viz = GlProgram.Loc(prog, "uViz"),
+            Look = GlProgram.Loc(prog, "uLook"), Probe = GlProgram.Loc(prog, "uProbe"), Segments = GlProgram.Loc(prog, "uSegments"), Width = GlProgram.Loc(prog, "uWidth"),
+            Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"), Snow = GlProgram.Loc(prog, "uSnow"),
+            RootAo = GlProgram.Loc(prog, "uRootAo"), GroundTint = GlProgram.Loc(prog, "uGroundTint"), Ground = GlProgram.Loc(prog, "uGround"), GroundOn = GlProgram.Loc(prog, "uGroundOn"), GroundViz = GlProgram.Loc(prog, "uGroundViz"), SoftEdge = GlProgram.Loc(prog, "uSoftEdge"),
+            MatAmb = GlProgram.Loc(prog, "uMatAmbient"), MatDif = GlProgram.Loc(prog, "uMatDiffuse"),
+            Lit = GlProgram.Loc(prog, "uLit"), WindGain = GlProgram.Loc(prog, "uWindGain"),
+            WindSpeed = GlProgram.Loc(prog, "uWindSpeed"),
+            Msaa = GlProgram.Loc(prog, "uMsaa"), Edge = GlProgram.Loc(prog, "uEdge"),
+            PushTex = GlProgram.Loc(prog, "uPushTex"), PushGain = GlProgram.Loc(prog, "uPushGain"),
+            PushWindow = GlProgram.Loc(prog, "uPushWindow"),
+            SunTex = GlProgram.Loc(prog, "uSunShadow"), SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"),
+            CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"),
+            CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
+            WxMapXf = GlProgram.Loc(prog, "uWxMapXf"), WxMapP = GlProgram.Loc(prog, "uWxMapP"),
+            CoverVp = GlProgram.Loc(prog, "uCoverVp"), CoverLayer = GlProgram.Loc(prog, "uCoverLayer"), WxEdge = GlProgram.Loc(prog, "uWxEdge"), WxCache = GlProgram.Loc(prog, "uWxCache"),
+        };
+
+    private static bool EnsureProgramTail(uint prog)
+    {
+        ShadowUnits(in _loc);
+        _log?.Info("GrassField: instanced grass program ready");
+        return true;
+    }
+
+    // ---- shaders -----------------------------------------------------------------------------
+
+    internal const string ShdGrassVs = "cx_grass_vs", ShdGrassFs = "cx_grass_fs";
+    internal const string ShdBladeVs = "cx_gblade_vs", ShdBladeFs = "cx_gblade_fs";
+
+    /// <summary>The vertex stage: one crossed-quad blade per instance, rotated, scaled, and swayed. The sway
+    /// is root-anchored (<c>z^2</c>, so the base never leaves the ground) and driven by the engine's own
+    /// <c>areaGlobalWind</c> plus the per-blade bend jitter, which is what stops a field moving as one sheet.
+    /// It DISPLACES, which is why grass is out of the world depth prepass and carries no invariant clip.</summary>
+    internal static string GrassVs => ShaderSource.Get("cx_grass_v.glsl");
+
+    internal static string GrassFsHead => ShaderSource.Get("cx_grass_fhead.glsl");
+
+    /// <summary>The fragment stage. Two discards and no blending at all, which is the whole replacement:
+    /// vanilla's fade rides in the alpha channel its cutout reads, so a blade in the fade band is
+    /// semi-transparent and depth-writing and deletes whatever stands behind it. Here the fade is a
+    /// SCREEN-DOOR dither reaching zero exactly at the engine's own far radius, so there is no pop either.</summary>
+    internal static string GrassFsMain => ShaderSource.Get("cx_grass_fmain.glsl");
+
+    /// <summary>The depth prepass stage: the colour stage's coverage decision -- alpha cutout, distance
+    /// dither, keyhole -- and nothing else, so the depth it writes is exactly the set of fragments the colour
+    /// pass keeps, and early-Z discards the hidden blades before the light and shadow taps. Its alpha output
+    /// still feeds alpha-to-coverage where the target is multisampled.</summary>
+    internal static string GrassDepthFs => ShaderSource.Get("cx_grassdepth_f.glsl");
+}

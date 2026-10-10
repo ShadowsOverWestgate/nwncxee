@@ -5,9 +5,8 @@ namespace CX.Services.Chat.Core;
 /// <summary>
 /// Roleplay markup of the line being typed: <c>*emotes*</c>, <c>"speech"</c> and <c>((out of character))</c>,
 /// one class per UTF-16 char in a single left-to-right scan. Pure Core (no native refs, no allocation) so the
-/// renderer can classify per keystroke and the whole thing self-checks off-device.
-/// An unclosed marker deliberately colours to the end of the line: that IS the feature -- the player sees the
-/// forgotten closing <c>*</c> before pressing Enter, instead of after the server has echoed it.
+/// renderer can classify per keystroke. An unclosed marker deliberately colours to the end of the line: the
+/// player sees the forgotten closing <c>*</c> before pressing Enter instead of after the server echoes it.
 /// </summary>
 public static class InputMarkup
 {

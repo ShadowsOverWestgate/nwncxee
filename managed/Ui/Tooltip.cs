@@ -6,12 +6,10 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>
-/// The help text behind a faint <c>(?)</c> marker (#587). The owner draws the marker beside a label with
-/// <see cref="DrawMarker"/>, tells the tooltip when the pointer rests on one (<see cref="Hover"/>) and when it
-/// leaves; after <see cref="DelaySec"/> the text shows in a box under the marker, word-wrapped to
-/// <see cref="MaxW"/>. It has no input of its own -- it never consumes a press, never takes focus -- so hovering
-/// changes nothing but pixels. Cold-built owners poll <see cref="Tick"/> once a frame to learn the delay elapsed
-/// and rebuild; per-frame owners just call <see cref="Draw"/>. Zero-alloc in draw (a rune walk wraps in place).
+/// The help text behind a faint <c>(?)</c> marker. The owner draws the marker beside a label with
+/// <see cref="DrawMarker"/> and tells the tooltip when the pointer rests on one (<see cref="Hover"/>) and when it
+/// leaves; after <see cref="DelaySec"/> the text shows in a box under the marker, wrapped to <see cref="MaxW"/>.
+/// It has no input of its own -- never consumes a press, never takes focus -- so hovering changes nothing but pixels.
 /// </summary>
 public sealed class Tooltip
 {
@@ -80,7 +78,8 @@ public sealed class Tooltip
 
     /// <summary>Draw the text box under the anchor when <see cref="Visible"/>: word-wrapped to <see cref="MaxW"/>,
     /// kept left of <paramref name="clampRight"/>, flipped above the row when it would pass
-    /// <paramref name="clampBottom"/>. <paramref name="baseDrop"/> is the baseline offset from a line's top.</summary>
+    /// <paramref name="clampBottom"/>. <paramref name="baseDrop"/> is the baseline offset from a line's top.
+    /// Zero-alloc: the rune walk wraps in place.</summary>
     public void Draw(VertexBatch b, GlyphAtlas atlas, float baseDrop,
                      (float r, float g, float b, float a) bg, uint textRgb,
                      float clampRight = float.MaxValue, float clampBottom = float.MaxValue)

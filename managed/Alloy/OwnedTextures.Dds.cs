@@ -2,14 +2,12 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52 step 4: the upload of a DDS format the engine's <c>textureFormatTranslationTable</c> @0x12f5080 has
-/// no entry for (BC2, SNORM RGTC, BC6H, BC7). <see cref="DdsReader"/> reported it with the channel count of the
-/// same block size, so the engine's own <c>CreateTexture</c> @0x4ca2b0 runs on it cleanly -- right sizes, right
-/// levels, its sampler state -- but labels the blocks DXT5/DXT1/RGTC. <see cref="Adopt"/> lets that upload happen
-/// into its fresh name as always and then replaces it here: the same chain under the real format in immutable
-/// storage, the engine's sampler state copied across. ponytail: the engine's upload is a throwaway kept for its
-/// sampler state; transcribe <c>SetTextureParameters</c> @0x4ca180 to skip it if these formats ever show in the
-/// <c>Tex</c> zone.</summary>
+/// <summary>
+/// The upload of a DDS format the engine's format translation table has no entry for (BC2, SNORM RGTC, BC6H,
+/// BC7): its <c>CreateTexture</c> runs cleanly on the matching channel count but labels the blocks DXT5/DXT1/RGTC,
+/// so this respecifies the same chain under the real format in immutable storage, sampler state copied across.
+/// ponytail: the engine's upload is a throwaway kept for its sampler state; transcribe its setter to skip it.
+/// </summary>
 internal static unsafe partial class OwnedTextures
 {
     /// <summary>Alloy performs every 2D upload in the engine's place right now: the only state in which a format

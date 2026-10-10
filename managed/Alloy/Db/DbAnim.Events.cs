@@ -5,16 +5,9 @@ using CX.Alloy.Mdl;
 namespace CX.Alloy.Db;
 
 /// <summary>The event path: <c>Gob::RegisterCallBack</c> @0x497db0, <c>Gob::DeregisterCallback</c> @0x497e80,
-/// <c>Gob::DoEvent</c> @0x49d760 and <c>AnimateEvents</c> @0x497f30, delivered exactly as the engine delivers
-/// them -- because footsteps, hit sounds, weapon swaps, projectile detonation and the blur are all carried on
-/// it. <c>CNWCCreature::LoadModel</c> @0x72a4b0 registers twelve handlers on every creature's body object
-/// (<c>snd_Footstep</c>, <c>hit</c>, <c>draw_weapon</c>, <c>snd_hitground</c>, <c>blur_start</c>,
-/// <c>blur_end</c>, <c>doneattack01/02</c>, <c>GetPersonalRadius</c>, <c>GetPath</c>); the last two are
-/// QUERIES, where the handler writes its answer through the data pointer, so the pointer and its override rule
-/// are part of the contract and not an optimisation.
-/// <para>A <c>CallBack</c> is a real 0x30-byte native block laid out as the engine's -- name at +0 (<c>strncpy</c>
-/// of 0x1f bytes), function at +0x20, user data at +0x28 -- so a holder that reads one reads what it
-/// expects.</para></summary>
+/// <c>Gob::DoEvent</c> @0x49d760 and <c>AnimateEvents</c> @0x497f30, delivered exactly as the engine does --
+/// footsteps, hit sounds, weapon swaps, detonation and the blur all ride on it, and
+/// <c>GetPersonalRadius</c>/<c>GetPath</c> are QUERIES the handler answers through the data pointer.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>The engine's <c>CallBack</c> block: 0x30 bytes, name[0x20], fn, data.</summary>
@@ -164,18 +157,10 @@ public static unsafe partial class DbAnim
     // ================= the animation's own events =================
 
     /// <summary>
-    /// <c>AnimateEvents</c> @0x497f30: every event of the run's animation whose time falls in this step's
-    /// window, on this object. The window is HALF-OPEN at the low end -- forward <c>(prev, now]</c>, reverse
-    /// <c>[now, prev)</c> -- and a frame that wraps a looping cycle fires the TAIL of the cycle first and then
-    /// its head, so events stay in time order across the seam. Iteration is in the animation's own array order
-    /// (ascending forward, descending reverse), NOT sorted by time: the engine fires in file order and so does
-    /// this.
-    /// <para>Events fire for every run advanced this step, whatever its blend weight -- so during a crossfade
-    /// both the outgoing and the incoming animation fire theirs, exactly as vanilla.</para>
-    /// <para><b>One deliberate improvement.</b> A handler can destroy the object; the engine's
-    /// <c>AnimateEvents</c> does not re-check, so the remaining events of that frame fire on freed memory.
-    /// Here the generation test is threaded in and the walk stops at the first event that killed the record. It
-    /// can only turn a crash into a missed event.</para>
+    /// <c>AnimateEvents</c> @0x497f30: every event of the run's animation in this step's window, which is
+    /// HALF-OPEN at the low end -- forward <c>(prev, now]</c>, reverse <c>[now, prev)</c> -- with a looping
+    /// wrap firing the cycle's TAIL then its head, in the animation's own array order rather than by time.
+    /// <para>Every advanced run fires, whatever its blend weight; a handler may destroy the object, so the walk re-checks.</para>
     /// </summary>
     private static bool FireEvents(DbId obj, AnimDef anim, float from, float to, bool reverse)
     {

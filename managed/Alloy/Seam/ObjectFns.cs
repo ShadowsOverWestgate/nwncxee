@@ -7,17 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 seam-obj: the engine FUNCTIONS the seam answers instead of the engine -- the object
-/// factories and the handful of free functions that reach into a <c>Gob</c>'s or a <c>Part</c>'s innards rather
-/// than going through a vtable.
-/// <para>The hook list is deliberately short, and that is a RESULT, not an omission: because the shell is
-/// layout-compatible, <c>RemoveAuroraObject</c>, <c>RemoveAuroraString</c>, <c>GobRenderLast</c>,
-/// <c>Gob::SetScene</c>, <c>CAurObject::DieWithoutParent</c>, <c>CAurObject::AnimateExternal</c>,
-/// <c>CAurString::DieWithoutParent</c>, <c>GuiAurAttachToObject</c>, <c>Gob::AddAttachment</c>,
-/// <c>CAurBehavior::AddDependency</c> and the <c>GuiMeasure*</c> helpers all run correctly on a facade
-/// UNHOOKED: every field each one touches sits at the engine's offset in the shell, and everything else they
-/// do is a virtual call. Hooking them would be more code and more risk for no behaviour. The ones below are
-/// the ones that cannot: they walk an engine <c>Part</c> tree, or they allocate the object itself.</para></summary>
+/// <summary>The engine FUNCTIONS the seam answers instead of the engine: the object factories and the free
+/// functions that reach into a <c>Gob</c>'s or a <c>Part</c>'s innards rather than going through a vtable.
+/// <para>The list is short because the shell is layout-compatible, so most such free functions run correctly
+/// on a facade UNHOOKED. The ones here cannot: they walk an engine <c>Part</c> tree, or they allocate.</para></summary>
 public sealed unsafe class ObjectFns : ISeamProvider
 {
     private static ExtenderLog? _log;
@@ -43,14 +36,10 @@ public sealed unsafe class ObjectFns : ISeamProvider
         PartTree.OnReference = OnReference;
     }
 
-    /// <summary><c>NewCAurObject(char const* model, char const* name, FILE* stream)</c> @0x4412c0, 72 call
-    /// sites. Arg 2 is a NAME OVERRIDE -- empty or null means "name it after the model" -- and arg 3 is an
-    /// already-open stream to parse the model from instead of the resref. Returns NULL when the model does not
-    /// resolve, which every caller null-checks.
-    /// <para>What the engine does and the seam reproduces: resolve the model, allocate the object, add a model
-    /// reference, build the instance tree, expand reference nodes, initialise materials, fire
-    /// <c>DoEvent("_EmitterTarget")</c>, compute the minimum box and sphere, and seed the LOD block. What it
-    /// does and the seam does NOT is listed in the differences.</para></summary>
+    /// <summary><c>NewCAurObject(char const* model, char const* name, FILE* stream)</c> @0x4412c0. Arg 2 is a
+    /// NAME OVERRIDE -- empty or null means "name it after the model" -- and arg 3 an already-open stream to
+    /// parse instead of the resref. Returns NULL when the model does not resolve, which every caller
+    /// null-checks; the differences list says what the seam does not reproduce.</summary>
     [UnmanagedCallersOnly]
     private static nint NewCAurObject(nint modelName, nint name, nint stream) => NewCAurObjectBody(modelName, name, stream);
 
@@ -240,9 +229,8 @@ public sealed unsafe class ObjectFns : ISeamProvider
 
     /// <summary><c>NewCAurString(int maxLines)</c> @0x494050: allocate a <c>StringGob</c> and return its
     /// <c>CAurString</c> sub-object at +0x4c0. The seam's text shell is <c>StringGob</c>-sized with the
-    /// <c>Gob</c> table at +0 and the <c>CAurString</c> table at +0x4c0, so the hard-coded
-    /// -0x4c0 adjust of its argument in <c>RemoveAuroraString</c> and the <c>-0x70</c> in
-    /// <c>CAurString::DieWithoutParent</c> both land on the shell base.</summary>
+    /// <c>Gob</c> table at +0 and the <c>CAurString</c> table at +0x4c0, so the hard-coded -0x4c0 and -0x70
+    /// adjusts in <c>RemoveAuroraString</c> and <c>CAurString::DieWithoutParent</c> land on the shell base.</summary>
     [UnmanagedCallersOnly]
     private static nint NewCAurString(int maxLines)
     {
@@ -279,11 +267,9 @@ public sealed unsafe class ObjectFns : ISeamProvider
     }
 
     /// <summary><c>AurSetDynamicProjectionLight(CAurObject*)</c> @0x461b10: the engine collects the object's
-    /// lights and filters the list on each element's +0x74/+0x80, i.e. engine <c>Part</c> memory that does not
-    /// exist in DB mode.
-    /// <para>SIMPLIFIED: the seam marks the object as the dynamic projection source and lets the light set
-    /// decide (CX-116 owns shadow-casting lights). The engine's extra filter picked the one light whose
-    /// shadow flag and range qualified; Alloy's shadow pass already makes that choice per frame.</para></summary>
+    /// lights and filters on each element's +0x74/+0x80, i.e. engine <c>Part</c> memory the database has no
+    /// counterpart for. SIMPLIFIED: the seam marks the object as the dynamic projection source and lets the
+    /// light set decide, since Alloy's shadow pass already picks the qualifying light each frame.</summary>
     [UnmanagedCallersOnly]
     private static void AurSetDynamicProjectionLight(nint self)
     {

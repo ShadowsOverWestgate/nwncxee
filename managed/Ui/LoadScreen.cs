@@ -5,13 +5,10 @@ using CX.Framework;
 
 namespace CX.Ui;
 
-/// <summary>CX-100: the ONE loading screen is the engine's own <c>CGuiAreaLoadscreen</c> -- whatever layout, art and bar
-/// position the module or server gives it -- drawn by Alloy through the GUI capture (CX-95), from the area click to the
-/// first world frame. It stays up through the lightmap bake hold by itself: the hold swallows the AreaLoaded send, and
-/// <c>CGuiAreaLoadscreen::Update</c> @0x76ba00 waits in its end phase for the placement that send triggers before it
-/// fades. So CX only shares the panel's bar: the engine's load fills the first <see cref="EngineShare"/> of it
-/// (<c>CGuiStatusBar::SetStatus</c>, remapped) and the bake hold fills the rest, and CX draws the hold's caption and
-/// skip line over it. A hold with no engine screen behind it (a login) gets CX's own backdrop and bar instead.</summary>
+/// <summary>The ONE loading screen is the engine's own <c>CGuiAreaLoadscreen</c> -- whatever layout, art and bar
+/// position the module or server gives it -- drawn by Alloy through the GUI capture, from the area click to the
+/// first world frame. CX only shares the panel's bar: the engine's load fills the first <see cref="EngineShare"/>
+/// of it (<c>CGuiStatusBar::SetStatus</c>, remapped), the bake hold the rest, with CX's caption and skip over it.</summary>
 internal static unsafe class LoadScreen
 {
     /// <summary>The share of the bar the engine's own load phase owns; the bake hold fills the rest.</summary>
@@ -61,7 +58,10 @@ internal static unsafe class LoadScreen
         return _shown * 100f;
     }
 
-    /// <summary>The bake hold's progress and caption, pushed into the load screen's bar when one is up.</summary>
+    /// <summary>The bake hold's progress and caption, pushed into the load screen's bar when one is up. The engine
+    /// screen stays up through the hold by itself: the hold swallows the AreaLoaded send, and
+    /// <c>CGuiAreaLoadscreen::Update</c> @0x76ba00 waits in its end phase for the placement that send triggers
+    /// before it fades.</summary>
     internal static void BakeStep(float fraction, string caption, bool skipOpen)
     {
         IntPtr bar = Bar();

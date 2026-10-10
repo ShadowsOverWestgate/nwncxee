@@ -6,7 +6,7 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>Content-overridable GLSL (#92): the Alloy pipeline asks for each of its shaders by
+/// <summary>Content-overridable GLSL: the Alloy pipeline asks for each of its shaders by
 /// <c>cx_*</c> resref and gets whatever a hak, <c>override/</c> or NWSync supplies -- or null, which
 /// means the caller builds from its embedded default. Cold by construction: a program builds once per
 /// session, so the string this allocates never lands in a frame.</summary>
@@ -19,14 +19,10 @@ internal static unsafe class ShaderResource
 
     private static readonly IntPtr _resManSym = Native.Sym(SymbolMap.ExoResMan);
 
-    /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in
-    /// the resource chain provides it (the common case: everyone runs the embedded defaults).
-    /// <para><b>OUR resrefs only</b> -- <c>cx_*</c>, which nothing else in the client ever
-    /// looks up. Where no <c>CRes</c> exists yet this makes a BARE one and registers it, and the engine
-    /// reads a <c>.shd</c> back through <c>CResHelper&lt;CResSHD, 2069&gt;</c>, casting whatever the key
-    /// table holds. Point this at a resref the engine also loads and its next shader compile stores through
-    /// <c>CResSHD::GetSHDDataPtr()</c> on an object that is not one, and the client dies (#346, live).
-    /// A stock file goes through <see cref="VanillaShader"/>, which asks the ENGINE for it.</para></summary>
+    /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in the
+    /// resource chain provides it (the common case). <b>OUR resrefs only</b> -- <c>cx_*</c>: where no
+    /// <c>CRes</c> exists this makes a BARE one, and the engine reads a <c>.shd</c> back as a <c>CResSHD</c>,
+    /// so a resref the engine also loads kills the client at its next shader compile.</summary>
     internal static string? Override(string resref, ExtenderLog? log)
     {
         byte[]? b = Blob(resref, log);
@@ -44,11 +40,9 @@ internal static unsafe class ShaderResource
     }
 
     /// <summary>The SPIR-V module a content author supplied for <paramref name="resref"/>, or null when the
-    /// resource is absent, is GLSL text, or the <c>spirv</c> capability gate is off.
-    /// <para>A binary stage is opted into rather than accepted: none of the text machinery a GLSL override
-    /// goes through -- <see cref="Tokens"/>, <see cref="VanillaShader.Splice"/>, the
-    /// <see cref="ShaderContract"/> audits -- can read a module, so accepting one is trusting the author to
-    /// have matched the embedded stage's record layout, bindings and cutout rules.</para></summary>
+    /// resource is absent, is GLSL text, or the <c>spirv</c> capability gate is off. Opted into rather than
+    /// accepted: none of the text machinery a GLSL override goes through can read a module, so accepting one
+    /// trusts the author to have matched the embedded stage's record layout, bindings and cutout rules.</summary>
     internal static byte[]? OverrideSpirv(string resref, ExtenderLog? log)
     {
         if (!SpirvArmed) return null;
@@ -114,11 +108,9 @@ internal static unsafe class ShaderResource
     }
 
     /// <summary>Expand the sizing tokens an Alloy pipeline source may carry, so a shipped .shd tracks the
-    /// CPU-side constants rather than freezing a copy of them: <c>$CAP$</c> lights per cluster (the CPU sizes
-    /// the index SSBO from it), <c>$SORT$</c> the cluster build sort array (#410), <c>$DYNSPH$</c> mover spheres per cube slot, <c>$CUBES$</c> cube slots, <c>$GROUP$</c> compute workgroup size, <c>$SRGB$</c> the engine's sRGB
-    /// exponent, <c>$AA$</c> the SMAA preset level the anti-aliasing option picked, <c>$POSTMASK$</c>/<c>$SQM$</c>
-    /// the hosted post chain's option mask and shader quality (#352), pinned by its build. <see cref="GlProgram"/>
-    /// applies it to every stage it compiles, embedded or overridden, so both read the same.</summary>
+    /// CPU-side constants rather than freezing a copy of them: lights per cluster, the cluster sort array,
+    /// mover spheres per cube slot, cube slots, compute workgroup size, the engine's sRGB exponent, the SMAA
+    /// preset and the hosted post chain's option mask and quality. Applied to every stage that compiles.</summary>
     internal static string Tokens(string src) => src
         .Replace("$CAP$", AlloyLights.ClusterCap.ToString())
         .Replace("$SORT$", AlloyLights.SortCap.ToString())

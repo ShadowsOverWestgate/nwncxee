@@ -2,9 +2,9 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-116's dials (ADR 0025: one declaration, three views). The build itself has no toggle -- in
-/// Alloy mode the scene database IS the scene (ADR 0028) -- so what is here is the diagnostic that proves it
-/// matches the engine, and it is off by default because it costs the engine reads it measures.</summary>
+/// <summary>Dials for the CX tile build (ADR 0025: one declaration, three views). The build has no toggle --
+/// the scene database IS the scene (ADR 0028) -- so what is here is the diagnostic that proves it matches the
+/// engine, off by default because it costs the engine reads it measures.</summary>
 internal static class DbTiles
 {
     internal static readonly KnobGroup G;

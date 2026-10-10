@@ -11,48 +11,9 @@ namespace CX.Services.Camera;
 
 /// <summary>
 /// Tab-target mode: one <b>locked target</b>, picked by the cycle key or a left-click, that every target-asking
-/// quickbar button fires at with no second click (CX-636). The decisions are <see cref="TabTargetCore"/>'s; this
-/// shell does the engine work at four seams, all confirmed by decompile (Linux nm / Windows rva):
-/// <list type="bullet">
-/// <item><b>Keys</b>: a <c>WinMessageHandler</c> chain layer between the mouse-look and the framework input layer.
-/// The cycle and clear keys are swallowed on key-down, before <c>CExoInput::AddEvent</c> queues the scancode
-/// keybind (so the stock Tab highlight-all, action 0x61, never runs), whenever the framework's chord gate is
-/// clear: no chat typing, no CX panel, no NUI edit, no dialog.</item>
-/// <item><b>Candidates</b>: the area object list is walked on the key press, not per frame, projected through
-/// <see cref="Projector"/> against the live camera into a fixed buffer. Hostility is the creature's attitude
-/// byte, the one <c>HiliteAreaObjects</c> colours by.</item>
-/// <item><b>Indicator</b>: the engine's own <c>CNWCObject::Hilite</c> on channel 4 with the per-attitude colour
-/// global Tab uses; channels 2 (hover/Tab) and 3 (VFX) sit below it in <c>RefreshHilite</c>'s lowest-wins
-/// publish. Re-applied each frame (idempotent: <c>Scene::AddHighlightGob</c> dedups), which survives a model
-/// rebuild; Alloy's outline claims channel 4 too, so the lock takes the highlight mode the player chose. The
-/// nameplate is the engine's own Tab plate: <c>MouseOver(1)</c> each frame raises it, <c>MouseOff</c> drops it
-/// with the lock.</item>
-/// <item><b>Camera</b> (<c>tabtarget.camera</c>): on a new lock the camera turns once to look at it, or locks on
-/// and keeps looking until the lock key lets go; the lock key alone locks on the creature nearest the middle of
-/// the screen (<see cref="LockOn"/>). <see cref="CameraService"/>'s recenter drives yaw and tilt
-/// (<see cref="AimPoint"/>, <c>tabtarget.tilt</c>) and owns them while it runs; under the action camera the lock
-/// IS the aim. Locked on, the drive's side keys run sideways (<see cref="LockedOn"/>); a target that leaves the
-/// screen drops its lock (<see cref="InView"/>).</item>
-/// <item><b>Fire</b>: <c>CActionTarget::HandleLMouseDown</c> re-runs the world pick at the GUI mouse position
-/// (<c>FeedbackHitCheck</c>), it does NOT read the hovered-object field, so firing at the lock substitutes the
-/// pick: while <see cref="_fireAt"/> is set, the two pick hooks in <see cref="MouseLookService"/> answer the lock
-/// (verdict 2, its position) and <c>CGuiMan::GuiObjectHitCheck</c> answers nothing. The engine's own allowed-type
-/// scan and per-mode validation then decide and its own target-selected message goes out. Without a lock the
-/// plain <c>HandleLMouseDown</c> call runs (vanilla: a mouse click on the button leaves the mode up).</item>
-/// <item><b>Click-to-lock</b>: <c>PerformDefaultActionOnObject</c>, the one seam <c>PerformLButtonDownAction</c>
-/// reaches when the pick returned an object; a non-zero answer means "handled", so the click neither walks,
-/// attacks nor talks. Under the action camera the click keeps its vanilla action and also locks.</item>
-/// </list>
-/// <b>Preview</b> (hold to see the engine's AoE circle, release to fire): a quickbar hotkey opens its mode on the
-/// key-DOWN edge (<c>HandleInputEvent</c> actions 5..0x10 fire on <c>value != 0</c>) a frame after the SDL event,
-/// so the last non-modifier key pressed, if still down at activation (<c>SDL_GetKeyboardState</c>), is the button
-/// whose release fires; a mouse click on the button opens on mouse-UP, so nothing qualifies and it fires at once.
-/// Right-click and Escape are the engine's own cancel; the pending release finds the mode gone. Liveness is
-/// <c>CClientExoAppInternal+0x108</c>, the registered mode, cleared by <c>Cleanup</c> on both paths.
-/// <para>Hot path: the frame tick is one <c>GetGameObject</c> and two field reads plus the hilite; the key hook
-/// is a type/key compare. Nothing allocates. The lock is one id behind <see cref="Volatile"/>.</para>
-/// <para>Known gaps (CX-636): a DM's world click also locks; a petrified creature reads as dead (AI-state word 0)
-/// and drops the lock.</para>
+/// quickbar button fires at with no second click. The decisions are <see cref="TabTargetCore"/>'s; this shell does
+/// the engine work at six seams -- keys, candidates, indicator, camera, fire and click-to-lock, each documented
+/// where it sits. Nothing allocates, and the lock is one id behind <see cref="Volatile"/>.
 /// </summary>
 public sealed unsafe class TabTargetService : IExtenderService
 {
@@ -143,6 +104,9 @@ public sealed unsafe class TabTargetService : IExtenderService
 
     // ---- keys ----
 
+    /// <summary>The key seam: the cycle, clear and lock keys are swallowed on key-down, before
+    /// <c>CExoInput::AddEvent</c> queues the scancode keybind, so the stock Tab highlight-all never runs. Only
+    /// while the framework's chord gate is clear -- no chat typing, no CX panel, no NUI edit, no dialog.</summary>
     [UnmanagedCallersOnly]
     private static int OnWinMessage(IntPtr ev)
     {
@@ -240,7 +204,8 @@ public sealed unsafe class TabTargetService : IExtenderService
 
     /// <summary>The creature / placeable / door behind <paramref name="id"/>, or Zero: the lock's liveness read
     /// (a faded or invisible target stays locked; only a gone one clears). A placeable the server retired counts
-    /// as gone: vanilla deletes it, while Alloy's <c>PlaceableHold</c> keeps it on screen for good.</summary>
+    /// as gone -- vanilla deletes it, Alloy's <c>PlaceableHold</c> keeps it on screen for good; a petrified
+    /// creature reads as dead (AI-state word 0) and drops the lock.</summary>
     private static CNWCObject Resolve(IntPtr app, uint id, out byte kind)
     {
         kind = 0;

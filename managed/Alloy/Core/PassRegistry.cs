@@ -5,16 +5,11 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// One Alloy pass's lifecycle, as the seven slots every pass was hand-writing (#175). A null slot means the
-/// pass genuinely does not have that concern -- which is now visible in one place rather than being a gap
-/// nobody notices until the pass misbehaves.
+/// One Alloy pass's lifecycle, as the seven slots every pass was hand-writing. A null slot means the pass
+/// genuinely does not have that concern, which is visible here rather than a gap nobody notices. Delegates
+/// rather than an interface with instances: the passes are static classes holding static GL state, and their
+/// frame entry points are called from <c>[UnmanagedCallersOnly]</c> handlers, which cannot capture a receiver.
 /// </summary>
-/// <remarks>
-/// Delegates rather than an interface with instances, for the same reason <see cref="FrameRegistry"/> uses
-/// them (#170, ADR 0014's participant registry): the passes are static classes holding static GL state, and
-/// their frame entry points are called from <c>[UnmanagedCallersOnly]</c> handlers, which cannot capture a
-/// receiver. Ten singleton shims would be the same table written ten times over.
-/// </remarks>
 public sealed class PassLifecycle
 {
     /// <summary>The pass, as it names itself in the log. Also the lookup key for <see cref="PassRegistry.Find"/>.</summary>
@@ -38,10 +33,8 @@ public sealed class PassLifecycle
 
     /// <summary>The world went away underneath the pass -- part table wiped, module unloaded, enrollment
     /// re-run. Drop whatever was CAPTURED from it (part lists, VDO slots, scene pointers); the GL objects
-    /// are still valid and are not this slot's business.
-    /// <para>Two edges, not one, and conflating them is how a pass ends up half stood-down. The old roll-call
-    /// had no name for the distinction at all -- one pass spelled the pair <c>Forget</c>/<c>ContextLost</c>
-    /// and every other pass called whichever one it had <c>Forget</c>.</para></summary>
+    /// are still valid and are not this slot's business. Two edges, not one: conflating this with context
+    /// loss is how a pass ends up half stood-down.</summary>
     public Action? Revoke { get; init; }
 
     /// <summary>One clause of the period report, given the frame count of the period.</summary>
@@ -49,18 +42,11 @@ public sealed class PassLifecycle
 }
 
 /// <summary>
-/// The Alloy passes' roll-call (#175). Before this, adding a pass meant writing up to eight methods and
-/// remembering to wire each into four separate hardcoded call lists -- attach, self-check, context-loss and
-/// the period report -- and the gaps in that table were not deliberate, they were the bugs the convention
-/// produced. Registration order is <see cref="FrameGraph"/>'s order, declared once in
-/// <see cref="RenderPasses"/>.
+/// The Alloy passes' roll-call. Registration order is <see cref="FrameGraph"/>'s, declared once in
+/// <see cref="RenderPasses"/>; same shape and zero-alloc rule as <see cref="FrameRegistry"/> -- registration
+/// builds a list, <see cref="Seal"/> flattens it to an array at init, and every walk is a plain indexed loop.
+/// None of the walks is per-frame; the array is what keeps <see cref="Forget"/> honest when a pass is added.
 /// </summary>
-/// <remarks>
-/// Same shape and same zero-alloc rule as <see cref="FrameRegistry"/>: registration builds a list,
-/// <see cref="Seal"/> flattens it to an array once at init, and every walk is a plain indexed loop. None of
-/// the walks is per-frame -- attach and self-check are init, forget is a context edge, stats is the period
-/// report -- but the array is what keeps <see cref="Forget"/> honest when a pass is added.
-/// </remarks>
 internal sealed class PassRegistry
 {
     /// <summary>The live registry. Passes register onto this one.</summary>

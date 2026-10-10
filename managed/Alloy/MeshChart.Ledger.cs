@@ -4,17 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>The chart LEDGER: one file per mesh content under <c>cx-charts/</c> beside <c>cx.cfg</c>, the
-/// mesh-level interchange format #656 asked for -- versioned header, content key, per-vertex source index
-/// + chart UV in atlas texel units, the split index run, atlas size. Nothing Alloy-internal (no pool
-/// indices, no arena offsets, no LOD runs): a toolset could ship these in a module and Alloy would map
-/// them onto the pool at adoption exactly as it maps its own.
-/// <para>Byte-budgeted prune (<c>lightmap.disk</c>): chart files are not uniformly sized, so the GI cache's
-/// count rule will not do. A running byte tally is settled by one directory listing on first use and
-/// bumped per write; over budget, one more listing sorts by last write and deletes oldest-first. A hit
-/// touches the file's write time, so a chart read every session never ages out under one that is not.</para>
-/// <para>Worker threads only (several -- the tally takes <c>_diskGate</c>): the three refusals (version, key, truncation) are the reason the self-check
-/// round-trips the pure pair rather than the disk.</para></summary>
+/// <summary>The chart LEDGER: one file per mesh content under <c>cx-charts/</c> beside <c>cx.cfg</c> -- versioned
+/// header, content key, per-vertex source index + chart UV in atlas texel units, the split index run, atlas size.
+/// Nothing Alloy-internal, so a toolset could ship these in a module. Worker threads only, several of them: every
+/// tally and prune takes <c>_diskGate</c>, and a hit touches the file's write time so a live chart never ages out.</summary>
 internal static partial class MeshChart
 {
     /// <summary>"CXCH" little-endian.</summary>
@@ -123,7 +116,7 @@ internal static partial class MeshChart
     }
 
     /// <summary>Delete oldest-first until the directory fits <paramref name="budget"/>; returns what is left.
-    /// Every file in the directory: the chart ledger and the bake cache (#674, <c>.lmp</c>) share the budget.</summary>
+    /// Every file in the directory: the chart ledger and the bake cache's <c>.lmp</c> blobs share the budget.</summary>
     internal static long Prune(string dir, long budget)
     {
         var files = new DirectoryInfo(dir).GetFiles();

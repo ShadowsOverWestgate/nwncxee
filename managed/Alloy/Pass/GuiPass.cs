@@ -8,16 +8,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-95/CX-96: the GL side of Alloy's GUI path. <see cref="GuiCapture"/> turns every GUI scene into layers of
-/// captured draws; this issues them from the 4.6 context in ONE bracket per flush, one program, the records in one
-/// SSBO read through <c>gl_BaseInstance</c>. Two flushes a frame, at the two points the engine's draw order needs:
-/// just before nuklear's (<c>CGuiMan::UpdateAndRender</c> renders every panel view, then NUI, then the two overlay
-/// views at <c>CGuiMan+0x40/+0x48</c>), and at the present for those overlays.
-/// <para>The gate is its own, not <see cref="AlloyGate"/>'s world verdict: the GUI has no world frame to wait for, so
-/// it is Alloy's from the first present the 4.6 context and this program exist, main menu included. Windows draws
-/// into <see cref="PresentTarget"/>'s texture between a take-back and a hand-back blit, for the reason that type
-/// exists at all. ponytail: that is two full-screen blits per flush and three flushes a frame (panels, NUI, overlays);
-/// moving the CX windows into the 4.6 context would let the whole GUI composite once and blit once.</para>
+/// The GL side of Alloy's GUI path: <see cref="GuiCapture"/> turns every GUI scene into layers of captured
+/// draws and this issues them from the 4.6 context in ONE bracket per flush, one program, the records in one
+/// SSBO read through <c>gl_BaseInstance</c>. The gate is its own, not <see cref="AlloyGate"/>'s world verdict
+/// -- the GUI has no world frame to wait for, main menu included. ponytail: two full-screen blits per flush.
 /// </summary>
 internal static unsafe class GuiPass
 {
@@ -91,12 +85,12 @@ internal static unsafe class GuiPass
         _seqAtFrame = PostChain.ResolveSeq;
     }
 
-    /// <summary>CX-101: has this frame's colour been cleared, and the world-resolve count at the last present -- a
+    /// <summary>Has this frame's colour been cleared, and the world-resolve count at the last present -- a
     /// frame whose count moved had a world frame paint the whole screen, so it needs no clear.</summary>
     private static bool _frameColour;
     private static int _seqAtFrame;
 
-    /// <summary>CX-101: the engine's swallowed frame clear, done here -- once, at the first flush of a frame that no world
+    /// <summary>The engine's swallowed frame clear, done here -- once, at the first flush of a frame that no world
     /// frame covered (the menus), in the engine's own clear colour. Unscissored, like <c>Update</c>'s <c>Clear(3)</c>.</summary>
     private static void FrameClear()
     {
@@ -133,7 +127,7 @@ internal static unsafe class GuiPass
         Notice.Show(_log, $"Alloy could not draw the interface ({why}); the game's renderer draws it instead.");
     }
 
-    /// <summary>CX-101: flush now -- a caller whose draws must land before the next foreign draw (nuklear's own site).</summary>
+    /// <summary>Flush now -- a caller whose draws must land before the next foreign draw (nuklear's own site).</summary>
     internal static void FlushNow() => Flush();
 
     /// <summary>Issue every layer captured since the last flush, then forget them. A flush that cannot run drops what

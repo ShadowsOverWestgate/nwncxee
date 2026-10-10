@@ -5,10 +5,9 @@ using System.Threading;
 namespace CX.Alloy;
 
 /// <summary>A background job keyed on an ownership (slot, item), revoked with the world: the lifecycle
-/// <see cref="MeshLod"/> and <see cref="MeshChart"/> share (CX-703). <see cref="Entries"/> is the render
-/// thread's alone -- the offer, the result filing, the per-part read and both lifetime edges all run there,
-/// so it takes no lock; <c>_gate</c> guards the three queues, which is the whole cross-thread surface.
-/// The queue IS the pending budget: <see cref="QueueHasRoom"/> refuses before an entry is claimed.</summary>
+/// <see cref="MeshLod"/> and <see cref="MeshChart"/> share. <see cref="Entries"/> is the render thread's alone
+/// -- offer, result filing, per-part read and both lifetime edges all run there, so it takes no lock, and
+/// <c>_gate</c> guards the three queues, which are the whole cross-thread surface.</summary>
 internal sealed class SlotJobTable<TJob, TEntry>
     where TJob : class, new()
     where TEntry : struct, ISlotEntry
@@ -32,13 +31,9 @@ internal sealed class SlotJobTable<TJob, TEntry>
     internal bool Running => _started;
 
     /// <summary>Start the worker(s) once, from the offering thread. <paramref name="body"/> sees one job at a
-    /// time, no GL, no engine memory -- everything it reads was copied for it at the offer, so nothing it holds
-    /// outlives a pool the engine freed. A throw escaping it kills the process (an unhandled background-thread
-    /// exception), so bodies catch.
-    /// <para>More than one worker means <paramref name="body"/> runs on several threads at once and results come
-    /// back out of offer order: a body that wants a pool of its own (buffers, file handles) keeps it
-    /// <c>[ThreadStatic]</c>. The queue stays FIFO, so the jobs are still STARTED in the order they were
-    /// offered.</para></summary>
+    /// time, no GL, no engine memory -- all it reads was copied for it at the offer -- and must catch, since a
+    /// throw escaping a background thread kills the process. Several workers run it concurrently and file results
+    /// out of offer order, so a body wanting buffers of its own keeps them <c>[ThreadStatic]</c>.</summary>
     internal void Start(string name, Action<TJob> body, int workers = 1)
     {
         if (_started) return;
@@ -60,6 +55,7 @@ internal sealed class SlotJobTable<TJob, TEntry>
             }) { IsBackground = true, Name = workers == 1 ? name : $"{name}-{i}" }.Start();
     }
 
+    /// <summary>The queue IS the pending budget: an offer is refused here, before an entry is claimed.</summary>
     internal bool QueueHasRoom { get { lock (_gate) return _in.Count < _maxPending; } }
 
     internal TJob Rent()

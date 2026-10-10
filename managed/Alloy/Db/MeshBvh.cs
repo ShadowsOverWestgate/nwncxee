@@ -5,15 +5,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118: one model-space BVH per distinct <see cref="MeshDef"/>, built once and shared by every
-/// placement of that mesh -- the same content key the mesh arena uses, so an area that re-uses a model pays
-/// for its tree once no matter how many instances stand in it.
-/// <para>A mesh that ships an <see cref="AabbDef"/> (the walkmesh / <c>PartAABB</c> case) keeps the file's own
-/// tree: the engine walks exactly that, and re-deriving it would answer a different question than vanilla.
-/// Everything else gets a median-split tree over face centroids, which is what the engine does NOT have --
-/// <c>PartTriMesh::HitCheckGeom</c> tests every face of the mesh after one box reject.</para>
-/// <para>Immutable once built, so the render thread may read it; built on the caller's thread on first use
-/// (a cold path: once per mesh per session).</para></summary>
+/// <summary>One model-space BVH per distinct <see cref="MeshDef"/>, built once and shared by every placement
+/// of that mesh, so an area re-using a model pays for its tree once. Immutable once built, so the render
+/// thread may read it. A mesh that ships an <see cref="AabbDef"/> keeps the file's own tree, because the
+/// engine walks exactly that; everything else gets a median-split tree over face centroids.</summary>
 public sealed class MeshBvh
 {
     /// <summary>Faces in a leaf. Below this the tree costs more pointer-chasing than the triangles it
@@ -25,7 +20,7 @@ public sealed class MeshBvh
     private const int MaxDepth = 128;
     /// <summary>A mesh past this face count is left untreed rather than spending a long build on the game
     /// thread: the cast falls back to the engine's own linear face walk after the box reject. ponytail: the
-    /// honest fix is to build it on a worker thread off the model cache, which CX-113 owns.</summary>
+    /// honest fix is to build it on a worker thread off the model cache.</summary>
     public const int MaxFaces = 1 << 16;
 
     /// <summary>Node bounds, in the same model space as <see cref="MeshDef.Positions"/>.</summary>
@@ -42,8 +37,8 @@ public sealed class MeshBvh
     /// <see cref="MaxFaces"/>, which the caller tests linearly instead.</summary>
     public bool Usable => _nodes > 0;
 
-    /// <summary>Keyed on the <see cref="MeshDef"/> instance, which the model cache (CX-113) already keys on
-    /// content: one tree per distinct mesh, shared by every placement.</summary>
+    /// <summary>Keyed on the <see cref="MeshDef"/> instance, which the model cache already keys on content:
+    /// one tree per distinct mesh, shared by every placement.</summary>
     private static readonly Dictionary<MeshDef, MeshBvh> _cache = new();
     /// <summary>Meshes treed this session, and faces across them: the census line that says whether the
     /// index is being shared or rebuilt.</summary>
@@ -77,9 +72,9 @@ public sealed class MeshBvh
     public static void Clear()
     { lock (_cache) { _cache.Clear(); Built = 0; BuiltFaces = 0; Refused = 0; Degraded = 0; StackFull = 0; FacesTested = 0; } }
 
-    /// <summary>Drop the trees of <paramref name="model"/>'s meshes. Subscribed to the model cache's
-    /// eviction edge (CX-113), which is the ONLY thing that can retire a content-keyed tree: without it the
-    /// table grows for the session and holds every mesh the player ever looked at.</summary>
+    /// <summary>Drop the trees of <paramref name="model"/>'s meshes. Subscribed to the model cache's eviction
+    /// edge, which is the ONLY thing that can retire a content-keyed tree: without it the table grows for the
+    /// session and holds every mesh the player ever looked at.</summary>
     public static void Evict(ModelDef model)
     {
         lock (_cache)
@@ -97,8 +92,7 @@ public sealed class MeshBvh
     /// <summary>Build <paramref name="mesh"/>'s tree NOW if it has none. Called from the dirty fold, where a
     /// multi-millisecond build is a frame's own cost; <see cref="For"/> would otherwise build it inside the
     /// first cast that touches it, which is a hitch on the first click.
-    /// ponytail: the honest place is the model cache's arrival edge on a worker thread (CX-113 owns it); this
-    /// moves the build off the cast, which is the part a player feels.</summary>
+    /// ponytail: the honest place is the model cache's arrival edge on a worker thread.</summary>
     public static void Prewarm(MeshDef mesh) => For(mesh);
 
     private void Build(MeshDef mesh)
@@ -175,8 +169,7 @@ public sealed class MeshBvh
     /// <summary>Nearest face hit on the part-space segment <paramref name="from"/>-&gt;<paramref name="to"/>,
     /// with <paramref name="to"/> SHORTENED to the hit (the engine's own nearest-wins mechanism: every test
     /// downstream sees the shorter segment). <paramref name="scale"/> multiplies the mesh, matching
-    /// <c>PartTriMesh::HitCheckGeom</c>'s scaled-vertex arm rather than dividing the ray.
-    /// Returns the face index, or -1.</summary>
+    /// <c>PartTriMesh::HitCheckGeom</c>'s scaled-vertex arm rather than dividing the ray. -1 for no hit.</summary>
     public int Cast(Vector3 from, ref Vector3 to, float scale, ulong surfaceMask, out Vector3 normal)
     {
         normal = default;

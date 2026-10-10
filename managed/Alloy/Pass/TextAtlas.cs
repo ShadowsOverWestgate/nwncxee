@@ -6,16 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-119: the GL half of CX-owned fonts -- a baked atlas becomes a CX-owned texture. Lives on the
-/// submission side because <c>Alloy/Scene</c> and <c>Alloy/Db</c> name no GL (#206); <see cref="Pump"/> is
-/// called from inside Alloy's bracket, where a context is current.
-/// <para>The engine uploads a TTF atlas as <c>glTexImage2D(GL_RGBA, …, GL_RGBA, GL_UNSIGNED_BYTE)</c> with
-/// <c>GL_NEAREST</c> on both filters and no mips (<c>GLRender::CreateTexture</c> @0x4ca2b0 with
-/// <c>bpp == 4</c>, and <c>LoadFromTTF</c> leaving <c>mipmap</c> and <c>filter</c> at 0). This uses immutable
-/// <c>RGBA8</c> storage for the same pixels, which is the same sampling with a sized format.</para>
-/// <para>SEAM: a bitmap font's atlas is an ordinary resref-keyed texture, which is CX-117's
-/// <c>TexRegistry</c>. Until that registry lands, such a font is baked, measured and laid out correctly but
-/// has no atlas handle, and it is counted and said once rather than drawn blank.</para></summary>
+/// <summary>The GL half of CX-owned fonts -- a baked TTF atlas becomes a CX-owned texture, in immutable
+/// <c>RGBA8</c> storage with NEAREST and no mips, which is the engine's own sampling with a sized format.
+/// Lives on the submission side because <c>Alloy/Scene</c> and <c>Alloy/Db</c> name no GL. A BITMAP font's
+/// atlas is an ordinary resref-keyed texture and has no handle here yet: counted and said, never drawn blank.</summary>
 internal static unsafe class TextAtlas
 {
     private static ExtenderLog? _log;

@@ -210,10 +210,9 @@ public sealed unsafe partial class ObjectSlots
     }
 
     /// <summary><c>Gob::SetVisualTransformData(CAurObjectVisualTransformData const&amp;)</c> @0x439bd0. The
-    /// struct is the game's (the server sends it, `CNWCObject` keeps a `map&lt;int, ...&gt;` of them) and the
-    /// engine stores it field by field into its <c>LerpFloat</c> slots. The seam keeps the caller's BYTES
-    /// verbatim in a side pool, so <see cref="GetVisualTransformData"/> can hand back a reference to the same
-    /// layout the caller gave, and reads the scale/translate/rotate floats out of it for the fold above.</summary>
+    /// struct is the game's and the engine stores it field by field into its <c>LerpFloat</c> slots. The seam
+    /// keeps the caller's BYTES verbatim in a side pool, so <see cref="GetVisualTransformData"/> hands back a
+    /// reference to the same layout the caller gave, and reads the scale/translate/rotate floats for the fold.</summary>
     [UnmanagedCallersOnly]
     private static void SetVisualTransformData(nint self, nint data)
     {
@@ -256,11 +255,8 @@ public sealed unsafe partial class ObjectSlots
 
     /// <summary>The part index in <see cref="SceneDb.Parts"/> whose node is named <paramref name="name"/>, or
     /// -1. <c>Gob::GetPart</c> @0x43c630 matches <c>"root"</c> case-insensitively to the root and otherwise
-    /// runs <c>FindPart</c> over LOD 0's tree only, so the seam searches the object's one part range.</summary>
-    /// <summary>The allocation-free form: match the engine's NUL-terminated bytes against the node names
-    /// directly. <c>GetPartPosition</c> and <c>GetPart</c> are called every update by <c>CNWCProjectile</c>
-    /// (four sites) and <c>CNWCAnimBase</c> ("root"), and a <c>PtrToStringUTF8</c> there is a managed
-    /// allocation on the game thread in a frame -- which is the one thing a hot hook may not do.</summary>
+    /// runs <c>FindPart</c> over LOD 0's tree only, so the seam searches the object's one part range. Matches
+    /// the engine's NUL-terminated bytes directly: it is called every update, so it may not allocate.</summary>
     internal static int PartByName(DbId obj, byte* name)
     {
         if (!SceneDb.Objects.Valid(obj)) return -1;
@@ -302,12 +298,10 @@ public sealed unsafe partial class ObjectSlots
         return a[i] == 0;
     }
 
-    /// <summary>The managed-string twin of the <c>byte*</c> overload, and it searches the COMPOSITION the
-    /// same way. It did not, and <c>Gob::Append</c> is its caller: a creature's body parts are appended one
-    /// after another (<c>CNWCAnimBaseParts::LoadModel</c> @0xadb550), and an anchor node that lives in a piece
-    /// already appended -- a forearm under a bicep, a cloak under a torso -- answered -1, so the append
-    /// refused and that piece of the creature never existed. Two overloads of one question must not give two
-    /// answers.</summary>
+    /// <summary>The managed-string twin of the <c>byte*</c> overload, searching the COMPOSITION the same way:
+    /// <c>Gob::Append</c> is its caller, a creature's body parts are appended one after another, and an anchor
+    /// node in a piece already appended -- a forearm under a bicep -- must resolve or the append refuses and
+    /// that piece of the creature never exists. Two overloads of one question must not give two answers.</summary>
     internal static int PartByName(DbId obj, string? name)
     {
         if (!SceneDb.Objects.Valid(obj)) return -1;
@@ -369,10 +363,8 @@ public sealed unsafe partial class ObjectSlots
 
     /// <summary><c>Gob::GetRandomPart</c> @0x43d4c0 picks a part with probability proportional to its tri-mesh
     /// AREA (the engine caches the object's total at +0x4b8, -1 until <c>UpdatePartTriMeshArea</c> runs) and
-    /// returns its NAME. Area-weighted, not uniform: a blood spatter lands on the big surfaces.
-    /// <para>SIMPLIFIED: the seam weights by the part's bounding-box surface area, which CX-114 has for every
-    /// part, instead of summing triangle areas. The distribution is the same shape; the exact per-triangle
-    /// total would need a pass over the arena that nothing else wants.</para></summary>
+    /// returns its NAME. Area-weighted, not uniform: a blood spatter lands on the big surfaces. SIMPLIFIED:
+    /// the seam weights by bounding-box surface area -- the same shape, with no pass over the arena.</summary>
     [UnmanagedCallersOnly]
     private static nint GetRandomPart(nint self)
     {
@@ -395,7 +387,7 @@ public sealed unsafe partial class ObjectSlots
     private static readonly Random _rand = new();
 
     /// <summary>A part's weight in the area-weighted draw. The engine sums triangle areas; the seam uses the
-    /// part's bounding-box surface area, which CX-114 has for every part and which has the same shape.</summary>
+    /// part's bounding-box surface area, which has the same shape.</summary>
     private static float PartArea(int part)
     {
         if (SceneDb.PartMesh[part] < 0 || !SceneDb.PartEnabled[part]) return 0f;
@@ -412,11 +404,9 @@ public sealed unsafe partial class ObjectSlots
     }
 
     /// <summary><c>Gob::SetPartPosition(char const*, Vector, Quaternion)</c> @0x438ee0: place a part in WORLD
-    /// space, which means solving back through the parent chain.
-    /// <para>SIMPLIFIED: the seam writes the part's parent-relative pose from the world pose using the parent's
-    /// current world matrix. The engine does the same composition; where it differs is that the engine's write
-    /// survives the next animation key and CX's is overwritten by the pose the animation runtime writes, as the
-    /// local setter below is.</para></summary>
+    /// space, which means solving back through the parent chain. SIMPLIFIED: the seam writes the part's
+    /// parent-relative pose from the world pose using the parent's current world matrix -- the same composition
+    /// the engine does, except that CX's write is overwritten by the next pose the animation runtime writes.</summary>
     [UnmanagedCallersOnly]
     private static int SetPartPosition(nint self, nint name, EVec pos, EQuat rot)
     {

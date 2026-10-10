@@ -41,7 +41,7 @@ public sealed class ChatStore
     /// <summary>Number of lines currently retained.</summary>
     public int Count => _size;
 
-    /// <summary>Drop all retained lines (a session boundary -- #33). Zero-alloc; drops the ChatLine refs so
+    /// <summary>Drop all retained lines (a session boundary). Zero-alloc; drops the ChatLine refs so
     /// the GC can reclaim the prior session's lines.</summary>
     public void Clear()
     {
@@ -130,7 +130,7 @@ public sealed class ChatStore
         ok &= ns == 3 && buf[0].RawText == "c";          // "d" (newest) skipped
         ok &= s2.View(0xffffffff, null, buf, skip: 4) == 0;  // past the oldest
 
-        // Clear drops the whole backlog (session boundary, #33).
+        // Clear drops the whole backlog (session boundary).
         s2.Clear();
         ok &= s2.Count == 0 && s2.View(0xffffffff, null, buf) == 0;
 

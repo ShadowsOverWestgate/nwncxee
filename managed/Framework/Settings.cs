@@ -5,17 +5,10 @@ namespace CX.Framework;
 
 /// <summary>
 /// The boot read of <c>cx.cfg</c> (ADR 0025): one flat <c>key=value</c> file, read once pre-main, that every
-/// <see cref="Knob{T}"/> binds its saved value from (<see cref="Raw"/>) and <see cref="KnobFile"/> writes back.
+/// <see cref="Knob{T}"/> binds its saved value from and <see cref="KnobFile"/> writes back. The PATH is latched
+/// here, not lazily: <see cref="Native.ConfigPath"/> answers differently before and after the engine exists and
+/// boot knobs are read at both moments, so <see cref="Load"/> runs once, pre-main, beside <c>nwn.ini</c>.
 /// </summary>
-/// <remarks>
-/// <b>Path, and why it is latched.</b> <see cref="Native.ConfigPath"/> resolves to the engine user directory
-/// once the engine exists and to <see cref="Native.DefaultUserDirectory"/> before it does. Boot settings are
-/// read at both moments -- <c>gl46</c> at Initialize, <c>bindless</c> at the first frame -- so a lazy latch
-/// would pick its file by whichever read fired first, and a reorder would silently move the file.
-/// <see cref="Load"/> is therefore called once from the host, pre-main by construction, which pins the file
-/// next to <c>nwn.ini</c> in the ordinary case. That is the same moment (and the same fallback)
-/// <c>ShaderStages.DumpDir</c> already resolves at.
-/// </remarks>
 public static class Settings
 {
     /// <summary>The one settings file (ADR 0025): read here once, pre-main; written back by

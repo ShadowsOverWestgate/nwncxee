@@ -6,18 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#616: the precipitation field. One instanced attribute-less draw per frame: the instance id hashes
-/// to a lattice point in a fall-aligned box, the copy of that point nearest the camera is the one drawn, and the
+/// <summary>The precipitation field. One instanced attribute-less draw per frame: the instance id hashes to a
+/// lattice point in a fall-aligned box, the copy of that point nearest the camera is the one drawn, and the
 /// fall phase slides the lattice along the fall axis with <c>mod</c>, so the field wraps for ever and the CPU
-/// stages nothing (the shape is <see cref="Halos"/>'). Rain is a streak along the fall vector, billboarded about
-/// it; snow a camera-facing disc with a slow wobble. The fall vector is gravity plus the area wind the renderer
-/// already uploads. Contact against geometry is the hardware depth test plus the particle pass's soft fade.
-/// <para>The vertex stage is shared (<c>cx_weather_vs</c>); the look is the two fragment stages a hak can
-/// override, <c>cx_rain_fs</c> / <c>cx_snow_fs</c> (ADR 0024).</para>
-/// <para>#620 roof drips are the same draw with <c>uKind = 3</c>: an instance survives only where the cover map says
-/// covered here and open within the feather distance -- under a lip, not mid-roof, not out in the rain -- so the
-/// eave line drips with no edge-detect pass and no drip buffer. The reservoir is the wetness integrator (#618):
-/// it fills under rain and drains over the dry-out time, so drips carry on and taper after the stop edge.</para></summary>
+/// stages nothing. Roof drips are the same draw with <c>uKind = 3</c>, kept only under a lip.</summary>
 internal static unsafe partial class Weather
 {
     internal const string ShdWeatherVs = "cx_weather_vs", ShdRainFs = "cx_rain_fs", ShdSnowFs = "cx_snow_fs";
@@ -221,11 +213,8 @@ internal static unsafe partial class Weather
 
     /// <summary>One instanced quad per drop or flake; every position is a function of the instance id, the
     /// camera and the fall phase, so a hak override of this stage can reshape the field but never grow a
-    /// buffer. The instance's lattice point is tested against the rain occlusion map (#617) once, here, and a
-    /// covered instance is sent off-screen; a drip (kind 3) is kept only under a lip (#620).
-    /// <para>The light is taken here, once per vertex at the instance's own centre (the particle pass's
-    /// #336 shape): ambient with the sun-facing floor, the sun through its cascades, the clustered lamps.
-    /// <c>uLit = 0</c> (rig down, lighting off) falls back to the flat area terms.</para></summary>
+    /// buffer. The instance's lattice point is tested against the rain occlusion map once, here. The light is
+    /// taken per vertex at the instance's own centre; <c>uLit = 0</c> falls back to the flat area terms.</summary>
     internal static string WeatherVs => ShaderSource.Get("cx_wx_v.glsl");
 
     /// <summary>A rain streak: a thin bright core tapered at both ends, faded where it meets geometry.

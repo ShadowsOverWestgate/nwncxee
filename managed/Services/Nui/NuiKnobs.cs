@@ -2,13 +2,10 @@ using CX.Framework;
 
 namespace CX.Services.Nui;
 
-/// <summary>The <c>nui</c> group: speed and usability fixes for server-built NUI windows. <see cref="Cull"/> gates
-/// <see cref="NuiService"/>'s off-screen skip, <see cref="ItemIcons"/> the <c>@item:</c> images (<see cref="NuiItemIcons"/>),
-/// <see cref="Smooth"/> and <see cref="Thumb"/> the scrollbars (<see cref="NuiScrollbars"/>), <see cref="AutoHide"/> and
-/// <see cref="HoverBars"/> their visibility (<see cref="NuiScrollbarHide"/>), <see cref="Solve"/> and
-/// <see cref="SolveCheck"/> the layout solve (<see cref="NuiSolver"/>), <see cref="Explain"/> the broken-layout explanation
-/// (<see cref="NuiLayoutErrors"/>).
-/// Declared through <see cref="CX.Ui.UiCategory.Declare"/>.</summary>
+/// <summary>The <c>nui</c> group, declared through <see cref="CX.Ui.UiCategory.Declare"/>: speed and usability fixes
+/// for server-built NUI windows -- the off-screen skip (<see cref="Cull"/>), the <c>@item:</c> images
+/// (<see cref="ItemIcons"/>), the scrollbars (<see cref="Smooth"/>, <see cref="Thumb"/>, <see cref="AutoHide"/>,
+/// <see cref="HoverBars"/>), the layout solve (<see cref="Solve"/>, <see cref="SolveCheck"/>, <see cref="Explain"/>).</summary>
 internal static class NuiKnobs
 {
     internal static readonly KnobGroup G;

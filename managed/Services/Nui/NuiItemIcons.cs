@@ -9,14 +9,10 @@ namespace CX.Services.Nui;
 
 /// <summary>
 /// <c>"@item:&lt;hex&gt;"</c> as any NUI image draws that item's own inventory icon, every layer in the item's real
-/// colours, as the CX inventory draws it. The hex is NWScript's <c>ObjectToString</c> (lowercase, 1-8 digits); anything
-/// after it is ignored, so a server that re-dyes an item on show bumps a suffix to get past the per-window image cache.
-/// <see cref="SymbolMap.NkLoadImg"/> composites the layers on the CPU into a TGA and asks for a synthetic resref, and
-/// the <see cref="SymbolMap.ExoResManGet"/> hook answers that one call with the bytes; the engine does everything else
-/// (the NkImage, decode, upload, its caches, the free). An item this client does not know draws nothing. A stock
-/// client shows its error sprite for the same string. CX-155.
+/// colours. The hex is NWScript's <c>ObjectToString</c> (lowercase, 1-8 digits); anything after it is ignored, so a
+/// suffix bump gets past the per-window image cache. <see cref="SymbolMap.NkLoadImg"/> composites the layers into a
+/// TGA under a synthetic resref the <see cref="SymbolMap.ExoResManGet"/> hook answers once. Cold, so it may allocate.
 /// </summary>
-/// <remarks>Cold: behind the per-window image cache and nk_loadimg's own, so it may allocate.</remarks>
 internal static unsafe class NuiItemIcons
 {
     private const ushort ResTga = 3, ResAny = ushort.MaxValue;
@@ -113,7 +109,7 @@ internal static unsafe class NuiItemIcons
     private static IntPtr OnGetItanium(IntPtr ret, IntPtr self, byte* resref, ushort type) =>
         Ours(resref, type) ? Answer(ret) : ((delegate* unmanaged<IntPtr, IntPtr, byte*, ushort, IntPtr>)_getOrig)(ret, self, resref, type);
 
-    /// <summary>Win64 order for a member returning by value: (this, ret, resref, type) -- #456.</summary>
+    /// <summary>Win64 order for a member returning by value: (this, ret, resref, type).</summary>
     [UnmanagedCallersOnly]
     private static IntPtr OnGetWin64(IntPtr self, IntPtr ret, byte* resref, ushort type) =>
         Ours(resref, type) ? Answer(ret) : ((delegate* unmanaged<IntPtr, IntPtr, byte*, ushort, IntPtr>)_getOrig)(self, ret, resref, type);
@@ -217,12 +213,10 @@ internal static unsafe class NuiItemIcons
     private const int LookModels = 19, LookColors = 6, LookPartColors = LookModels * LookColors;
 
     /// <summary>
-    /// <c>"@look:"</c> then lowercase or uppercase hex, fields in <c>CNWSMessage::AddItemAppearanceToMessage</c>'s order: base
-    /// item (4 digits), the gender character <c>gender.2da</c>'s <c>GENDER</c> column gives the viewer's gender (2),
-    /// the visual effect byte (2), 19 models (4 each: a simple or layered item's model at [0], a composite weapon's
-    /// bottom/middle/top at [0..2], armor's 19 parts), 6 colours (2 each: leather 1-2, cloth 1-2, metal 1-2), then
-    /// optionally 114 per-part colours (2 each, part-major: part*6 + channel; <c>ff</c> = the base colour). Nothing
-    /// may follow.
+    /// <c>"@look:"</c> then hex in <c>AddItemAppearanceToMessage</c>'s field order: base item (4 digits), gender (2,
+    /// <c>gender.2da</c>'s <c>GENDER</c> column), visual effect (2), 19 models (4 each: a simple or layered item at
+    /// [0], a composite weapon's bottom/middle/top at [0..2], armor's 19 parts), 6 colours (2 each: leather, cloth,
+    /// metal), then optionally 114 part colours (part*6 + channel, 2 each; <c>ff</c> = base). Nothing may follow.
     /// </summary>
     private static bool ParseLook(byte* s, Look* look)
     {

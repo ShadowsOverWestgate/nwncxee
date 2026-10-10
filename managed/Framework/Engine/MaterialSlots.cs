@@ -10,7 +10,7 @@ public readonly unsafe ref partial struct Material
 {
     /// <summary>Slot <paramref name="i"/> of the Material's OWN table, which starts at the object itself (the
     /// constructor writes 0x00/0x10/../0x60). Borrowed: a <c>CAurTexture*</c> dies at the next area
-    /// transition, so it is re-fetched, never cached (#33, #138).</summary>
+    /// transition, so it is re-fetched, never cached.</summary>
     public CAurTexture Slot(int i) => new(*(IntPtr*)(Ptr + i * EngineLayout.MatSlotStride));
 }
 

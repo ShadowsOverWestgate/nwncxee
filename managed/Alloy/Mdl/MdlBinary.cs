@@ -5,19 +5,10 @@ using System.Numerics;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: the binary <c>.mdl</c> reader, ported from the engine's own loader
-/// (<c>FUN_005bee60</c> @0x4bee60 for the model, <c>FUN_005bd400</c> @0x4bd400 for a node and
-/// <c>FUN_005c01b0</c> @0x4c01b0 for the part every node shares). Both generations parse: the pre-EE binaries
-/// in the game's BIFs and the engine's own EE output that <c>MdlCache</c> keeps on disk.
-/// <para><b>The file.</b> Three dwords -- <c>{0, modelDataSize, rawDataSize}</c> -- then the MODEL BLOCK and
-/// then the RAW DATA BLOCK. The model block is a 32-bit memory image of the old engine's <c>Model</c> object
-/// with every pointer replaced by an offset from the block's own base; the raw block holds the bulk arrays
-/// (vertices, faces, uvs, weights) and its offsets are from ITS base. Which base an array uses is per field and
-/// is taken from the loader, never guessed.</para>
-/// <para><b>Controller ids are kept as the FILE states them</b> (position 8, orientation 20, scale 36, ...).
-/// The engine remaps them on load into byte offsets inside its <c>Part</c> subclass -- see
-/// <see cref="EngineControllerId"/>, which exists only so the live comparison can speak the engine's
-/// numbering. <see cref="Ctl"/> is the file numbering.</para></summary>
+/// <summary>The binary <c>.mdl</c> reader, ported from the engine's loader (@0x4bee60 model, @0x4bd400 node,
+/// @0x4c01b0 part); both the pre-EE BIF binaries and the engine's own EE output parse. The file is <c>{0,
+/// modelDataSize, rawDataSize}</c>, a MODEL BLOCK (a 32-bit image of the old <c>Model</c>, pointers as offsets
+/// from its base), then a RAW DATA BLOCK (offsets from ITS base, per field as the loader has it).</summary>
 internal static class MdlBinary
 {
     // ---- model block (verified in FUN_005bee60; the engine field each lands in is in the comment) ----
@@ -311,11 +302,9 @@ internal static class MdlBinary
     };
 
     /// <summary>The engine's own controller numbering: the byte offset of the field inside the concrete
-    /// <c>Part</c> subclass, which is what <c>NewController::Control</c> writes to and therefore what the live
-    /// comparison sees in engine memory. This is the loader's piecewise remap of a file id
-    /// (<c>FUN_005c01b0</c>'s ladder, whose inverse the compiler applies in <c>FUN_005ba070</c>), kept here so
-    /// nothing else has to know it. The ladder is PER NODE CLASS and the classes fall through to each other in
-    /// the engine's own test order: emitter, then the mesh family, then light, then the generic rule.</summary>
+    /// <c>Part</c> subclass, which is what <c>NewController::Control</c> writes to and what the live comparison
+    /// sees in engine memory. The loader's piecewise remap of a file id; the ladder is PER NODE CLASS, in the
+    /// engine's own test order -- emitter, then the mesh family, then light, then the generic rule.</summary>
     internal static int EngineControllerId(int file, NodeKind kind)
     {
         if (kind == NodeKind.Emitter)

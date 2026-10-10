@@ -5,12 +5,12 @@ using CX.Framework;
 namespace CX.Ui;
 
 /// <summary>A face to bake: TTF bytes (keyed by their path) at a pixel height. <paramref name="IconsOnly"/> bakes
-/// only the <c>icon</c> rows (#593: the main-menu gear's sprite face at 100+ px, where a text face would be the
-/// whole sheet); such a face is its own icon source and takes no part in the #470 coverage fills.</summary>
+/// only the <c>icon</c> rows -- a sprite face at 100+ px, where a full text face would eat the whole sheet; such
+/// a face is its own icon source and takes no part in the coverage fills.</summary>
 public readonly record struct FaceRequest(string Typeface, byte[] Font, float Px, bool IconsOnly = false);
 
 /// <summary>
-/// The one shared single-channel glyph bitmap every face lives in (#469). Baked cold with the client's
+/// The one shared single-channel glyph bitmap every face lives in. Baked cold with the client's
 /// stb_truetype exports: every face's glyph boxes are measured, shelf-packed into one square, and only
 /// then rasterised; on overflow the side doubles and packing retries up to <see cref="MaxSide"/>. A sheet
 /// is immutable once baked -- a new face set is a new sheet, swapped in whole by <c>TextRig</c>.
@@ -19,15 +19,15 @@ public sealed unsafe class AtlasSheet
 {
     /// <summary>ponytail: opaque stbtt_fontinfo is ~180B; over-allocate. Ceiling: bind the real struct.</summary>
     private const int FontInfoBytes = 1024;
-    /// <summary>Mip levels the sheet carries (0..2), the stated cap (#471): animated text minifies from its
+    /// <summary>Mip levels the sheet carries (0..2), the stated cap: animated text minifies from its
     /// peak face by at most ~4x, and each extra level costs another doubling of <see cref="Pad"/>.</summary>
     public const int MipLevels = 3;
     /// <summary>Inter-glyph gutter, in level-0 texels. With an unaligned 2x2 box filter, at level L a glyph's edge
     /// block straddles up to 2^L-1 texels into the gutter and bilinear reaches another 2^L, so pad >= 2^(L+1):
-    /// 8 for the deepest level (2). Level 0 alone needed only 1 (#468).</summary>
+    /// 8 for the deepest level (2). Level 0 alone needed only 1.</summary>
     public const int Pad = 1 << MipLevels;
     /// <summary>Side of the solid-white block chrome rects sample. Bilinear at the block centre is 1.0 with
-    /// 1.5 texels of margin, so vertex rounding cannot pull in a transparent neighbour (#468).</summary>
+    /// 1.5 texels of margin, so vertex rounding cannot pull in a transparent neighbour.</summary>
     private const int SolidSide = 4;
     /// <summary>Bitmap side ceiling: GL 3.3 guarantees 1024 and every target driver gives 16384; 4096 (16 MB)
     /// holds ~30 faces at 18px. Above it a bake is a refusal, not a partial sheet.</summary>
@@ -67,11 +67,10 @@ public sealed unsafe class AtlasSheet
     }
 
 
-    /// <summary>#470: a codepoint the typeface has no glyph for (index 0) is filled from the default typeface's face
-    /// at the same px -- same sheet, so the copied UVs are valid -- never baked as a .notdef box. Logged per range so
-    /// the gap is named; a hole in the default itself fills from the icon font's twin when the default is not that
-    /// font (#681: a picked system font missing Cyrillic reads in DejaVu), else stays an advance-only blank. Icon rows
-    /// (#425) fill from the icon font's face instead and are not a coverage gap: every face routes them there by design.</summary>
+    /// <summary>Fills a codepoint the typeface has no glyph for (index 0) from the default typeface's face at the
+    /// same px -- same sheet, so the copied UVs stay valid -- never as a .notdef box, and logs the gap per range.
+    /// A hole in the default itself fills from the icon font's twin when the default is not that font (a picked
+    /// system font missing Cyrillic reads in DejaVu), else stays an advance-only blank. Icon rows always route there.</summary>
     private static void FillMissing(IReadOnlyList<FaceRequest> reqs, GlyphAtlas[] faces,
                                     List<(int Face, int Cp, int Range, float Advance)> missing,
                                     Dictionary<float, int> defaultByPx, Dictionary<float, int> iconByPx,
@@ -120,10 +119,9 @@ public sealed unsafe class AtlasSheet
 
     /// <summary>
     /// Bake every request (first = default) over the given codepoint ranges into one sheet, starting at
-    /// <paramref name="startSide"/>. Rows flagged <c>icon</c> are taken from <paramref name="icon"/> for EVERY face
-    /// (#425); when the default typeface IS that font (the same byte array) its twins are the source and nothing
-    /// extra is baked. Cold. Null if stbtt isn't linked in (headless), a font fails to init, or the packed side
-    /// would exceed <see cref="MaxSide"/> -- the caller keeps whatever sheet it had.
+    /// <paramref name="startSide"/>. Rows flagged <c>icon</c> come from <paramref name="icon"/> for EVERY face;
+    /// when the default typeface IS that font (the same byte array) its twins are the source. Cold. Null -- the
+    /// caller keeps its old sheet -- if stbtt isn't linked in (headless), a font fails to init, or the side overflows.
     /// </summary>
     public static AtlasSheet? Bake(IReadOnlyList<FaceRequest> reqs, (int lo, int hi, string name, bool icon)[] ranges,
         (string Name, byte[]? Font) icon, int startSide, ExtenderLog log)
@@ -135,12 +133,12 @@ public sealed unsafe class AtlasSheet
         }
         if (reqs.Count == 0) return null;
         var list = reqs.DistinctBy(r => (r.Typeface, r.Px)).ToList();   // SetFont may land the default on an extra face's size
-        // #470: every extra face gets a default-typeface twin at its px, the source of its coverage fills.
+        // Every extra face gets a default-typeface twin at its px, the source of its coverage fills.
         var defaultByPx = new Dictionary<float, int>();
         for (int i = 0; i < list.Count; i++) if (!list[i].IconsOnly && list[i].Typeface == list[0].Typeface) defaultByPx[list[i].Px] = i;
         for (int i = 0; i < list.Count; i++)
             if (!list[i].IconsOnly && !defaultByPx.ContainsKey(list[i].Px)) { defaultByPx[list[i].Px] = list.Count; list.Add(list[0] with { Px = list[i].Px }); }
-        // #425: the icon rows' source face per px -- the default's twins when the default is the icon font, else
+        // the icon rows' source face per px -- the default's twins when the default is the icon font, else
         // an icon-font twin per px (only a font.default= override pays for these).
         Dictionary<float, int> iconByPx = defaultByPx;
         if (icon.Font != null && !ReferenceEquals(icon.Font, list[0].Font))
@@ -271,7 +269,7 @@ public sealed unsafe class AtlasSheet
         Default ??= face;
     }
 
-    /// <summary>#469: pack-and-grow (a box set that overflows 64² fits 128², one past the ceiling is refused,
+    /// <summary>pack-and-grow (a box set that overflows 64² fits 128², one past the ceiling is refused,
     /// the solid block is placed first) and the face lookup, with no GL context and no stbtt.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
@@ -286,7 +284,7 @@ public sealed unsafe class AtlasSheet
         var seen = new HashSet<(int, int)>();
         foreach (Box b in boxes) check.Expect(seen.Add((b.X, b.Y)) && b.X + b.W <= side && b.Y + b.H <= side, "placements unique and in bounds");
 
-        // #471: the gutter's side cost on a realistic set (one 18px face is ~600 glyph boxes), and the box filter.
+        // the gutter's side cost on a realistic set (one 18px face is ~600 glyph boxes), and the box filter.
         var dense = new Box[600];
         for (int i = 0; i < dense.Length; i++) { dense[i].W = 12; dense[i].H = 14; }
         int padded = Pack(dense, 64, out _, out _);
@@ -312,7 +310,7 @@ public sealed unsafe class AtlasSheet
         check.Expect(sheet.TryFace("ui.ttf", 14f, out GlyphAtlas f) && f == b2, "face lookup by (typeface, px)");
         check.Expect(!sheet.TryFace("ui.ttf", 20f, out _), "unbaked face misses");
 
-        // #425: icon rows fill from the icon font's face, text rows from the default's; a routed icon is no coverage gap.
+        // icon rows fill from the icon font's face, text rows from the default's; a routed icon is no coverage gap.
         var rq = new[] { new FaceRequest("arial", new byte[1], 18f), new FaceRequest("embedded", new byte[1], 18f), new FaceRequest("extra", new byte[1], 18f) };
         var fc = new[] { new GlyphAtlas(), new GlyphAtlas(), new GlyphAtlas() };
         fc[0].Store('a', new Glyph { W = 3, Advance = 3 });

@@ -6,13 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>The engine field offsets a facade shell must reproduce, and the shell size per kind. Every number
-/// here was read off the engine, not derived: the sizes are the <c>operator new</c> argument of the engine's own
-/// factory (<c>NewCAurObject</c> @0x5412c0 <c>operator_new(0x4c0)</c>, <c>NewCAurScene</c> @0x572df0
-/// <c>0x518</c>, <c>NewCAurString</c> @0x594050 <c>0x558</c> returning <c>this + 0x4c0</c>,
-/// <c>NewCAurCamera</c> @0x5a62d0 <c>0xe68</c>), and the offsets are the ones game code reads or writes without
-/// a vtable (CX-182). A shell is allocated at the full engine size so an
-/// inline write the RE did not catch lands inside our block rather than past it.</summary>
+/// <summary>The engine field offsets a facade shell must reproduce, and the shell size per kind: the sizes are
+/// the <c>operator new</c> argument of the engine's own factory (<c>NewCAurObject</c> @0x5412c0,
+/// <c>NewCAurScene</c> @0x572df0, <c>NewCAurString</c> @0x594050, <c>NewCAurCamera</c> @0x5a62d0), the offsets
+/// the ones game code reads without a vtable. A shell is full engine size: a stray write lands inside it.</summary>
 public static class SeamLayout
 {
     /// <summary>sizeof(Gob): <c>NewCAurObject</c> @0x5412c0 <c>this = operator_new(0x4c0)</c>.</summary>
@@ -137,7 +134,7 @@ public static class SeamLayout
     // ---- Scene words (seam-scene's columns; the offsets are the machinery's) ----
     public static readonly int SceneSafeList = EngineLayout.SeamSceneSafeList;
     /// <summary>The SCENE's own measured row, not the <c>Gob</c>'s: both are 0x10 on this build, and a row
-    /// that happens to be equal is still the wrong row to read (review #15).</summary>
+    /// that happens to be equal is still the wrong row to read.</summary>
     public static readonly int SceneSafeCount = EngineLayout.SeamSceneSafeCount;
     public static readonly int SceneSafeCap = EngineLayout.SeamSceneSafeCap;
     /// <summary>`GetAurSceneObjectCount` @0x58b380 is `return *(u32*)(scene + 0x138)` -- there is no vtable
@@ -209,21 +206,18 @@ internal struct SeamHeader
     public nint Reserved1;
 }
 
-/// <summary>Allocation, retire and the two-frame quarantine of facade shells (CX-120, ADR 0028 section 2).
-/// A shell is a native block: CX's <see cref="SeamHeader"/> then the engine-sized shell, and the pointer the
-/// game holds is the shell base. Retired blocks go to a per-kind quarantine ring and are reused only after two
-/// published frames AND only once the ring is full, so a use-after-free in game code lands on a block whose
-/// header still says RETIRED -- a named line in cx.log instead of a jump through freed memory.</summary>
+/// <summary>Allocation, retire and quarantine of facade shells (ADR 0028 section 2). A shell is a native
+/// block: CX's <see cref="SeamHeader"/> then the engine-sized shell, and the pointer the game holds is the
+/// shell base. Retired blocks go to a per-kind quarantine ring, reused only after <see cref="QuarantineFrames"/>
+/// published frames AND only once the ring is full, so a use-after-free lands on a block that still says RETIRED.</summary>
 public static unsafe class SeamShell
 {
     private const ulong Magic = 0x4544414341465843;   // not-an-offset: "CXFACADE" little-endian
     internal const byte StateLive = 1, StateRetired = 2;
-    /// <summary>Published frames a retired block is kept poisoned before it may be reused. ADR 0028 says two,
-    /// which is enough for the renderer to finish with a record -- but it is NOT the window that matters for
-    /// a GAME that deletes an object and keeps the pointer: measured, the client re-attaches such a pointer
-    /// about 900 frames later (a panel closed, then reopened). Below that and the block is recycled, the call
-    /// lands on a live unrelated record, and the fault becomes silent corruption instead of a named line. So
-    /// the floor is above the measured gap; <see cref="RingSize"/> is still the hard cap on memory.</summary>
+    /// <summary>Published frames a retired block is kept poisoned before it may be reused. Measured: the game
+    /// re-attaches a pointer to a destroyed object about 900 frames later (a panel closed, then reopened), so
+    /// the floor sits above that -- recycle sooner and the call lands on a live unrelated record, i.e. silent
+    /// corruption instead of a named line. <see cref="RingSize"/> is the hard cap on memory.</summary>
     public const int QuarantineFrames = 1800;
     /// <summary>Retired blocks kept per kind before the oldest is reused. 1024 shells of the largest kind is
     /// ~4 MB held at worst, which buys a detection window of a whole area's worth of destroys.</summary>

@@ -11,23 +11,10 @@ using CX.Ui;
 namespace CX.Services.CombatText;
 
 /// <summary>
-/// Damage numbers and floating combat text, drawn by our own 2D UI instead of the engine's
-/// <c>CGuiInGameFloatyText</c> panels. One cold hook on <c>CNWCObject::ShowFloatyText</c> -- the single
-/// funnel every one of them passes through -- captures the string the engine already composed and swallows
-/// the call, so no vanilla floaty panel is ever allocated.
-/// <para><b>Why the vanilla settings come for free.</b> Consolidation
-/// (<c>ui.floating-text-feedback-damage-totals-only</c>), the totals colour and the per-damage-type colours
-/// are all applied by the engine BEFORE this seam: a per-type number arrives as
-/// <c>&lt;cRGB&gt;12&lt;/c&gt;</c> and a consolidated one as the user's totals colour around the sum. We
-/// parse those tags with the chat box's own <see cref="ColorRunParser"/>, which is also what makes combat-text
-/// banners respect colour codes. The master <c>ui.floating-text-feedback</c> switch is upstream of the seam
-/// too -- with it off we are simply never called.</para>
-/// <para><b>Dependency.</b> The screen anchor is the engine's own projection, read off the object's chat
-/// bubble (<c>bubble+0x154</c>). That is only refreshed every tick for every object while
-/// <see cref="NameplateService"/>'s text-bubble mode-0 suppression is in force (CX-179 §D), so
-/// this feature follows the nameplate feature: with nameplates stood down -- or for an object that owns no
-/// bubble at all, which is every non-creature -- the hook hands the element back to vanilla rather than
-/// swallowing one it could only have drawn at a stale point.</para>
+/// Damage numbers and floating combat text on our own 2D UI: one cold hook on <c>CNWCObject::ShowFloatyText</c>,
+/// the funnel they all pass, captures the engine-composed string (vanilla's consolidation and damage-type
+/// colours arrive free, as colour tags) and swallows the call. The anchor is the object's chat bubble
+/// (<c>bubble+0x154</c>), fresh only while <see cref="NameplateService"/> suppresses bubbles; else vanilla keeps it.
 /// </summary>
 public sealed unsafe class CombatTextService : IExtenderService
 {
@@ -39,11 +26,11 @@ public sealed unsafe class CombatTextService : IExtenderService
 
     private static ShowFloatyTextFn _origShowFloaty;
 
-    /// <summary>The ShowFloatyText unit (#420): the funnel itself. Nameplates are a runtime prerequisite
+    /// <summary>The ShowFloatyText unit: the funnel itself. Nameplates are a runtime prerequisite
     /// (checked per call, not here).</summary>
     private static readonly string[] RequiredSymbols = { SymbolMap.ShowFloatyText, SymbolMap.ExoStringDtor };
 
-    /// <summary>Glyph height of the face the animation samples (#471): the largest an element ever gets --
+    /// <summary>Glyph height of the face the animation samples: the largest an element ever gets --
     /// the resting px (<c>combattext.font</c>, else the UI's) × the spawn pop × the banner multiplier -- so every
     /// frame is a minification. Capped at <see cref="TextRig.AtlasMaxPx"/>: past it (UI 18px needs textscale &gt; 3.05)
     /// the top of the pop magnifies again. Written cold; read on the frame, with <see cref="_peakFace"/> its typeface.</summary>
@@ -84,7 +71,7 @@ public sealed unsafe class CombatTextService : IExtenderService
         CombatTextNative.SelfCheck(log);
         UiCategory.Declare();   // the UI groups declare in panel order whether or not the hook arms
 
-        if (!SymbolMap.Require(log, "CombatTextService", RequiredSymbols)) return;   // #420: whole or nothing
+        if (!SymbolMap.Require(log, "CombatTextService", RequiredSymbols)) return;   // whole or nothing
 
         _origShowFloaty = hooks.InstallShowFloatyText(&OnShowFloatyText);
         if (_origShowFloaty == null)
@@ -108,12 +95,10 @@ public sealed unsafe class CombatTextService : IExtenderService
 
     // ---- the hook ----------------------------------------------------------------------------
 
-    /// <summary>The one seam. COLD -- it runs on the message-handling thread, once per damage number or
-    /// banner -- so resolving the strings and parsing the colour runs here is fine; the render thread only
-    /// ever sees the parsed result.
-    /// <para>Anything we cannot draw better is handed straight back to the original, so vanilla is untouched:
-    /// that is the whole opt-out, and it is also what keeps an element we could not have anchored from being
-    /// lost between the two renderers.</para></summary>
+    /// <summary>The one seam. COLD -- the message-handling thread, once per damage number or banner -- so
+    /// resolving strings and parsing colour runs here is fine; the render thread sees only the parsed result.
+    /// Anything we cannot draw better is handed straight back to the original, which is both the opt-out and
+    /// what keeps an element we could not anchor from being lost between the two renderers.</summary>
     [UnmanagedCallersOnly]
     private static void OnShowFloatyText(IntPtr self, IntPtr text, VectorArg colourArg, IntPtr font, int background)
     {
@@ -124,7 +109,7 @@ public sealed unsafe class CombatTextService : IExtenderService
         //   - the master is off
         //   - the nameplate feature is stood down, so nothing keeps the object's screen anchor fresh
         //   - the object owns no chat bubble, so it has no anchor at all (a placeable or door taking damage:
-        //     only creatures get one, via CNWCCreature::SetName -- CX-179 §D)
+        //     only creatures get one, via CNWCCreature::SetName)
         if (!_armed || !CombatTextKnobs.Enabled.V || self == IntPtr.Zero
             || !NameplateService.Suppressing || NameplateNative.Bubble(self).IsNull)
         {
@@ -134,7 +119,7 @@ public sealed unsafe class CombatTextService : IExtenderService
 
         try
         {
-            NameplateNative.UnfreezeAnchor(self);   // #591: a bubble that idled under vanilla has a frozen anchor
+            NameplateNative.UnfreezeAnchor(self);   // a bubble that idled under vanilla has a frozen anchor
             string body = Native.ReadExo(text);
             string fontName = Native.ReadExo(font);
             if (OperatingSystem.IsWindows()) { Native.DestroyExoString(text); Native.DestroyExoString(font); }   // Win64: the swallowed callee owned both copies
@@ -207,7 +192,7 @@ public sealed unsafe class CombatTextService : IExtenderService
             PlateLayout.ToDrawSpace(ax, ay, rx, ry, rw, rh, gui, vpW, vpH, out float x, out float y);
             if (x < 0f || y < 0f || x > vpW || y > vpH) continue;
             // The engine's projection never checks the sign of its denominator, so an object BEHIND the camera
-            // lands on a MIRRORED anchor that passes the rect test above (CX-179 §5).
+            // lands on a MIRRORED anchor that passes the rect test above.
             if (hasCam && hasFwd)
             {
                 NameplateNative.Position(obj, out float ox, out float oy, out float oz);

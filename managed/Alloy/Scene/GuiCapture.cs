@@ -9,15 +9,10 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-95/CX-96: the engine side of Alloy's GUI path. <c>Scene::RenderOnlyGobs</c> @0x4682e0 -- the draw of every
-/// scene without a tile BSP: each panel, the menus, the minimap and compass, the cursor overlay, character-creation
-/// previews -- is replaced by the same loop over the same gobs, run with the two draw funnels in CAPTURE mode. Every
-/// engine draw below it (<c>Gob::Render</c>, <c>StringGob::Render</c> -&gt; <c>CAurFont::TextOut</c>, skins, emitters,
-/// the icons inline in text) lands here as a record of the geometry and of the <c>GLRender</c> state caches it would
-/// have run under, and nothing reaches GL; <see cref="GuiPass"/> issues the records from the 4.6 context.
-/// <para>The engine still walks, animates and lays out its own GUI -- tier 2 moves the pixels, not the scene
-/// (<c>CX-172</c> §3). GL-free: a VDO's VAO slot is harvested through
-/// <see cref="AlloyRenderer.VdoSlot"/>, which lives with the rest of the VAO code.</para>
+/// The engine side of Alloy's GUI path: <c>Scene::RenderOnlyGobs</c> @0x4682e0 -- the draw of every scene with
+/// no tile BSP (panels, menus, minimap, compass, cursor overlay, previews) -- is replaced by the same loop over
+/// the same gobs with both draw funnels in CAPTURE mode, so every engine draw below it lands as a record of its
+/// geometry and <c>GLRender</c> state, nothing reaches GL, and <see cref="GuiPass"/> issues it from the 4.6 context.
 /// </summary>
 internal static unsafe class GuiCapture
 {
@@ -36,8 +31,8 @@ internal static unsafe class GuiCapture
         public int Slot, Count, BaseVertex, Stride, Tex;
         public uint Prim, Format, Src, Dst;
         public long Offset;
-        /// <summary>CX-120: a VAO the caller already owns (the CX-114 mesh arena's), bound as-is. 0 = this draw
-        /// takes its VAO from <see cref="Slot"/> or <see cref="Format"/> as before, so mode 0 is untouched.</summary>
+        /// <summary>A VAO the caller already owns (the mesh arena's), bound as-is. 0 = this draw takes its
+        /// VAO from <see cref="Slot"/> or <see cref="Format"/>.</summary>
         public uint RawVao;
     }
 
@@ -132,10 +127,9 @@ internal static unsafe class GuiCapture
     }
 
     /// <summary><c>Camera::RenderScene</c>'s depth decision for one view. The RANGE is
-    /// <see cref="AlloyCamera.DepthRange"/>'s -- one implementation of the name table, and CX-109 closed the
-    /// ponytail this method carried by handing it <paramref name="fovy"/>: the engine treats ANY camera with a
-    /// zero view angle as GUI, which the capture could not see from the scene alone. What stays here is the
-    /// CLEAR, because the latch is per RUN of GUI views rather than per view.</summary>
+    /// <see cref="AlloyCamera.DepthRange"/>'s, the one implementation of the name table;
+    /// <paramref name="fovy"/> is needed because the engine treats ANY camera with a zero view angle as GUI.
+    /// The CLEAR stays here, because the latch is per RUN of GUI views rather than per view.</summary>
     internal static void DepthOf(byte* name, ref bool latch, out float near, out float far, out bool clear,
                                 float fovy = 1f)
     {
@@ -263,7 +257,7 @@ internal static unsafe class GuiCapture
         return true;
     }
 
-    /// <summary>CX-101: open a layer for draws that come through no engine funnel (nuklear's), with its own scissor. No
+    /// <summary>Open a layer for draws that come through no engine funnel (nuklear's), with its own scissor. No
     /// depth clear, the full depth range: what follows is depth-test-off 2D.</summary>
     internal static bool BeginRawLayer(int x, int y, int w, int h, int sx, int sy, int sw, int sh)
     {
@@ -274,19 +268,14 @@ internal static unsafe class GuiCapture
         return true;
     }
 
-    /// <summary>CX-120: the longest scene name <see cref="DepthOf"/>'s table can need, plus its terminator.
+    /// <summary>The longest scene name <see cref="DepthOf"/>'s table can need, plus its terminator.
     /// The names it tests are <c>sceneGUI_Viewport_Compass</c> and friends; 64 is past every one.</summary>
     internal const int MaxSceneName = 64;
 
-    /// <summary>CX-120: open a layer for a GUI scene drawn out of the scene database. The engine's own
-    /// <c>RenderOnlyGobs</c> layer, without the engine: the depth range and clear are the caller's -- it asked
-    /// <see cref="DepthOf"/>, which is the one implementation of the name table, rather than deriving the
-    /// convention a second time.
-    /// <para>The RECT is the caller's too, and that is the whole difference from mode 0. There,
-    /// <c>Camera::RenderScene</c> had just written this view's rect into <c>GLRender::m_viewport</c> and the
-    /// capture read it back; in DB mode no engine camera runs, so that global holds whatever the last engine
-    /// draw left -- the full screen at best, a zero rect at worst, and a zero-width layer is skipped outright
-    /// by <see cref="GuiPass"/>. The view's own rect comes off the snapshot instead.</para></summary>
+    /// <summary>Open a layer for a GUI scene drawn out of the scene database -- the engine's own
+    /// <c>RenderOnlyGobs</c> layer without the engine. The depth range and clear are the caller's, which asked
+    /// <see cref="DepthOf"/>; so is the RECT, off the snapshot, because no engine camera writes this view's
+    /// rect into <c>GLRender::m_viewport</c>, and a zero-width layer is skipped by <see cref="GuiPass"/>.</summary>
     internal static bool BeginDbLayer(int x, int y, int w, int h, float near, float far, bool clear)
     {
         if (LayerN >= MaxLayers) { Overflow("layers"); return false; }
@@ -296,9 +285,9 @@ internal static unsafe class GuiCapture
         return true;
     }
 
-    /// <summary>CX-120: one database part's geometry, as <see cref="DbPart"/> takes it. A struct rather than
-    /// fifteen arguments, and every term is a column or an interned recipe read -- nothing here is harvested
-    /// from a <c>GLRender</c> cache, because in DB mode no engine draw ever ran to fill one.</summary>
+    /// <summary>One database part's geometry, as <see cref="DbPart"/> takes it. A struct rather than fifteen
+    /// arguments, and every term is a column or an interned recipe read -- nothing here is harvested from a
+    /// <c>GLRender</c> cache, because no engine draw runs to fill one.</summary>
     internal struct DbDraw
     {
         /// <summary>The mesh arena's VAO for this range's format, and the three integers that address the run.</summary>
@@ -318,10 +307,9 @@ internal static unsafe class GuiCapture
         public int PltAt;
     }
 
-    /// <summary>CX-120: one database part drawn into the open GUI layer -- a GUI control's model geometry, which
-    /// in DB mode has no engine funnel to be captured at. The record is the same 16 vec4 the engine's own GUI
-    /// draws fill, so <see cref="GuiPass"/>'s program, SSBO and per-rect viewport are unchanged; what differs is
-    /// where every term came from.</summary>
+    /// <summary>One database part drawn into the open GUI layer -- a GUI control's model geometry, which has
+    /// no engine funnel to be captured at. The record is the same 16 vec4 the engine's own GUI draws fill, so
+    /// <see cref="GuiPass"/>'s program, SSBO and per-rect viewport are unchanged.</summary>
     internal static void DbPart(in DbDraw p)
     {
         if (p.Count <= 0 || p.Vao == 0 || LayerN == 0 || !Room()) return;
@@ -357,9 +345,9 @@ internal static unsafe class GuiCapture
         _dbParts++;
     }
 
-    /// <summary>CX-120: copy a DB part's solved palette beside the record, as <see cref="Skin"/> copies the
-    /// engine's. The source is the renderer's own DB bone stage -- the block the pose step wrote, not
-    /// <c>GLRender::m_bones</c>, which no DB frame ever fills.</summary>
+    /// <summary>Copy a DB part's solved palette beside the record, as <see cref="Skin"/> copies the engine's.
+    /// The source is the renderer's own DB bone stage -- the block the pose step wrote, not
+    /// <c>GLRender::m_bones</c>, which nothing fills.</summary>
     private static int DbSkin(int slot, int flags)
     {
         if (SkinN >= MaxSkins) { Overflow("skinned draws"); return flags; }
@@ -377,8 +365,8 @@ internal static unsafe class GuiCapture
     /// <summary>Database part draws issued this session, for the period line.</summary>
     internal static long DbParts => _dbParts;
 
-    /// <summary>CX-120: close the layer <see cref="BeginDbLayer"/> opened. The LAST layer, not the one opened:
-    /// a custom-shader draw flushes mid-scene and reopens, exactly as it does for the engine's own traversal.</summary>
+    /// <summary>Close the layer <see cref="BeginDbLayer"/> opened. The LAST layer, not the one opened: a
+    /// custom-shader draw flushes mid-scene and reopens, as it does for the engine's own traversal.</summary>
     internal static void EndDbLayer()
     {
         if (LayerN == 0) return;
@@ -387,7 +375,7 @@ internal static unsafe class GuiCapture
         _layers++;
     }
 
-    /// <summary>CX-101: one CPU-built draw into the open raw layer -- unlit, blended with (<paramref name="src"/>,
+    /// <summary>One CPU-built draw into the open raw layer -- unlit, blended with (<paramref name="src"/>,
     /// <paramref name="dst"/>), no depth, no cull, white global colour, identity texture matrix.</summary>
     internal static void Raw(byte* vtx, int stride, uint fmt, ushort* idx, int count, int first, uint glPrim,
                              in Matrix4x4 mvp, int tex, uint src, uint dst)
@@ -407,15 +395,10 @@ internal static unsafe class GuiCapture
         Layers[LayerN - 1].Count = DrawN - Layers[LayerN - 1].First;
     }
 
-    /// <summary>CX-119: one run of CX-owned glyph quads into the open layer. The engine's own text goes through
-    /// <see cref="Snapshot"/> and so costs a MODEL and TEXTURE matrix-stack read per draw; this does not -- the
-    /// transform arrives as <paramref name="mvp"/>, composed from the text object's own place in
-    /// <see cref="Db.SceneDb"/>, and the colour as <paramref name="rgba"/>, which is the run's markup or
-    /// colour-table entry rather than <c>GLRender</c>'s cached <c>globalColor</c>. The vertices are the engine's
-    /// own stream shape (format 0x804, 20 bytes, non-indexed triangles), so the flush path is unchanged.
-    /// <para>The depth treatment, the primitive and the blend pair are the CALLER's: the traversal that owns the
-    /// scene knows them, this must not guess them from a cache it no longer reads, and <c>Alloy/Scene</c> names no
-    /// GL constant of its own (#206).</para></summary>
+    /// <summary>One run of CX-owned glyph quads into the open layer. The transform arrives as
+    /// <paramref name="mvp"/> and the colour as <paramref name="rgba"/> (the run's markup or colour-table
+    /// entry), so there is no matrix-stack or <c>globalColor</c> read; the vertices are the engine's own stream
+    /// shape (format 0x804, 20 bytes, non-indexed triangles). Depth, primitive and blend pair are the CALLER's.</summary>
     internal static void TextRun(float* verts, int count, uint glPrim, in Matrix4x4 mvp, int tex,
                                  in Vector4 rgba, uint src, uint dst, bool depthTest, bool depthWrite)
     {
@@ -444,18 +427,10 @@ internal static unsafe class GuiCapture
     /// <summary>Glyph runs issued from CX-owned quad lists this session, for <c>/alloy</c>.</summary>
     internal static long TextRuns => _textRuns;
 
-    /// <summary>Everything the engine's program would have been fed, read off <c>GLRender</c>'s caches into the draw
-    /// and its record: stage 0's texture, the blend/depth/cull caps, the global colour and (lit) the material, plus
-    /// the transforms.
-    /// <para>CX-109: the VIEW and PROJECTION come from <see cref="AlloyCamera.ActiveView"/> -- Alloy's own
-    /// arithmetic for the camera whose view is rendering. The MODEL and TEXTURE matrices are still read off
-    /// <c>m_aurMtxStack</c>, and that is the documented exception to CX-109's "reads neither": they are per-draw
-    /// state the engine pushes during its own GUI traversal (<c>Gob::Render</c> -&gt; <c>Gob::PartDraw</c>,
-    /// <c>StringGob::Render</c> -&gt; <c>CAurFont::TextOut</c>), and the funnel this capture sits on --
-    /// <c>GLRender::RenderVertexData(vdo, item, prim, size, offset)</c> -- carries a VDO and an item index and
-    /// NO part pointer, so there is nothing here to compose a model matrix from. Owning it means replacing the
-    /// traversal, which is tier 4 (CX-115 part trees, CX-119 <c>StringGob</c>).</para>
-    /// Returns the record's flag bits so far.</summary>
+    /// <summary>Everything the engine's program would have been fed, read off <c>GLRender</c>'s caches into the
+    /// draw and its record: stage 0's texture, the blend/depth/cull caps, the global colour, (lit) the material
+    /// and the transforms. VIEW and PROJECTION come from <see cref="AlloyCamera.ActiveView"/>; MODEL and TEXTURE
+    /// are read off <c>m_aurMtxStack</c>, the funnel carrying a VDO and item index and no part. Returns the flags.</summary>
     private static int Snapshot(ref Draw d)
     {
         uint caps = *_caps;
@@ -589,14 +564,14 @@ internal static unsafe class GuiCapture
     }
 }
 
-/// <summary>CX-95: a <c>VertexStreamDataObject</c>'s interleaved layout, from its attribute flags. The order and sizes
+/// <summary>A <c>VertexStreamDataObject</c>'s interleaved layout, from its attribute flags. The order and sizes
 /// are <c>GLRender::SetVertexStreamDataObject</c> @0x4d07a0's <c>VertexAttribPointer</c> chain; the four the GUI program
 /// reads are located, the rest only occupy bytes. Pure, so it is checked off-device.</summary>
 internal static class GuiStream
 {
     internal const uint FmtColor = 0x1, FmtNormal = 0x2, FmtPos = 0x4, FmtUv0 = 0x800;   // not-an-offset: stream attribute flag bits
-    /// <summary>CX-101: not an engine format -- nuklear's vertex (<c>{vec2 pos, vec2 uv, u8x4 colour}</c>, 20 bytes,
-    /// <c>CX-97</c> §3), on a bit the engine's flags never use.</summary>
+    /// <summary>Not an engine format -- nuklear's vertex (<c>{vec2 pos, vec2 uv, u8x4 colour}</c>, 20 bytes),
+    /// on a bit the engine's flags never use.</summary>
     internal const uint FmtNuklear = 0x80000000 | FmtColor;   // not-an-offset: a CX-private format tag
 
     /// <summary>Byte offsets within a vertex; -1 = absent. <see cref="PosN"/> is the position's component count.</summary>

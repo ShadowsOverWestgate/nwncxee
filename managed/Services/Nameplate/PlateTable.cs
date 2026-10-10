@@ -9,15 +9,10 @@ using CX.Ui;
 namespace CX.Services.Nameplate;
 
 /// <summary>
-/// The id-keyed table of overhead elements: what the hooks recorded, cold-resolved once, and what the
-/// frame is allowed to draw. Preallocated end to end -- <see cref="Refresh"/> and everything downstream
-/// of it allocate nothing.
-/// <para>Two threads touch this. The hooks run on the message/input thread and only ever <b>append</b> to
-/// a fixed ring (<see cref="Note"/> / <see cref="NoteBubble"/>), doing every string resolve, colour parse
-/// and marshalling there. The render thread drains that ring at the top of <see cref="Refresh"/> and owns
-/// the table itself, so the hot walk needs no synchronisation of its own.</para>
-/// <para>The join key is the object <b>id</b>, never a <c>CNWCObject*</c> (#33/#138/#145). A
-/// <c>GetGameObject</c> miss is the despawn signal and evicts the entry outright.</para>
+/// The id-keyed table of overhead elements: what the hooks recorded, cold-resolved once, and what the frame is
+/// allowed to draw. Preallocated end to end -- <see cref="Refresh"/> and everything downstream allocates nothing.
+/// Two threads touch it: the hooks only ever APPEND to a fixed ring, doing every string resolve and colour parse
+/// there, and the render thread drains it and owns the table. The join key is the object id, never a pointer.
 /// </summary>
 public sealed partial class PlateTable
 {
@@ -29,8 +24,8 @@ public sealed partial class PlateTable
     public const int MaxLines = 4;
 
     /// <summary>Wrapped lines kept per bubble line. The config's <c>BubbleLines</c> clamps to this. 32 is the
-    /// figure the RE notes cite for the engine's own bubble (still unverified, CX-179); it is far
-    /// enough past a paragraph-length emote that nothing vanilla would have shown is cut by us.</summary>
+    /// figure cited for the engine's own bubble (unverified); it is far enough past a paragraph-length emote
+    /// that nothing vanilla would have shown is cut by us.</summary>
     public const int MaxWrapped = 32;
 
     /// <summary>How long a bubble line holds at full opacity, as a fraction of its decay; the rest is the fade
@@ -40,11 +35,10 @@ public sealed partial class PlateTable
     /// <summary>Pending records the hooks may bank between two frames. Overflow is counted, not grown.</summary>
     private const int PendingRing = 128;
 
-    /// <summary>Segments of an <c>ObjectTextBubbleOverride</c> we keep. The server end composes at most a
-    /// damage row plus a status row (<c>sow-codebase TextBubbleService.ComposeOverride</c>); this is generous
-    /// headroom over that, and a longer override keeps its first <see cref="MaxParas"/> segments.
-    /// <para>ponytail: the ceiling is the para pool, not anything engine-side -- raise the const if a server
-    /// ever sends more rows.</para></summary>
+    /// <summary>Segments of an <c>ObjectTextBubbleOverride</c> we keep. The server end composes at most a damage
+    /// row plus a status row, so this is generous headroom; a longer override keeps its first
+    /// <see cref="MaxParas"/> segments. ponytail: the ceiling is the para pool, not anything engine-side --
+    /// raise the const if a server ever sends more rows.</summary>
     public const int MaxParas = 6;
 
     /// <summary>One overhead chat line: the cold-resolved runes and per-rune colours, plus the wrap cache
@@ -119,10 +113,9 @@ public sealed partial class PlateTable
         /// <see cref="SetName"/> so the spans can never disagree with the string.</summary>
         public string Name = "";
         /// <summary>Spans of <see cref="Name"/>'s lines, so the frame measures and emits each one without a
-        /// substring. Capped at <see cref="MaxWrapped"/> -- the same ceiling the bubble wrap uses.
-        /// <para>These are the WRAPPED lines once <see cref="EnsureNameWrap"/> has run: a wrap-introduced break
-        /// is a span boundary and nothing else, so <see cref="Name"/> itself still carries only the author's
-        /// own breaks and everything reading the string (the <c>/tell</c> prefill) is unaffected.</para></summary>
+        /// substring; capped at <see cref="MaxWrapped"/>. These are the WRAPPED lines once
+        /// <see cref="EnsureNameWrap"/> has run: a wrap-introduced break is a span boundary and nothing else, so
+        /// <see cref="Name"/> itself still carries only the author's breaks (the <c>/tell</c> prefill is safe).</summary>
         public readonly int[] NameStart = new int[MaxWrapped];
         public readonly int[] NameLen = new int[MaxWrapped];
         /// <summary>Per-char packed 0xRRGGBB for <see cref="Name"/>, or null when the name carried no colour
@@ -141,17 +134,16 @@ public sealed partial class PlateTable
         public int NameWrapEpoch = -1;
         public string PortraitResref = "";
 
-        // ---- the module's ObjectTextBubbleOverride (CX-179 §8.5) --------------------
+        // ---- the module's ObjectTextBubbleOverride --------------------
         /// <summary>1 replace, 2 prepend, 3 append, 0 none. Polled every frame in <see cref="Refresh"/>, not
         /// latched on the hook: a player starts sneaking WHILE hovered and the engine re-runs nothing.</summary>
         public int OverrideMode;
         /// <summary>The override verbatim, untrimmed -- the cache key the poll compares against.</summary>
         public string OverrideText = "";
-        /// <summary>The override's LF-separated segments, colour-parsed. In <see cref="OverrideMode"/> 3 the
-        /// FIRST is the splice that continues the plate's last line and the rest are lines below it; in mode 2
-        /// the LAST is the splice that prefixes the name and the rest are lines above it; in mode 1 they are
-        /// the whole plate text. Reuses <see cref="BubbleLine"/> for its runes, colours and wrap cache -- these
-        /// never expire, so nothing ages them.</summary>
+        /// <summary>The override's LF-separated segments, colour-parsed. In <see cref="OverrideMode"/> 3 the FIRST
+        /// is the splice that continues the plate's last line and the rest are lines below it; in mode 2 the LAST
+        /// splices onto the name and the rest go above; in mode 1 they are the whole plate text. Reuses
+        /// <see cref="BubbleLine"/> for runes, colours and wrap cache -- these never expire.</summary>
         public readonly BubbleLine[] Paras = new BubbleLine[MaxParas];
         public int ParaCount;
 
@@ -201,10 +193,8 @@ public sealed partial class PlateTable
 
         /// <summary>True while this box is on its way OUT: the trigger has dropped and the presence alpha is
         /// easing to zero, or the bubble's newest line is already in its fade tail. Such a box is excluded from
-        /// separation entirely -- it neither pushes nor is pushed -- so sweeping the cursor across a crowd leaves
-        /// no trail of dying plates shoving the live one around.
-        /// <para>Specifically NOT "alpha &lt; 1": a box fading IN is a real, arriving box and takes part
-        /// normally. It reads the fade state the entry already tracks rather than inferring it.</para></summary>
+        /// separation entirely, so sweeping the cursor across a crowd leaves no trail of dying plates shoving the
+        /// live one. Specifically NOT "alpha &lt; 1": a box fading IN is arriving and takes part normally.</summary>
         public bool FadingOut => !Alive || (ShowBubble && (TopLine < 0 || Lines[TopLine].Fading));
 
         /// <summary>The instant this box's content was sent, the key the stack is ordered on. A bubble answers
@@ -309,12 +299,8 @@ public sealed partial class PlateTable
 
     /// <summary>Set an entry's name and re-index its lines together. The one writer of <see cref="Entry.Name"/>:
     /// a slot that kept the previous tenant's spans would draw this one's name in that one's shape. The spans
-    /// written here are the author's breaks alone; <see cref="EnsureNameWrap"/> replaces them with the wrapped
-    /// ones the first time a frame measures the entry, and this invalidates its cache.
-    /// <para>A re-set of the SAME name is a no-op. Every plate <c>Note</c> and every chat line carries a
-    /// freshly resolved name, and <c>ShowFeedbackBubbleText</c> can be re-entered for an object already
-    /// hovered -- the Tab path bypasses the <c>creature+0x468</c> guard that stops the hover path repeating
-    /// (CX-179 §6.3) -- so re-invalidating on each would rewrap, and allocate, for nothing.</para></summary>
+    /// written here are the author's breaks alone, and <see cref="EnsureNameWrap"/> replaces them on the first
+    /// measure. A re-set of the SAME name is a no-op, so a re-entered hook rewraps and allocates nothing.</summary>
     internal static void SetName(Entry e, string name, uint[]? colours = null)
     {
         if (string.Equals(e.Name, name, StringComparison.Ordinal)) { e.NameColours = colours; return; }
@@ -330,15 +316,9 @@ public sealed partial class PlateTable
     private static readonly int[] _segStart = new int[MaxParas], _segLen = new int[MaxParas];
 
     /// <summary>Adopt the module's <c>ObjectTextBubbleOverride</c> for this entry: split it into segments and
-    /// colour-parse each. A re-set of the same (mode, text) is a no-op, so the per-frame poll that calls this
-    /// pays nothing until a server actually flips a status.
-    /// <para>COLD-on-change, but on the RENDER thread -- unlike every other resolve here, there is no hook to
-    /// do it on. The engine receives the override inside <c>HandleServerToPlayerCreatureUpdate_Update</c>
-    /// (disasm @0x7a268a) and <c>...GenericObjectUpdate_Update</c> (@0x7a73f9), neither of which is a symbol
-    /// whose arguments name the object, so a hook there would be a guess. The allocation is one split plus one
-    /// parse per status change per plated object, which is a keypress, not a frame.</para>
-    /// <para>Each segment is parsed on its own, so a <c>&lt;cRGB&gt;</c> opened before a line break does not
-    /// carry across it. The server end wraps every label individually, so nothing real relies on that.</para></summary>
+    /// colour-parse each. A re-set of the same (mode, text) is a no-op, so the per-frame poll pays nothing until a
+    /// server flips a status. COLD-on-change but on the RENDER thread: there is no hook to do it on, the object
+    /// updates carrying it naming no object. Each segment parses alone, so a <c>&lt;cRGB&gt;</c> cannot leak.</summary>
     internal static void SetOverride(Entry e, int mode, string text)
     {
         if (e.OverrideMode == mode && string.Equals(e.OverrideText, text, StringComparison.Ordinal)) return;
@@ -390,10 +370,9 @@ public sealed partial class PlateTable
     // ---- draining -----------------------------------------------------------------------------
 
     /// <summary>Apply everything the hooks banked, without walking the table. The frame calls this even on the
-    /// frames it decides not to draw: the ring is fixed-size, so a draw decision that skipped the drain would
-    /// let it fill and turn <see cref="Overflow"/> into a count of frames rather than of refused candidates.</summary>
-    /// <param name="animMs">the fade a line evicted by a newcomer gets (<c>nameplate.anim</c>): the box
-    /// reflows at that cadence, so the line leaving it does too.</param>
+    /// frames it decides not to draw: the ring is fixed-size, so a skipped drain would let it fill and turn
+    /// <see cref="Overflow"/> into a count of frames rather than of refused candidates.</summary>
+    /// <param name="animMs">the fade a line evicted by a newcomer gets (<c>nameplate.anim</c>).</param>
     public void Drain(int queueCap, float animMs)
     {
         while (true)
@@ -518,10 +497,7 @@ public sealed partial class PlateTable
     /// <summary>HOT. Drains the hook ring, then walks every live entry: re-resolves the id to a live object,
     /// evicts on a miss, reads the anchor / flags / damage byte, applies the distance fade, and leaves the
     /// survivors compacted into <see cref="Visible"/>. Allocates nothing.</summary>
-    /// <param name="dtMs">ms since the previous refresh; drives every ease. Clamped at zero by the math.</param>
-    /// <param name="animMs">the entry fade/slide interval (<c>nameplate.anim</c>).</param>
-    /// <param name="maxDist">metres; 0 = unlimited.</param>
-    /// <param name="fadeDist">the fade band before <paramref name="maxDist"/>.</param>
+    /// <param name="dtMs">ms since the previous refresh, driving every ease; <paramref name="maxDist"/> is metres (0 = unlimited).</param>
     public void Refresh(long nowMs, long dtMs, float animMs, float maxDist, float fadeDist, int queueCap,
                         float vpW, float vpH)
     {
@@ -586,7 +562,7 @@ public sealed partial class PlateTable
 
             e.Damage = NameplateNative.DamageLevel(obj, e.Type);
             e.Health = NameplateNative.Health(obj, e.Type, e.Damage);
-            // Acceptance §4: a live chat line wins over the plate, and un-hovering does not cut it short.
+            // A live chat line wins over the plate, and un-hovering does not cut it short.
             // (Vanilla enforces that through bubble+0x14c, which our own reset clears -- see the hook.)
             // Latched while alive: a dying bubble must not flip to plate chrome half way through its fade.
             if (e.Alive) e.ShowBubble = e.TopLine >= 0;
@@ -619,12 +595,10 @@ public sealed partial class PlateTable
         e.TopLine = live - 1;
     }
 
-    /// <summary>COLD-on-change: (re)wrap a bubble line to <paramref name="pixelW"/>. Keyed on the width, the
-    /// face stamp (<paramref name="epoch"/>: <c>TextStyle.Stamp</c>, which moves on a face pick and on every
-    /// re-bake) and <see cref="Metrics.Scale"/> -- a new face changes every advance. Steady state is a four-compare no-op; only a real change pays
-    /// <c>TextWrapper.WrapRunes</c>, which allocates.</summary>
-    /// <param name="skip">runes at the head the wrap leaves out (the speaker prefix under a name header); the spans
-    /// stay indices into the whole <see cref="BubbleLine.Runes"/>.</param>
+    /// <summary>COLD-on-change: (re)wrap a bubble line to <paramref name="pixelW"/>. Keyed on the width, the face
+    /// stamp (<paramref name="epoch"/>, which moves on a face pick and every re-bake) and
+    /// <see cref="Metrics.Scale"/>, since a new face changes every advance; a real change pays an allocation.</summary>
+    /// <param name="skip">runes at the head the wrap leaves out; the spans stay indices into the whole rune list.</param>
     public static void EnsureWrap(BubbleLine ln, GlyphAtlas atlas, float pixelW, int epoch, int maxLines, int skip = 0)
     {
         int cap = maxLines < 1 ? 1 : (maxLines > MaxWrapped ? MaxWrapped : maxLines);
@@ -642,19 +616,10 @@ public sealed partial class PlateTable
         ln.WrapPixelW = FitSpans(ln, pixelW, atlas.AdvanceOfCached);
     }
 
-    /// <summary>COLD-on-change: (re)wrap the entry's NAME to <paramref name="pixelW"/>, on top of the breaks
-    /// its author already asked for. Same key discipline as <see cref="EnsureWrap"/> -- the width, the
-    /// glyph-atlas epoch and <see cref="Metrics.Scale"/> -- so a width knob dragged at runtime rewraps and
-    /// steady state is a three-compare no-op.
-    /// <para>Order is the whole point: <see cref="PlateLayout.BreakName"/> ran cold on the resolve and put the
-    /// author's breaks into the string as LF, <see cref="TextWrapper.WrapRunes"/> honours those verbatim, and
-    /// wrapping only ever ADDS breaks inside a line too long for the column. The result is written as spans
-    /// over the unchanged string, so no wrap-introduced break can reach anything reading <c>Name</c>.</para>
-    /// <para>The wrap speaks RUNE indices and the spans hold CHAR indices, so the char offset of every rune is
-    /// carried alongside the rune list, with an end sentinel. Takes the advance rather than a
-    /// <c>GlyphAtlas</c> so the self-check can drive it headless.</para></summary>
-    /// <param name="pixelW">the name column's max width; &lt;= 0 means "unknown" and leaves the author's own
-    /// breaks as the only ones.</param>
+    /// <summary>COLD-on-change: (re)wrap the entry's NAME to <paramref name="pixelW"/> on top of the author's own
+    /// breaks, with <see cref="EnsureWrap"/>'s key discipline. The wrap honours the LF breaks
+    /// <see cref="PlateLayout.BreakName"/> put in and only ever ADDS more, written as spans over the unchanged
+    /// string. It speaks RUNE indices while the spans hold CHAR ones. <paramref name="pixelW"/> &lt;= 0: no wrap.</summary>
     public static void EnsureNameWrap(Entry e, Func<Rune, float> advanceOf, float pixelW, int epoch)
     {
         if (e.NameWrapWidth == pixelW && e.NameWrapEpoch == epoch && e.NameWrapScale == Metrics.Scale) return;

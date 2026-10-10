@@ -6,13 +6,8 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The two camera derivations the scene feed and the shadow fit share, plus the engine's own
-/// area-light uniforms for the frame diff.
-/// <para>CX-188: the READ is gone. <c>FrameRead.Tick</c> pulled the camera, the fog and the two index -1
-/// area lights out of the engine's <c>CurrentCamera</c>/<c>Scene</c>/<c>LightManager</c> once per world
-/// frame, and it had no caller: it ran from the engine-scene frame anchor, which does not run when CX owns
-/// the scene graph, and <c>SceneFeed.Tick</c> fills the same <c>FrameInputs</c> fields from the scene
-/// database instead. What is left here is what <c>SceneFeed</c> and <c>ShadowMath</c> still call.</para>
-/// </summary>
+/// area-light uniforms for the frame diff. <c>SceneFeed.Tick</c> fills the rest of <c>FrameInputs</c> from
+/// the scene database.</summary>
 internal static unsafe class FrameRead
 {
     /// <summary>Accept only clearly downward-travelling light as the sun (NWN is Z-up). A horizontal or
@@ -34,12 +29,9 @@ internal static unsafe class FrameRead
     }
 
     /// <summary>The engine's OWN area-light uniforms, straight out of the globals
-    /// <c>SetAreaDiffuseLight</c>/<c>SetAreaAmbientLight</c> store into (verified in asm: three movss and a
-    /// dirty-sequence bump, no scale). What the scene feed derives should equal these, and
-    /// <c>/alloy framediff</c> prints the two side by side rather than trusting either.
-    /// <para>Reads nothing of Alloy's, so it answers in a <c>vanilla=1</c> session too -- which is the point:
-    /// SoW drives area lighting from a server-side day/night palette, so an Alloy frame and a vanilla frame
-    /// captured in different sessions are not comparable until these numbers say they are.</para></summary>
+    /// <c>SetAreaDiffuseLight</c>/<c>SetAreaAmbientLight</c> store into, unscaled. What the scene feed
+    /// derives should equal these, and <c>/alloy framediff</c> prints the two side by side. Reads nothing of
+    /// Alloy's, so it answers in an <c>alloy.enabled=0</c> session too.</summary>
     internal static string EngineAreaTerms()
     {
         float* dif = (float*)Native.Sym(SymbolMap.LightAreaDiffuse);

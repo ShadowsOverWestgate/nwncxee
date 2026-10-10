@@ -6,28 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>A dynamic placeable the server stopped sending because the player walked out of its range stays on
-/// screen, as a static placeable does, and stays exactly as dead to the mouse as vanilla leaves it.
-/// <para><b>Vanilla.</b> The server's <c>CNWSMessage::TestObjectVisible</c> (Linux nm @0xbb52b0) drops a placeable
-/// past its <c>VisibleDistance</c> (2D from the player, 45 m unless the module set one) and sends a delete flagged
-/// "still in this area". <c>HandleServerToPlayerPlaceableUpdate_Delete</c> (Linux nm @0x75f960, Windows rva
-/// 0x7a8240) fades it out over 2 s, detaches its gob when the fade lands and deletes it 45 s later; a destroyed
-/// placeable takes the same path with no hold.</para>
-/// <para><b>Here.</b> The engine's fade is landed at once rather than over 2 s, and what it lands in is vanilla's
-/// faded-out state, which is the whole interaction story: <c>Scene::HitCheckGob</c> skips a gob at alpha 0 and
-/// <c>CNWCArea::HiliteAreaObjects</c> an object whose fade state is 0, so from the next AI step the cursor, Tab
-/// and every CX targeting walk see nothing until the server re-adds it. What changes: the expiry is cleared
-/// before the fade lands, so the gob stays in the scene and the object is never deleted, and Alloy draws that
-/// gob at alpha 1 (<see cref="Held"/>, read where <c>SetColorShifting</c> lands the fade on the object). When the server re-adds it, the re-add's fade-in is
-/// landed at once instead of blinking the placeable out and back in.</para>
-/// <para><b>Handed back</b> to vanilla's delete, in vanilla's order: on an area change, and once the player has
-/// stood within <see cref="KeepBeyond"/> of it for <see cref="RetireSeconds"/> with no re-add -- the server
-/// destroyed or hid it while it was out of range, and nothing told the client. A placeable a script hides while
-/// the player is farther away than that stays drawn (never pickable) until the player comes near.</para>
-/// <para>Only what the server has sent at least once can be held: the area message carries static placeables
-/// whole and a lit placeable's position alone, so one that was out of range at area entry appears on approach.
-/// Server object ids are allocated monotonically (<c>CGameObjectArray::AddInternalObject</c>), so a held id is
-/// never handed to another object in one session.</para></summary>
+/// <summary>Keeps a dynamic placeable the server range-culled (<c>CNWSMessage::TestObjectVisible</c> drops one
+/// past its <c>VisibleDistance</c> and sends a delete flagged "still in this area") on screen as a static one
+/// is, and as dead to the mouse as vanilla's faded-out state leaves it: the fade is landed at once, the expiry
+/// cleared so the gob stays and the object is never deleted, and Alloy draws that gob at alpha 1.</summary>
 internal static unsafe class PlaceableHold
 {
     /// <summary>The hold the delete handler passes for a placeable still in the area: Linux
@@ -52,6 +34,8 @@ internal static unsafe class PlaceableHold
     /// (<c>FadeObject</c> also writes 2, fading in).</summary>
     private const byte FadedOut = 0, FadedIn = 1, FadingOut = 3;
 
+    /// <summary>Held server object ids, which <c>CGameObjectArray::AddInternalObject</c> allocates
+    /// monotonically, so one is never handed to another object in a session.</summary>
     private static readonly uint[] _id = new uint[MaxHeld];
     private static readonly uint[] _area = new uint[MaxHeld];
     private static readonly long[] _nearSince = new long[MaxHeld];
@@ -205,8 +189,9 @@ internal static unsafe class PlaceableHold
         else if (obj.FadeExpire == 0 && obj.FadeHoldMs == OutOfRangeHoldMs) obj.FadeHoldMs = 0;
     }
 
-    /// <summary>Clear the expiry before the fade lands (landing with it set detaches the gob), and land the fade on
-    /// the next AI step: alpha 0, state 0, unpickable now rather than 2 s from now.</summary>
+    /// <summary>Clear the expiry before the fade lands (landing with it set detaches the gob), and land the fade
+    /// on the next AI step: alpha 0, state 0. <c>Scene::HitCheckGob</c> skips a gob at alpha 0 and
+    /// <c>CNWCArea::HiliteAreaObjects</c> an object at fade state 0, so it is unpickable now, not in 2 s.</summary>
     private static void Hold(CNWCObject obj)
     {
         obj.FadeExpire = 0;

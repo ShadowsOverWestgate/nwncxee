@@ -1,19 +1,10 @@
 namespace CX.Alloy;
 
 /// <summary>
-/// #119 (map #68, spec #114 M3): the depth buffer <see cref="PassId.DepthPrepass"/> fills, published rather
-/// than kept private to the colour pass. ADR 0011 makes this a contract because two future readers -- water's
-/// screen-space depth march and M4's ambient occlusion -- want exactly this buffer, and each building its own
-/// means building it three times.
-/// <para>Since #214 the buffer is ALLOY's own depth texture (<see cref="PostChain.DepthTex"/>), so
-/// <see cref="IsTexture"/> is true whenever it is published at all -- it stays published beside the name
-/// rather than assumed by consumers, because the pre-#214 shape (the engine's attachment, which could be a
-/// renderbuffer and so complete but not sampleable) is what the flag was written for and nothing about a
-/// consumer's side of the contract changed. Sampling it while the colour bracket has it attached is still
-/// the feedback loop <see cref="SceneDepth"/> exists to avoid: consumers take a copy.</para>
-/// <para>Read it as <c>DepthResource.Filled(AlloyRenderer.PassGen)</c>: the generation is what says the
-/// prepass ran for the pass you are in, not merely that it ran once. Reflection subframes and GUI 3D panels
-/// are their own passes and mostly do not fill it.</para>
+/// The depth buffer <see cref="PassId.DepthPrepass"/> fills, published rather than kept private to the colour
+/// pass because water's screen-space march and the ambient occlusion want exactly this buffer. It is Alloy's
+/// own depth texture (<see cref="PostChain.DepthTex"/>), so <see cref="IsTexture"/> is true whenever it is
+/// published; sampling it while the colour bracket has it attached is the feedback loop a consumer's copy avoids.
 /// </summary>
 internal static class DepthResource
 {

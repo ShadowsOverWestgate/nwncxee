@@ -7,36 +7,16 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-117's half of the Aurora seam: the six <see cref="SeamBridge"/> entries that work on an
-/// object's TEXTURES and its material parameters, over <see cref="TexRegistry"/> and
-/// <see cref="DrawRecipe"/>. <see cref="Wire"/> points the bridge at them, and every one of them is
-/// change-driven -- it writes a column and marks the records that read it, never per frame.
-/// <para>The vanilla bodies they replace, and what each actually did:</para>
-/// <list type="bullet">
-/// <item><c>Gob::ReplaceTexture</c> @0x43e980 / @0x43eb30 / <c>ReplaceTextureSubtree</c> @0x43ed40 -- swapped
-/// the <c>CAurTexture*</c> on the matching parts' MATERIAL, which every instance of that model shared, and
-/// the PLT form also pushed a ten-entry scheme through <c>AurTextureSetLayered</c>.</item>
-/// <item><c>Gob::RestoreTexture</c> @0x43b510 -- put the model's own textures back.</item>
-/// <item><c>Gob::SetTextureAttributes</c> @0x43f9d0 -- <c>GetAllNamedTextures(root, list, name)</c> then
-/// <c>AurTextureSetAttributes(tex, attrs)</c> per hit: a <c>.txi</c> fragment applied to the TEXTURE OBJECT,
-/// so to every user of that texture.</item>
-/// <item><c>Gob::SetOverrideTextureFilter</c> @0x43b600 -- walked every part and called the material's
-/// vtable slot +0xd0 with the flag, so its granularity was the model's material, not the object.</item>
-/// <item><c>Gob::SetMaterialParam</c> @0x43cb20 -> <c>Part::SetMaterialParam</c> @0x43cab0 (which recurses
-/// the whole part tree) -> <c>Material::SetMaterialParam</c> @0x4c5d70. <b>Its three arguments are
-/// (parameter name, value, material-name filter)</b> -- not (part, name, value): the filter is compared
-/// against the SharedMaterial's name at <c>+0xd0</c> to 16 characters, the first is compared against each
-/// <c>MaterialParameter</c>'s name to 64, and an EMPTY value resets the parameter to the shared material's
-/// declared default.</item>
-/// <item><c>Gob::SetEnvironmentMap</c> @0x43f530 -- the environment texture, which the material kept in its
-/// fourth slot.</item>
-/// </list></summary>
+/// <summary>The TEXTURE and material-parameter half of the Aurora seam: the <see cref="SeamBridge"/> entries
+/// standing in for <c>Gob::SetTextureAttributes</c> @0x43f9d0, <c>SetOverrideTextureFilter</c> @0x43b600 and
+/// <c>SetMaterialParam</c> @0x43cb20, over <see cref="TexRegistry"/> and <see cref="DrawRecipe"/>. Each is
+/// change-driven: it writes a column and marks the records that read it, never per frame.</summary>
 internal static class TexSeam
 {
     private static ExtenderLog? _log;
 
-    /// <summary>Point every CX-117 bridge entry at its implementation. Called from
-    /// <c>SeamService.Initialize</c>, beside the other streams' assignments.</summary>
+    /// <summary>Point every bridge entry at its implementation. Called from <c>SeamService.Initialize</c>,
+    /// beside the other streams' assignments.</summary>
     internal static void Wire(ExtenderLog log)
     {
         _log = log;
@@ -52,20 +32,10 @@ internal static class TexSeam
     // delegate nothing calls -- a refusal counter that can never fire and a second place to look. The
     // round-trip they have to satisfy is still checked below, against the real ObjectTex.
 
-    /// <summary><c>Gob::SetTextureAttributes(texName, txiName)</c>. <b><paramref name="txiName"/> is a
-    /// RESREF, not inline text</b>: the chain is <c>GetAllNamedTextures(root, list, texName)</c> ->
-    /// <c>AurTextureSetAttributes</c> @0x488a90 -> <c>CAurTextureBasic::Init</c> @0x488940, which does
-    /// <c>AurResGet(txiName, ".txi")</c> and runs <c>ParseField</c> over that resource's lines, then adds the
-    /// texture to <c>RefreshTextures</c> so it rebuilds. The live DB run is what settled it: the real caller
-    /// passes <c>("gui_replace01", "icons")</c>, <c>("gui_replace01", "portraits")</c> -- the GUI
-    /// texture-pack mechanism, naming <c>icons.txi</c> and <c>portraits.txi</c>.
-    /// <para>Alloy honours the keys that ARE sampler state in its renderer -- <c>clamp</c>, <c>filter</c> and
-    /// <c>mipmap</c>; every other <c>.txi</c> field is engine-texture behaviour the registry does not model,
-    /// and is counted and named once rather than swallowed. The return value is the engine's: non-zero when
-    /// the object HAS a texture of that name, whether or not a field applied.</para>
-    /// <para>Granularity matches vanilla -- the attributes belong to the TEXTURE, so every object sharing it
-    /// gets them. What does not match is WHEN the other objects see it: this marks only the asking object's
-    /// records, so another object on the same texture takes the new sampler state at its next dirty.</para></summary>
+    /// <summary><c>Gob::SetTextureAttributes(texName, txiName)</c>. <b><paramref name="txiName"/> is a RESREF,
+    /// not inline text</b>: <c>CAurTextureBasic::Init</c> @0x488940 does <c>AurResGet(txiName, ".txi")</c> and
+    /// parses it. Alloy honours the sampler keys <c>clamp</c>, <c>filter</c> and <c>mipmap</c>, names the rest
+    /// once, returns non-zero when the object HAS that texture, and marks only the asking object's records.</summary>
     private static int TextureAttributes(DbId obj, string? texName, string? txiName)
     {
         if (!SceneDb.Objects.Valid(obj) || string.IsNullOrEmpty(txiName)) return 0;
@@ -127,10 +97,9 @@ internal static class TexSeam
     private static readonly Dictionary<string, string?> _txiCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary><c>Gob::SetOverrideTextureFilter</c>: nearest rather than linear on every texture of the
-    /// object. Vanilla set it on each part's MATERIAL, which every instance of the model shared, so this
-    /// reproduces its granularity by setting it on the registry slot -- the one place sampler state lives
-    /// now. <see cref="ObjectSlots"/> has already recorded the object's own flag and marked it; this is the
-    /// effect.</summary>
+    /// object. Vanilla set it on each part's MATERIAL, shared by every instance of the model, so this sets it
+    /// on the registry slot -- the one place sampler state lives. <see cref="ObjectSlots"/> has already
+    /// recorded the object's flag and marked it; this is the effect.</summary>
     private static void FilterOverride(DbId obj, bool on)
     {
         if (!SceneDb.Objects.Valid(obj)) return;
@@ -144,11 +113,10 @@ internal static class TexSeam
             }
     }
 
-    /// <summary>The object record is going: drop the state CX-117 keeps beside it. A <see cref="DbId"/>
-    /// index is RECYCLED, and neither the PLT colour rows nor a material-param override is derived from
-    /// anything the next tenant sets -- so without this edge a new creature inherits the dead one's skin,
-    /// hair and armour colours (and its roughness). Called from <c>ObjectSlots.ReleaseRecord</c>, beside the
-    /// other per-record frees.</summary>
+    /// <summary>The object record is going: drop the state kept beside it. A <see cref="DbId"/> index is
+    /// RECYCLED, and neither the PLT colour rows nor a material-param override is derived from what the next
+    /// tenant sets, so without this edge a new creature inherits the dead one's skin, hair and armour colours.
+    /// Called from <c>ObjectSlots.ReleaseRecord</c>, beside the other per-record frees.</summary>
     internal static void ObjectDied(DbId obj)
     {
         PltColors.Free(obj);
@@ -307,12 +275,10 @@ internal static class TexSeam
     }
 }
 
-/// <summary>CX-117: a <c>Gob::SetMaterialParam</c> override, which cannot live on the recipe.
-/// <para><see cref="DrawRecipe"/> is interned per <c>(ModelDef, node)</c> and shared by every instance, so
-/// writing a parameter there would repaint every creature wearing the model -- the same trap
-/// <see cref="ObjectTex"/> avoids for textures. The overrides therefore live here, keyed on the OBJECT, as a
-/// sparse list: a script that styles one placeable is the only caller there has ever been, so the table is
-/// a handful of entries and the stage consults it only for an object that has any.</para></summary>
+/// <summary>A <c>Gob::SetMaterialParam</c> override, which cannot live on the recipe:
+/// <see cref="DrawRecipe"/> is interned per <c>(ModelDef, node)</c> and shared by every instance, so a
+/// parameter written there would repaint every creature wearing the model. The overrides are keyed on the
+/// OBJECT as a sparse list, and the stage consults it only for an object that has any.</summary>
 internal static class MaterialParams
 {
     /// <summary>One override: which of the record's twenty parameter floats, and the value. The lane is
@@ -401,8 +367,7 @@ internal static class MaterialParams
     /// <summary>The engine's parameter name -> the record's float lane. The same table
     /// <c>AlloyRenderer.Enroll.ReadMaterial</c> / <c>ReadExt</c> fill from a live material: the two stock
     /// vec4s then ADR 0026's three extension vec4s at <c>ParamExt</c>. A multi-component parameter names its
-    /// first lane; the engine's own setter writes one scalar too (it builds
-    /// <c>"oParam float &lt;name&gt; &lt;value&gt;"</c> from one token).</summary>
+    /// first lane, and the engine's own setter writes one scalar too.</summary>
     internal static int LaneOf(string name)
     {
         const int X = AlloyRenderer.ParamExt;

@@ -6,23 +6,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// Shadow caster selection in compute, in <see cref="CullPass"/>'s shape (ADR 0018 M5 strand 2, #286). One
-/// staging pass per FRAME (batch keys, VAO and mask-texture resolves), then per view a handful of uniforms,
-/// one dispatch that tests each caster against that view and compacts the survivors into an indirect command
-/// buffer, and one <c>glMultiDrawElementsIndirectCount</c> per batch. No count ever comes back to the CPU on
-/// the draw path.
-/// <para>The bounds are <see cref="CullPass"/>'s own <c>CxCullSphere</c> buffer, indexed by ownership slot --
-/// the shadow cull and the colour cull test ONE set of spheres, with one set of exemptions (a
-/// <see cref="AlloyRenderer.NeverCull"/> radius -- posed skinmesh, dangly mesh, displacing feature, degenerate
-/// bounds -- passes every reach test). <c>baseInstance</c> carries the ownership slot itself and the depth
-/// stages read <c>uDraw[gl_BaseInstance]</c> directly. The source buffer is PERSISTENT: the staging walk runs
-/// per frame (index ranges are re-read live because Repack moves them), but the upload is skipped whenever
-/// the staged bytes match what the buffer holds -- on a settled frame nothing goes up (#303).</para>
-/// <para>The cull ITSELF is ported semantics, not a re-derivation: the cone test circumscribes the 90deg face
-/// pyramid and doubles the radius allowance, exactly as <c>CasterPass.FaceCulls</c> does, and the slope is
-/// interpolated from that same constant so the two cannot drift. A caster wrongly REJECTED is a deleted
-/// shadow; one wrongly admitted costs a draw. <c>/shadow gather 0</c> disables the cull in the dispatch --
-/// every staged caster draws in every view -- the A/B that says whether the cull deleted a shadow.</para>
+/// Shadow caster selection in compute, in <see cref="CullPass"/>'s shape (ADR 0018): one staging pass per
+/// FRAME, then per view a handful of uniforms, one dispatch that tests each caster and compacts the survivors
+/// into an indirect command buffer, and one <c>glMultiDrawElementsIndirectCount</c> per batch -- no count ever
+/// comes back to the CPU. The bounds are <see cref="CullPass"/>'s own spheres, so both culls test one set.
 /// </summary>
 internal static unsafe class CasterGather
 {
@@ -32,18 +19,15 @@ internal static unsafe class CasterGather
     internal const uint BindSrc = 17, BindCmd = 18, BindCount = 19;
 
     /// <summary>Uints per source record, and their order -- index count, first index, base vertex, OWNERSHIP
-    /// slot (#303: the sphere index and the <c>baseInstance</c> the depth stages read <c>uDraw</c> through),
-    /// batch, batch output base, and (#305) the DYNAMIC flag: 1 = this caster is a mover this frame. The
-    /// flag is what <see cref="Dispatch"/>'s set filter tests, so one frame staging serves the static bake,
-    /// the dynamic bake and the sun alike. Otherwise <see cref="CullPass.SrcUints"/>'s layout, deliberately:
-    /// one shape for both gathers, and the batch's output base is what turns an <c>atomicAdd</c> into an
-    /// output index.</summary>
+    /// slot (the sphere index, and the <c>baseInstance</c> the depth stages read <c>uDraw</c> through), batch,
+    /// batch output base, and the DYNAMIC flag: 1 = this caster is a mover this frame, which is what
+    /// <see cref="Dispatch"/>'s set filter tests. Otherwise <see cref="CullPass.SrcUints"/>'s layout.</summary>
     internal const int SrcUints = 7;
-    /// <summary>The source word that carries the #305 set flag -- the one word the standing staging
-    /// rewrites per frame (#328), so its index is a contract shared with <c>GatherCs</c>.</summary>
+    /// <summary>The source word that carries the set flag -- the one word the standing staging rewrites
+    /// per frame, so its index is a contract shared with <c>GatherCs</c>.</summary>
     internal const int SetFlagWord = 6;
 
-    /// <summary>#305: which half of the population a dispatch admits. <see cref="SetAll"/> = no filter (the
+    /// <summary>Which half of the population a dispatch admits. <see cref="SetAll"/> = no filter (the
     /// sun, and the combined bake <c>/shadow split 0</c> restores); <see cref="SetStatic"/> = still casters
     /// only; <see cref="SetDynamic"/> = movers only. Applied BEFORE the cull and independent of
     /// <c>/shadow gather 0</c>, because the filter is what the two arrays' contents MEAN, not a cull.</summary>
@@ -51,33 +35,23 @@ internal static unsafe class CasterGather
     /// <summary>Uints per <c>DrawElementsIndirectCommand</c>. Fixed by GL.</summary>
     internal const int CmdUints = 5, CmdBytes = CmdUints * 4;
     private const int GroupSize = 64;
-    /// <summary>Command/count buffer pairs rotated per VIEW. A frame issues ~200 views into these, and the
-    /// hazard is a write-after-read: view K's indirect draws source their commands (and their count) from one
-    /// pair while view K+Rotation's dispatch shader-writes it. The per-view barrier does not close that on its
-    /// own -- it is issued AFTER its own dispatch, so at a rotation of 1 nothing at all separates the read
-    /// from the rewrite.
-    /// <para>The rotation depth is what closes it. MemoryBarrier "defines a barrier ordering the memory
-    /// transactions issued prior to the command relative to those issued after" -- symmetric, and a
-    /// write-after-read needs only that ordering, not visibility. Reusing a pair R views later leaves R-1
-    /// barriers standing in command order between the last read of it and the rewrite, each naming
-    /// COMMAND_BARRIER_BIT -- whose buffer set covers the PARAMETER_BUFFER binding too, per
-    /// ARB_indirect_parameters, which is how the count side is included -- and BUFFER_UPDATE_BARRIER_BIT, for
-    /// the per-view zeroing. So 2 is the proven floor, pinned by <c>CasterPass.SelfCheck</c>, and 3 is that
-    /// floor with one spare.</para></summary>
+    /// <summary>Command/count buffer pairs rotated per VIEW, against a write-after-read: view K's indirect
+    /// draws source their commands from one pair while view K+Rotation's dispatch rewrites it. Reusing a pair
+    /// R views later leaves R-1 symmetric barriers standing between the last read and the rewrite, so 2 is the
+    /// proven floor (pinned by <c>CasterPass.SelfCheck</c>) and 3 is that floor with one spare.</summary>
     internal const int Rotation = 3;
 
-    /// <summary>Live dial behind <c>/shadow gather</c>: 1 = the dispatch culls, 0 = the dispatch admits every
-    /// staged caster into every view (#303: the CPU walk this used to fall back to is deleted, so the A/B is
-    /// now cull-on against cull-off, the same pair <c>/alloy cull</c> spells for the colour path). The third
+    /// <summary>Live dial behind <c>/shadow gather</c>: 1 = the dispatch culls, 0 = it admits every staged
+    /// caster into every view, the same A/B pair <c>/alloy cull</c> spells for the colour path. The third
     /// bisect step is <c>shadow.mode=0</c>, which hands the whole shadow question back to the engine's
     /// stencil.</summary>
     internal static int Mode => Shadows.Gather.V ? 1 : 0;
-    /// <summary>#488: live dial behind <c>/shadow receiver</c>: 1 = a view flagged as re-baked under this
+    /// <summary>Live dial behind <c>/shadow receiver</c>: 1 = a view flagged as re-baked under this
     /// frame's camera also rejects casters whose shadow volume cannot reach the camera frustum; 0 = the
     /// light-cone tests alone. Inside <see cref="Mode"/>'s gate, so <c>/shadow gather 0</c> still disables
-    /// everything. Its own dial because the Bake A/B has to isolate this term from the cone cull.</summary>
+    /// everything. Its own dial because the bake A/B has to isolate this term from the cone cull.</summary>
     internal static int Receiver => Shadows.Receiver.V ? 1 : 0;
-    /// <summary>#488: this frame's receiver frustum, six planes as <c>ShadowMath.ReceiverPlanes</c> writes
+    /// <summary>This frame's receiver frustum, six planes as <c>ShadowMath.ReceiverPlanes</c> writes
     /// them (already pushed out by the camera epoch's slack). Filled by <c>CasterPass</c> once per frame.</summary>
     internal static readonly float[] Planes = new float[24];
 
@@ -88,12 +62,10 @@ internal static unsafe class CasterGather
 
     private static uint _srcBuf;
     private static int _srcCap;
-    /// <summary>S8: the DYNAMIC source -- a copy of just the staged records whose set flag is 1, in the same
+    /// <summary>The DYNAMIC source -- a copy of just the staged records whose set flag is 1, in the same
     /// 7-word layout and carrying their OWN batch id and output base, so a survivor lands in exactly the
-    /// region and the batch it would have landed in from the full source. A dynamic view's dispatch then
-    /// covers ~438 draws instead of ~37k, which is most of the frame's views: the command buffer, the count
-    /// buffer, the batch table and the draw loop are all untouched, because nothing about a survivor changes
-    /// -- only how many threads had to look at a caster that was never in the set.</summary>
+    /// region and the batch it would have from the full source. A dynamic view's dispatch then covers a few
+    /// hundred draws instead of tens of thousands, with nothing else about a survivor changed.</summary>
     private static uint _dynSrcBuf;
     private static int _dynSrcCap, _dynDrawN;
     /// <summary>Dispatches that ran over the dynamic source rather than the full staging -- against
@@ -137,11 +109,11 @@ internal static unsafe class CasterGather
     /// because the two populations are two orders of magnitude apart -- averaging ~438 staged draws with ~37k
     /// gives a figure that describes neither.</summary>
     internal static long SampledKeptDyn, SampledStagedDyn, SamplesDyn, SampledRxDyn;
-    /// <summary>#488: of the sampled view's staged draws, how many the receiver-frustum test rejected
+    /// <summary>Of the sampled view's staged draws, how many the receiver-frustum test rejected
     /// (the word after the per-batch counts, <c>uCnt[uGroups]</c>).</summary>
     internal static long SampledRx;
     /// <summary>Frames whose staged source matched the persistent buffer byte for byte, so nothing was
-    /// uploaded -- the number that says #303's "the per-frame upload is gone" is actually true.</summary>
+    /// uploaded -- the number that says the per-frame upload is really gone.</summary>
     internal static long UploadsSkipped, Uploads;
 
     /// <summary>The program failed to build and will never arm; <see cref="CasterPass"/> disarms on it
@@ -228,9 +200,9 @@ internal static unsafe class CasterGather
     /// <summary>Is the dynamic source standing for this frame?</summary>
     internal static bool DynamicReady => _dynDrawN > 0 && _dynSrcBuf != 0;
 
-    /// <summary>Publish one frame's staging. #303: the source buffer is persistent, and a frame whose caller
-    /// reports no <paramref name="changed"/> bytes sends nothing at all (CX-14: the caller knows, no hash).
-    /// The bounds live in <see cref="CullPass"/>'s sphere buffer, which the colour build maintains; nothing
+    /// <summary>Publish one frame's staging. The source buffer is persistent, and a frame whose caller
+    /// reports no <paramref name="changed"/> bytes sends nothing at all (the caller knows; no hash). The
+    /// bounds live in <see cref="CullPass"/>'s sphere buffer, which the colour build maintains, so nothing
     /// per-draw is uploaded here on a settled frame.</summary>
     internal static bool Begin(int drawN, int groups, uint* src, bool changed)
     {
@@ -488,20 +460,14 @@ internal static unsafe class CasterGather
     private static readonly string Slope =
         CasterPass.FaceConeSlope.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>The cull. One thread per staged draw; a survivor appends into its batch's own output region
-    /// with an <c>atomicAdd</c>, so every batch keeps its boundaries and only its interior order moves (depth
-    /// draws are order-independent).
-    /// <para>#303: the bounds come from <c>CxCullSphere</c> -- the colour cull's own buffer, indexed by the
-    /// ownership slot the source carries -- and a <c>NeverCull</c> radius (&gt;= 1e29, the exemption the
-    /// colour dispatch also tests) skips every test: unknown or unbounded means CAST. Both view tests are the
-    /// CPU reference's, term for term. The cone test is conservative BY CONSTRUCTION -- it circumscribes the
-    /// 90deg face pyramid (corners at <c>|perp| = sqrt2 * t</c>) and allows twice the caster radius -- and
-    /// that direction is the whole point: admitting a caster the face cannot see costs a depth draw,
-    /// rejecting one it can see deletes a shadow.</para></summary>
-    /// <summary>The two culls both dispatches share, <c>@SLOPE@</c> unexpanded: the #488 receiver cull
+    /// <summary>The two culls both dispatches share, <c>@SLOPE@</c> unexpanded: the receiver cull
     /// and the point-light face cull. Spliced, then the slope is interpolated over the whole text.</summary>
     private static string ReceiverCullLib => ShaderSource.Get("cx_recvcull.glsl");
 
+    /// <summary>The cull. One thread per staged draw; a survivor appends into its batch's own output region
+    /// with an <c>atomicAdd</c>, so every batch keeps its boundaries and only its interior order moves. Both
+    /// view tests are the CPU reference's, term for term, and the cone test is conservative BY CONSTRUCTION:
+    /// admitting a caster a face cannot see costs a depth draw, rejecting one it can see deletes a shadow.</summary>
     private static readonly string GatherCs = ("""
         #version 460 core
         layout(local_size_x = 64) in;   // GroupSize
@@ -572,12 +538,10 @@ internal static unsafe class CasterGather
         }
         """).Replace("@SLOPE@", Slope);
 
-    /// <summary>#307: the layered cull -- <see cref="GatherCs"/>'s tests, term for term, with the view's
-    /// parameters read out of the view table instead of uniforms and one thread per (draw, view) pair. A
-    /// survivor's command region is its batch's staged region scaled by the chunk's view count, and its
-    /// <c>baseInstance</c> packs the view-table index above the ownership slot so the depth stage can route
-    /// by <c>gl_Layer</c>. The set filter stays AHEAD of the cull and ungated by <c>uCull</c>, for #305's
-    /// reason: which half of the split a caster belongs in is what the arrays' contents MEAN.</summary>
+    /// <summary>The layered cull -- <see cref="GatherCs"/>'s tests, term for term, with the view's parameters
+    /// read out of the view table instead of uniforms and one thread per (draw, view) pair. A survivor's
+    /// command region is its batch's staged region scaled by the chunk's view count, and its
+    /// <c>baseInstance</c> packs the view-table index above the ownership slot, for routing by <c>gl_Layer</c>.</summary>
     private static readonly string LayerCs = ("""
         #version 460 core
         layout(local_size_x = 64, local_size_y = 1) in;   // GroupSize
@@ -673,9 +637,8 @@ internal static unsafe class CasterGather
 
     /// <summary>What <c>CasterPass.SelfCheck</c> pins about the dispatch: the cull it runs is the CPU
     /// reference's, over the SHARED sphere buffer, with the shared exemption, conservative in the direction
-    /// that costs a draw. Text rather than arithmetic because GLSL cannot be run headless -- but every term
-    /// that would silently delete a shadow if it drifted is named here, and the slope is interpolated from
-    /// the C# constant rather than typed twice.</summary>
+    /// that costs a draw. Text rather than arithmetic because GLSL cannot be run headless, but every term
+    /// that would silently delete a shadow if it drifted is named here.</summary>
     internal static bool SourceSafe()
         => GatherCs.Contains("if (t < -r) return true;")
            && GatherCs.Contains($"float lim = t * {Slope} + 2.0 * r;")

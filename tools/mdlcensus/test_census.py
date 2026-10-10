@@ -26,7 +26,9 @@ assert [n["type"] for n in nodes] == ["dummy", "trimesh"], nodes
 assert nodes[1]["tilefade"] == "2" and nodes[1]["render"] == "1"
 text, binary = census.to_ascii(ASCII.encode())
 assert not binary and text == ASCII
-for _, _, data in census.erf_entries(os.path.expanduser("~/.local/share/Neverwinter Nights/hak/sow_appr_01.hak")):
+import glob  # noqa: E402
+haks = sorted(glob.glob(os.path.expanduser("~/.local/share/Neverwinter Nights/hak/*.hak")))
+for _, _, data in (census.erf_entries(haks[0]) if haks else ()):
     text, binary = census.to_ascii(data)
     assert census.scan(text)[1], "first hak model produced no nodes"
     break

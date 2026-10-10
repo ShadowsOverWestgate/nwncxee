@@ -251,7 +251,7 @@ float CxSrcSpread(float dist) { return uWrap <= 0.0 ? 0.0 : uWrap * uFalloff.y *
 // reads: it remapped alpha = rough^2, while the engine feeds fRoughness_sq = rough^2 as alpha^2 --
 // alpha = rough. Every authored and synthesised roughness in the content is tuned for the engine's
 // convention, so the remap shaded a 0.24-roughness stone as a 0.06 one: a far tighter, far brighter
-// highlight on every part carrying a specular map, which is ~100% of SoW's.
+// highlight on every part carrying a specular map, which is nearly every authored material.
 // <para>Two halves, split the way the engine splits them: this per-LIGHT one, and the view-side
 // normalisation in CxSpecBase, which is common to every light and applied once (the engine's
 // fSpecularBaseModifier). fSpecularity rides in through the Fresnel term and must NOT be multiplied

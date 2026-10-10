@@ -9,27 +9,10 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy;
 
-/// <summary>CX-55 step 1: Alloy reads a model's <c>.mdl</c> file on a worker thread and hands the bytes back
-/// when the engine asks for them. The engine keeps the PARSE -- it allocates a node tree, demands textures and
-/// touches GL, none of which may leave the main thread -- so the only thing taken here is the read.
-/// <para><b>The seam is <c>CAuroraInterface::GetResource</c> @0x1123fd0.</b> Every model load funnels through
-/// <c>FindModel</c> @0x44c2a0, which misses the name cache, calls <c>IODispatcher::ReadSync</c> @0x4bf670, and
-/// that calls <c>AurResGet(name, ".mdl")</c> @0x4332c0 -- whose <c>AurGetResource</c> slot @0x18b9aa0 IS this
-/// function. It answers a plain pointer plus a size, and <c>AurResGet</c> copies both into its
-/// <c>OpenResource</c> record: the read cursor is <c>res+0x58</c> and the line buffer <c>res+0x50</c>, so the
-/// binary parse (@0x4bee60, <c>AurResGetDataBytes</c> @0x4330a0) and the ASCII <c>dofile</c> @0x434930
-/// (<c>AurResGetNextLine</c> @0x432fa0) both only READ the buffer, and neither outlives
-/// <c>AurResFree</c> @0x4335d0 -- which always comes back as
-/// <c>CAuroraInterface::ReleaseResource(base)</c> @0x1123b90. That is the whole contract a buffer of ours has
-/// to meet.</para>
-/// <para><b>The 10-byte header.</b> <c>CAuroraModel::LoadModel</c> @0x1134df0 writes restype <c>0x7d2</c> at
-/// <c>ptr-10</c> and the owning <c>CAuroraModel*</c> at <c>ptr-8</c>, and <c>ReleaseResource</c> switches on
-/// that ushort. Ours is left ZERO, so if the release chain ever misses one of our buffers the engine's own
-/// release falls straight through instead of calling virtuals on a pointer that is not an object.</para>
-/// <para><b>Speculative, unlike textures.</b> There is no suspend window: the engine wants the <c>Model*</c>
-/// synchronously, so an entry that is not ready yet is a miss (the engine reads it) and a late one is swept.
-/// The offers are read out of the area message itself, ahead of the engine's own reads of it: the tile grid
-/// in <c>ModelLoad.Tiles.cs</c> and the static placeables in <c>ModelLoad.Objects.cs</c>.</para></summary>
+/// <summary>Alloy reads a model's <c>.mdl</c> file on a worker thread and hands the bytes back when the engine
+/// asks. The engine keeps the PARSE -- node tree, texture demands, GL -- so only the read leaves the main thread.
+/// The seam is <c>CAuroraInterface::GetResource</c>: the engine only ever READS the buffer and always gives it back
+/// through <c>ReleaseResource</c>. Speculative -- no suspend window, so a not-ready entry is a miss.</summary>
 internal static unsafe partial class ModelLoad
 {
     /// <summary>Off; serving; serving with every hand-back checked against the engine's own read.</summary>
@@ -38,8 +21,10 @@ internal static unsafe partial class ModelLoad
     /// <summary>The model restype, as <c>CResHelper&lt;CResMDL, 2002&gt;</c> declares it.</summary>
     private const ushort MdlResType = 2002;
 
-    /// <summary>Bytes of headroom in front of a served buffer. The engine writes ten of them
-    /// (<c>ptr-10</c>, <c>ptr-8</c>); sixteen keeps the data itself 16-byte aligned.</summary>
+    /// <summary>Bytes of headroom in front of a served buffer; sixteen keeps the data itself 16-byte aligned.
+    /// The engine writes a restype at <c>ptr-10</c> and the owning <c>CAuroraModel*</c> at <c>ptr-8</c> and
+    /// <c>ReleaseResource</c> switches on that ushort, so ours is left ZERO: a buffer the release chain misses
+    /// falls through the engine's release instead of taking virtuals on a pointer that is not an object.</summary>
     private const int PrefixBytes = 16;
 
     /// <summary>The <c>{0, modelDataSize, rawDataSize}</c> wrapper a binary MDL starts with: the model block
@@ -53,17 +38,13 @@ internal static unsafe partial class ModelLoad
     /// <summary>A resref is at most 16 characters.</summary>
     private const int ResRefChars = 16;
 
-    /// <summary>Prepared models held at once, reads waiting, and bytes held. The offers are one area's own
-    /// models, not a whole tileset's: ~263 distinct tile models plus supermodels plus the static placeables
-    /// measured on the heaviest SoW area, at a few hundred KiB each. 2048 entries is an order of magnitude of
-    /// headroom over that, and 64 MiB is the byte bound it implies (the 256 MiB that preceded it was sized for
-    /// the whole-tileset superset, which offered 2348 models and read 408 MiB to serve 107).</summary>
+    /// <summary>Prepared models held at once, reads waiting, and bytes held. The offers are one area's own models,
+    /// not a whole tileset's -- a few hundred at a few hundred KiB each -- so 2048 entries is an order of
+    /// magnitude of headroom over that, and 64 MiB is the byte bound it implies.</summary>
     private const int MaxEntries = 2048, MaxPending = 2048;
-    /// <summary><c>cx-mdl</c> threads. A read is I/O LATENCY, not CPU: 558 model rows off the live 6.5 GiB
-    /// Arelith NWSync shard measured 548 ms cold on one thread and 349 ms on two (385 ms of the one-thread time
-    /// was the shard's blob fetch, 62 ms zstd), so the second reader is what lets the read-ahead stay ahead of
-    /// <c>LoadArea</c>'s demand order. ponytail: two, not one per core -- the third reader on the box is
-    /// <c>cx-load</c>, and the main thread is parsing what these hand back.</summary>
+    /// <summary><c>cx-mdl</c> threads. A read is I/O LATENCY, not CPU, so the second reader is what lets the
+    /// read-ahead stay ahead of <c>LoadArea</c>'s demand order. ponytail: two, not one per core -- the third
+    /// reader on the box is <c>cx-load</c>, and the main thread is parsing what these hand back.</summary>
     private const int MdlWorkers = 2;
     private const long MaxHeldBytes = 64L << 20;
     /// <summary>Drips a prepared buffer may wait to be asked for before it is swept. Anything still here long
@@ -224,12 +205,10 @@ internal static unsafe partial class ModelLoad
     /// <summary>Cached: a method group would mint a delegate at every offer, and the worker starts once.</summary>
     private static readonly Action<LoadJob> Worker = Work;
 
-    /// <summary>The area load's entry, before the engine's own <c>LoadArea</c>. There is nothing to walk yet:
-    /// <c>CNWCArea::LoadArea</c> @0x70e010 reads the area's width, height, tileset resref and EVERY tile id out
-    /// of the area message itself, inside its own loop -- <c>area+0x298</c> (the <c>CNWCTile</c> array) is
-    /// allocated in there and <c>area+0x290</c> (the tileset) is set in there, so at this instant the area
-    /// object still describes the LAST area. Both read-aheads therefore start later, from the loop's own first
-    /// call; all this does is hand them the area and clear the last one's state.</summary>
+    /// <summary>The area load's entry, before the engine's own <c>LoadArea</c>. Nothing to walk yet: <c>LoadArea</c>
+    /// reads the width, height, tileset resref and EVERY tile id out of the area message inside its own loop, and
+    /// allocates the <c>CNWCTile</c> array there, so at this instant the area object still describes the LAST
+    /// area. All this does is hand the read-aheads the area and clear the last one's state.</summary>
     internal static void OnLoadArea(IntPtr area)
     {
         if (!_armed) return;
@@ -239,8 +218,8 @@ internal static unsafe partial class ModelLoad
         OfferObjects(area);
     }
 
-    /// <summary>Placeables, doors and creatures, from whatever the area load names early (CX-55 step 2);
-    /// unimplemented here on purpose, and a partial method with no body is simply not called.</summary>
+    /// <summary>Placeables, doors and creatures, from whatever the area load names early. Unimplemented here on
+    /// purpose: a partial method with no body is simply not called.</summary>
     static partial void OfferObjects(IntPtr area);
 
     /// <summary>The area load's one ask for its tileset, which <c>LoadArea</c> makes with the message already
@@ -287,11 +266,9 @@ internal static unsafe partial class ModelLoad
     }
 
     /// <summary>Copy the read into a buffer laid out as the engine's own: <see cref="PrefixBytes"/> of zeroed
-    /// headroom, then the file. Records the supermodel a binary file names, for the main thread to offer.
-    /// <para>CX-55 step 3: an ASCII source with a compiled model in <see cref="MdlCache"/> is swapped for the
-    /// compiled bytes HERE, on the worker, so the hit costs the main thread nothing -- and the swapped bytes
-    /// then name their supermodel below. Not in check mode: the comparison is against the engine's own read of
-    /// the ASCII, which compiled bytes would fail by design.</para></summary>
+    /// headroom, then the file. Records the supermodel a binary file names, for the main thread to offer. An ASCII
+    /// source with a compiled model in <see cref="MdlCache"/> is swapped for the compiled bytes HERE, on the
+    /// worker -- never in check mode, whose comparison is against the engine's own read of the ASCII.</summary>
     private static void Keep(LoadJob j, ReadOnlySpan<byte> raw)
     {
         if (raw.Length == 0) { j.Why = "no bytes"; return; }
@@ -421,12 +398,10 @@ internal static unsafe partial class ModelLoad
         (*_relSlot)(data);
     }
 
-    /// <summary>The prepared bytes for <paramref name="name"/>, or null. The entry stays in the table, marked
-    /// out, until <c>ReleaseResource</c> brings the buffer back -- the ASCII path reads the same model twice
-    /// (<c>ReadSync</c> frees it and <c>dofile</c> re-opens it), so a served buffer is re-servable rather than
-    /// spent.
-    /// <para>Identity is re-proved, not assumed: the same lookup the engine is about to make must land on the
-    /// same key entry with the same <c>RESID</c>.</para></summary>
+    /// <summary>The prepared bytes for <paramref name="name"/>, or null. The entry stays in the table, marked out,
+    /// until <c>ReleaseResource</c> brings the buffer back: the ASCII path reads the same model twice
+    /// (<c>ReadSync</c> frees it, <c>dofile</c> re-opens it), so a served buffer is re-servable, not spent.
+    /// Identity is re-proved -- the engine's own lookup must land on the same key entry with the same <c>RESID</c>.</summary>
     private static byte* Take(byte* name, out int size)
     {
         size = 0;
@@ -484,7 +459,7 @@ internal static unsafe partial class ModelLoad
 
     /// <summary>Check mode: the engine's own read of the same model, compared byte for byte with ours and then
     /// released either way. A mismatch means the location resolution picked a different resource than the
-    /// engine's own lookup would; it is said loudly (CX-45) and the caller serves the engine's read instead.
+    /// engine's own lookup would; it is said loudly and the caller serves the engine's read instead.
     /// True when the two agree.</summary>
     private static bool Check(byte* name, byte* ext, byte* ours, int n)
     {

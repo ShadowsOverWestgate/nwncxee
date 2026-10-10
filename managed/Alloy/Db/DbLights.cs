@@ -6,18 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>the light rig, fed from the scene database.</b> The DB-mode counterpart of
-/// <c>SceneInputs.WalkLights</c>: same output, same <c>FrameInputs</c> calls, same arithmetic -- a different
-/// source. Without it a DB frame draws in ambient alone, which is the single most visible hole in the mode.
-/// <para><b>Why a sibling rather than a branch.</b> The engine walk's loop dereferences a <c>PartLight*</c>
-/// about twenty ways and calls the engine's own <c>GetLightAdjustedRadius</c> through it. A DB light has no
-/// such pointer, so threading one through would be twenty branches inside ninety lines of engine semantics.
-/// The arithmetic BELOW the source, which is the part that must not drift, is ported here explicitly and is
-/// what the self-check pins.</para>
-/// <para><b>The identity.</b> <c>FrameInputs.RecordAreaLight</c> takes an id it STORES and compares and never
-/// dereferences (the flicker table and the bake's fingerprint key on it), so a DB light hands over its part
-/// index as that id. It is stable for the light's life and unique across the table, which is all the id ever
-/// had to be -- and unlike the engine's pointer it is not recycled by the allocator.</para></summary>
+/// <summary><b>The light rig, fed from the scene database:</b> the area-light terms, the local-light set and
+/// the bake's static set, as <c>FrameInputs</c> calls, with the engine's lighting arithmetic ported
+/// explicitly (<see cref="Adjust"/>) and pinned by the self-check. A light's part index is the id
+/// <c>RecordAreaLight</c> stores and compares: stable for its life, unique, and never recycled.</summary>
 internal static class DbLights
 {
     /// <summary>A light at or past this range is the engine's DIRECTIONAL pair (the area's sun and ambient),
@@ -26,12 +18,9 @@ internal static class DbLights
 
     private static int _walked, _admitted, _skipped;
 
-    /// <summary>Gather this scene's lights into <c>FrameInputs</c>. The DB-mode replacement for
-    /// <c>SceneInputs.WalkLights</c>; called once per world frame, on the game thread, before the draw.</summary>
-    /// <param name="h">CX-188: the frame's hoisted engine terms. This walk used to take a live
-    /// <c>CNWCArea</c> and dereference it in <see cref="Signature"/>, <see cref="Palette"/> and the bake's
-    /// <c>BeginWalk</c>; the area's VALUES come across instead, so the walk reads no engine memory and can
-    /// run on <c>RenderThread</c>.</param>
+    /// <summary>Gather this scene's lights into <c>FrameInputs</c>; once per world frame, before the draw.</summary>
+    /// <param name="h">The frame's hoisted engine terms -- the area's VALUES, not a live <c>CNWCArea</c>, so
+    /// this walk reads no engine memory and can run on <c>RenderThread</c>.</param>
     internal static void Walk(DbId scene, in FrameHoist h)
     {
         float radiusMult = h.RadiusMult;
@@ -76,19 +65,10 @@ internal static class DbLights
         SceneInputs.FinishWalk();
     }
 
-    /// <summary>Is this frame's rig the one <see cref="FrameInputs"/> already holds? The walk rebuilds the
-    /// whole rig -- the area-light arrays, the local-light set, the bake's static-set walk and the departure
-    /// fade -- and in a settled area none of its inputs moved, so it was rebuilding an identical answer every
-    /// world frame (seam-anim's perf audit).
-    /// <para>The test is a SIGNATURE over the inputs the rig is a function of, not a dirty flag the writers
-    /// have to remember to set: a missed writer would freeze an area's lighting, and that is a fault nobody
-    /// would read as a bug. The registry's own revision short-circuits the scan when a light was added or
-    /// dropped. The scan itself is one pass over the light records with no allocation and no bake work, which
-    /// is the cheap half of what it replaces.</para>
-    /// <para><c>ponytail:</c> the ceiling is <see cref="ResyncFrames"/> -- the rig is rebuilt anyway that
-    /// often, so anything the signature does not cover costs at most that many frames of staleness rather
-    /// than the life of the area. Narrow it by adding the term to the signature, not by lowering the
-    /// number.</para></summary>
+    /// <summary>Is this frame's rig the one <see cref="FrameInputs"/> already holds? A SIGNATURE over the
+    /// inputs the rig is a function of, not a dirty flag a writer could forget (a miss would freeze an area's
+    /// lighting); one pass over the light records, no allocation, short-circuited by the registry's revision.
+    /// <c>ponytail:</c> staleness is capped at <see cref="ResyncFrames"/>; narrow it by adding signature terms.</summary>
     private static bool Unchanged(DbId scene, float radiusMult, in FrameHoist h)
     {
         if (++_sinceResync >= ResyncFrames) { _sinceResync = 0; return false; }
@@ -182,9 +162,8 @@ internal static class DbLights
         Adjust(range, inten, radiusMult, ref rgb, out float adjR);
         Vector3 pos = l.Position;
         // The bake's verdict, asked the way the engine walk asks it -- except that the database, not a walk of
-        // engine objects, says whether the light holds still. A static light is what a tile is LIT BY: mode 0
-        // lights tiles from the baked pages and objects dynamically, which is the split that made DB tiles
-        // black while objects beside them were fine.
+        // engine objects, says whether the light holds still. A static light is what a tile is LIT BY: tiles
+        // are lit from the baked pages and objects dynamically.
         bool isStatic = LightmapBake.RecordDb(l.Id, pos, adjR, rgb, ambient, l.Static, out int setIndex);
         FrameInputs.RecordAreaLight(l.Id, pos, adjR, rgb, ambient, isStatic, setIndex);
         _admitted++;
@@ -196,11 +175,9 @@ internal static class DbLights
         FrameInputs.RecordLocalLight(l.Id, pos, adjR, rgb);
     }
 
-    /// <summary>Route one area light to the term its own kind drives, the way <c>FrameRead.ApplyAreaTerm</c>
-    /// does for the engine path -- same curve, same sun rule, so the two modes light a surface identically.
-    /// <para>The colour goes through the receiver's own gamma here (<c>AlloyLights.SrgbGamma</c>) because
-    /// every consumer of <c>FrameInputs.Area*</c> expects it pre-compensated; handing it linear is a base
-    /// term that looks washed out rather than merely wrong.</para></summary>
+    /// <summary>Route one area light to the term its own kind drives. The colour goes through the receiver's
+    /// own gamma here (<c>AlloyLights.SrgbGamma</c>) because every consumer of <c>FrameInputs.Area*</c>
+    /// expects it pre-compensated; handing it linear is a base term that looks washed out.</summary>
     private static void AreaTerm(in DbLight l, in FrameHoist h)
     {
         bool isAmbient = DbInputs.AmbientOnly(in l);
@@ -229,14 +206,10 @@ internal static class DbLights
         if (travel.Z < FrameRead.DownwardZ) { FrameInputs.SunDir = travel; FrameInputs.HasSun = true; }
     }
 
-    /// <summary>The area's own colour for the palette it is on and the term asked for, which is what mode 0's
-    /// two directional lights carry and a DB light does not: the game writes both into the Aurora "sun" model
-    /// by script (<c>CNWCArea::SetGlobalLightDiffuse</c> @0x802510 and <c>SetGlobalLightAmbient</c> @0x8022d0
-    /// sprintf <c>controlpart sun gidy_sun_diff|gidy_sun_amb color</c>), so the model's own rest keys -- all
-    /// the database has -- are the model's, not the area's.
-    /// <para>What the game last sent through that text wins (<see cref="SunColour"/>): it is the day/night
-    /// blend and any scripted palette. Until the first one arrives, the ARE pair <c>LoadArea</c> cached and
-    /// <c>SetAsDay</c>/<c>SetAsNight</c> picked stands in.</para></summary>
+    /// <summary>The area's own colour for the palette it is on and the term asked for, which a light record
+    /// does not carry: the game writes both into the Aurora "sun" model by script
+    /// (<c>CNWCArea::SetGlobalLightDiffuse</c> @0x802510, <c>SetGlobalLightAmbient</c> @0x8022d0, as
+    /// <c>controlpart sun</c>), so the last one sent wins (<see cref="SunColour"/>), else the ARE pair.</summary>
     private static Vector3 Palette(in FrameHoist h, bool ambient, Vector3 fallback)
     {
         if (ambient ? _sunAmbSet : _sunDifSet) return ambient ? _sunAmb : _sunDif;
@@ -265,11 +238,8 @@ internal static class DbLights
 
     /// <summary>The engine's own lit radius and colour pair (<c>GetLightAdjustedRadius</c> @0x4c0c10 and
     /// <c>GetLightAdjustedColor</c> @0x4c0b60), ported: the radius is range x intensity times the global
-    /// radius multiplier, boosted by the max colour channel when that exceeds 1, and the colour is then
-    /// divided back down by the same max -- so an overbright light spends its surplus on REACH, not on hue.
-    /// <para>This is the arithmetic that must not drift from the engine walk's, which is why it is one
-    /// function with one self-check rather than a second copy of the comment block in that file. The
-    /// overbright keep-back is Alloy's own (<c>AlloyLights.OverbrightK</c>), shared with it.</para></summary>
+    /// radius multiplier, boosted by the max colour channel when that exceeds 1, and the colour divided back
+    /// down by the same max -- an overbright light spends its surplus on REACH, not on hue.</summary>
     internal static void Adjust(float range, float inten, float radiusMult, ref Vector3 rgb, out float adjR)
     {
         float maxc = MathF.Max(rgb.X, MathF.Max(rgb.Y, rgb.Z));
@@ -289,14 +259,13 @@ internal static class DbLights
          + (FrameInputs.HasAreaAmbient ? "" : " NO AREA AMBIENT")
          + (FrameInputs.HasAreaDiffuse ? "" : " NO AREA DIFFUSE");
 
-    /// <summary>Off-device: the arithmetic, and the admission. A light dropped here is an unlit area and a
-    /// radius that drifted from the engine's is every lit sphere the wrong size -- #67's symptom, which read
-    /// as "two lights can't overlay" and took a live A/B to find.</summary>
+    /// <summary>Off-device: the arithmetic, and the admission. A light dropped here is an unlit area, and a
+    /// radius that drifted from the engine's is every lit sphere the wrong size.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "DbLights.SelfCheck");
-        // CX-188: the walk takes the frame's HOISTED engine terms. The fixture's are "no area, unit radius
-        // multiplier" -- off-device there is no CNWCArea to read, which is also the main-menu state.
+        // The fixture's hoisted terms are "no area, unit radius multiplier": off-device there is no CNWCArea
+        // to read, which is also the main-menu state.
         var noArea = new FrameHoist { RadiusMult = 1f };
 
         // The area light arrives as console text (CNWCArea::SetGlobalLightDiffuse's own sprintf, %f format).
@@ -326,8 +295,8 @@ internal static class DbLights
                      "...keeping its hue exactly (the ratio between channels is unchanged)");
 
         // The admission rules, over a synthetic database. The departure FADE is off for the duration: the walk
-        // closes with it (so a light that leaves is still emitted, shrinking, for Fadeout frames), and that is
-        // mode 0's behaviour rather than something to re-prove here -- SceneInputs.FadeSelfCheck owns it.
+        // closes with it (so a light that leaves is still emitted, shrinking, for Fadeout frames), which
+        // SceneInputs.FadeSelfCheck owns.
         int fadeWas = Lighting.Fadeout.V;
         Lighting.Fadeout.V = 0;
         DbInputs.Reset();
@@ -380,7 +349,7 @@ internal static class DbLights
         int at = FrameInputs.AreaLightId[0] == DbInputs.LitId(lk) ? 0 : 1;
         check.Expect(FrameInputs.AreaLightId[at] == DbInputs.LitId(lk), "...under its own Lit record as an identity");
         // ...and LitDynamic=false is what the bake is TOLD. Whether it comes back static is the bake's answer,
-        // and in DB mode it is "no" until the arena ranges are charted -- a static light with no page to be lit
+        // and it is "no" until the arena ranges are charted -- a static light with no page to be lit
         // from is an unlit one (LightmapBake.Produces).
         check.Expect(FrameInputs.AreaLightStatic[at] == LightmapBake.Produces,
                      $"LitDynamic=false reaches the bake as static, and the bake answers for its own ability to "

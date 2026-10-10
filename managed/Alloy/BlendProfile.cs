@@ -5,7 +5,7 @@ using static CX.Alloy.AlloyRenderer;
 
 namespace CX.Alloy;
 
-/// <summary>CX-188 /alloy bench: ONE frame of the blended accumulation timed per drawing batch -- a GL timestamp
+/// <summary><c>/alloy bench</c>: ONE frame of the blended accumulation timed per drawing batch -- a GL timestamp
 /// before each draw and one after the last, read back without waiting and logged as the costliest batches.
 /// ponytail: timestamps serialise the profiled frame, so a delta is that draw's own time plus nothing it overlapped.</summary>
 internal static unsafe class BlendProfile

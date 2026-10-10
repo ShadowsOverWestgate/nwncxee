@@ -6,27 +6,15 @@ using CX.Engine;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-107: the engine's own quaternion/Euler arithmetic, ported term for term from the free functions the
-/// <c>CAurBehavior</c> solvers are built out of. Every formula below was read off <c>nwmain-linux</c> --
-/// from the decompiled dump where it was unambiguous, and from <c>objdump</c> where the decompiler dropped
-/// a lane or a float argument. Provenance and the addresses are in
-/// <c>CX-107</c> §4.
+/// The engine's own quaternion/Euler arithmetic, ported term for term from the free functions the
+/// <c>CAurBehavior</c> solvers are built out of; <c>Quaternion</c> is (w, x, y, z), like <see cref="CX.Engine.Quat"/>.
+/// <para>Term grouping and the exact-compare early-outs are verbatim: last-bit drift moves a VFX offset
+/// over a few hundred frames. Hot: no allocation, nothing virtual.</para>
 /// </summary>
-/// <remarks>
-/// <para>The engine's <c>Quaternion</c> is stored <b>(w, x, y, z)</b>, which is what
-/// <see cref="CX.Engine.Quat"/> already is. Its product has the same operand order as
-/// <c>System.Numerics.Quaternion</c>'s, and its vector rotation is the same matrix as
-/// <c>Vector3.Transform</c>'s -- but the engine adds three exact-compare early-outs to the rotation and
-/// groups its sums in a particular order, so the port keeps both: a solver that differed only in the last
-/// bit would still drift a VFX offset over a few hundred frames.</para>
-/// <para>Hot: every one of these runs inside a solver, so nothing here allocates and nothing here is
-/// virtual.</para>
-/// </remarks>
 internal static partial class BehaviorMath
 {
     /// <summary>The engine's own degree/radian constants (<c>DegToRad</c> @0x5b3100 and the literal
-    /// <c>57.295776</c> the three Euler extractors multiply by -- not <c>180/pi</c> to the last bit, and the
-    /// port keeps the engine's value).</summary>
+    /// <c>57.295776</c> its Euler extractors multiply by) -- not <c>180/pi</c> to the last bit.</summary>
     internal const float Deg2Rad = 0.017453292f;
     /// <inheritdoc cref="Deg2Rad"/>
     internal const float Rad2Deg = 57.295776f;
@@ -45,9 +33,8 @@ internal static partial class BehaviorMath
 
     /// <summary><c>operator*(Quaternion const&amp;, Vector const&amp;)</c> @0x5b5e40 -- rotate
     /// <paramref name="v"/> by <paramref name="q"/>. The three early-outs are the engine's, exact compares
-    /// included: a <c>w</c> of exactly 1 is taken for the identity <i>whatever</i> x/y/z hold, which is a
-    /// quirk the port reproduces rather than fixes (an engine-written quaternion that trips it would move
-    /// differently under the two paths, and parity is the constraint).</summary>
+    /// included: a <c>w</c> of exactly 1 is taken for the identity whatever x/y/z hold -- a quirk reproduced,
+    /// not fixed, because parity is the constraint.</summary>
     internal static Vector3 Rotate(in Quat q, in Vector3 v)
     {
         if (q.W == 1f) return v;
@@ -63,9 +50,8 @@ internal static partial class BehaviorMath
     }
 
     /// <summary><c>YawPitchRoll(yaw, pitch, roll)</c> @0x5b6690 -- degrees, composed
-    /// <c>qZ(yaw) * qX(pitch) * qY(roll)</c>. The three axes live in <c>.bss</c> and a static initialiser
-    /// sets them to Z, X and Y respectively (CX-107 §4); a term whose angle is
-    /// exactly 0 is skipped, so the port skips it too.</summary>
+    /// <c>qZ(yaw) * qX(pitch) * qY(roll)</c>: the axes are Z, X and Y, and a term whose angle is exactly 0
+    /// is skipped, as the engine skips it.</summary>
     internal static Quat YawPitchRoll(float yaw, float pitch, float roll)
     {
         Quat q = Identity;
@@ -91,11 +77,9 @@ internal static partial class BehaviorMath
     internal static float Dot(in Quat a, in Quat b) => a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z;
 
     /// <summary><c>slerp(Quaternion, Quaternion const&amp;, float)</c> @0x5b6500 -- the camera solve's
-    /// orientation step. ONE transcription of it exists, <see cref="AnimKeys.Slerp"/> (CX-105 needs the same
-    /// function for every rotation key), and this forwards to it so a future correction lands once. Its form
-    /// is also the more faithful of the two: the engine's escape is <c>if (|dot| &lt; 1)</c>, so a NaN dot
-    /// falls OUT of the interpolation, which <c>!(ad &lt; 1f)</c> reproduces and <c>|d| &gt;= 1f</c> does
-    /// not.</summary>
+    /// orientation step. Forwards to the one transcription, <see cref="AnimKeys.Slerp"/>, so a correction
+    /// lands once; its <c>!(|dot| &lt; 1)</c> escape is the faithful form, letting a NaN dot fall out of the
+    /// interpolation as the engine's does.</summary>
     internal static Quat Slerp(in Quat a, in Quat b, float t) => AnimKeys.Slerp(a, b, t);
 
     /// <summary><c>normalize(Quaternion)</c> @0x5b6440 -- unit length is left alone, a degenerate length

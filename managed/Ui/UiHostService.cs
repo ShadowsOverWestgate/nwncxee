@@ -6,14 +6,10 @@ using CX.Graphics;
 
 namespace CX.Ui;
 
-/// <summary>The framework's frame owner (ADR 0004, spec #62; ADR 0014 amendment, #170). Owns the single
-/// <c>SwapBuffers</c> present, computes the in-game gate, syncs the game UI scale and keeps the shared glyph atlas
-/// at <c>ui.font × GUI scale</c> once per frame, then drives
-/// two registries and nothing else: the <see cref="UiHost"/> window roll-call in z-order, and the
-/// <see cref="FrameRegistry"/> phase walks around it. It names no service. Each service supplies its window's <see cref="Window.DrawContent"/>;
-/// the host never touches any service's rendering. Was Chat's <c>OnSwap</c> roll-call. Raw input capture is the
-/// sibling <c>UiInputService</c>'s job (#64); this service owns only the frame present -- and the one piece of
-/// content that is the framework's own: the main-menu gear (#593, spec §3 Doors 2), the settings panel's second door.</summary>
+/// <summary>The framework's frame owner (ADR 0004, amended by ADR 0014): it owns the single <c>SwapBuffers</c>
+/// present, computes the in-game gate, syncs the game UI scale and keeps the shared glyph atlas at
+/// <c>ui.font × GUI scale</c> once a frame, then drives two registries and nothing else -- the <see cref="UiHost"/>
+/// window roll-call in z-order and the <see cref="FrameRegistry"/> phases. It names no service and renders none.</summary>
 public sealed unsafe class UiHostService : IExtenderService
 {
     private static ExtenderLog? _log;
@@ -21,17 +17,17 @@ public sealed unsafe class UiHostService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        UiCategory.SelfCheck(log);   // declares the UI groups in panel order, then checks the #590 rows
-        UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
-        FrameZones.SelfCheck(log);   // #238 frame-split instrument (off-device)
-        ScrollColumn.SelfCheck(log);    // #587 scroll column: offset, thumb, wheel, zero-alloc draw (off-device)
-        Dropdown.SelfCheck(log);        // #587 dropdown list: 27 entries, scroll, pick, outside press (off-device)
-        Tooltip.SelfCheck(log);         // #587 tooltip: dwell, tick, wrap, zero-alloc draw (off-device)
-        CascadeMenu.SelfCheck(log);     // CX-690/691 cascade menu: nesting, flip/clamp, keys, dwell, icons, zero-alloc draw (off-device)
-        MenuGear.SelfCheck(log);        // #593 main-menu gear: anchor, hover animation, zero-alloc emit (off-device)
+        UiCategory.SelfCheck(log);   // declares the UI groups in panel order, then checks their rows
+        UiHost.SelfCheck(log);   // arbiter + draw roll-call proof (off-device)
+        FrameZones.SelfCheck(log);   // frame-split instrument (off-device)
+        ScrollColumn.SelfCheck(log);    // scroll column: offset, thumb, wheel, zero-alloc draw (off-device)
+        Dropdown.SelfCheck(log);        // dropdown list: 27 entries, scroll, pick, outside press (off-device)
+        Tooltip.SelfCheck(log);         // tooltip: dwell, tick, wrap, zero-alloc draw (off-device)
+        CascadeMenu.SelfCheck(log);     // cascade menu: nesting, flip/clamp, keys, dwell, icons, zero-alloc draw (off-device)
+        MenuGear.SelfCheck(log);        // main-menu gear: anchor, hover animation, zero-alloc emit (off-device)
         TextRig.Init(log);   // the one glyph atlas every window draws from (null under run-demo: stbtt absent)
         ApplyFont();         // ...baked at ui.font x GUI scale; declares the ui group
-        ApplyTypeface();     // #681: the persisted ui.typeface, a no-op at default
+        ApplyTypeface();     // the persisted ui.typeface, a no-op at default
         _getGuiScale = EngineFn.GetGuiScale;
         _resetStates = EngineFn.RiResetRenderStates;
         _bindBuffer = EngineFn.RiBindBuffer;
@@ -41,14 +37,14 @@ public sealed unsafe class UiHostService : IExtenderService
             : "UiHostService: frame present not installed (Install returned Zero: symbol unresolved or already hooked)");
 
         // The roll-call's draw site. nk_sdl_render is nuklear's GL flush: run the windows just before it and
-        // they land under every NUI window and over the vanilla GUI panels. Chained, not Installed (#88):
+        // they land under every NUI window and over the vanilla GUI panels. Chained, not Installed:
         // the symbol is shared plumbing, and higher priority = outer keeps our raw GL and its resync first.
         _nkSlot = hooks.ChainNkSdlRender(&OnNkRender, 20);
         log.Info(_nkSlot != null
             ? "UiHostService: window roll-call runs below NUI (chained on nk_sdl_render)"
             : "UiHostService: nk_sdl_render unavailable -- window roll-call stays at the present (above NUI)");
 
-        // #593: the gear's window. Its rect is the sprite's; it hits only while the main menu or the in-game Options
+        // the gear's window. Its rect is the sprite's; it hits only while the main menu or the in-game Options
         // panel is up, so in play and on the loading screen it is inert for the cursor pick, the click routing and
         // the yield exemption.
         _gearWindow = new Window(0, 0, 0, 0)
@@ -92,7 +88,7 @@ public sealed unsafe class UiHostService : IExtenderService
         EngineFn.SdlSetWindowSize(window, w, h);
     }
 
-    // ---- the main-menu gear (#593) ----
+    // ---- the main-menu gear ----
     private static readonly MenuGear _gear = new();
     private static Window? _gearWindow;
     private static VertexBatch? _gearBatch;
@@ -102,7 +98,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static long _gearLast;
     private static (int w, int h, float px) _gearAnchor;
 
-    /// <summary>Where the gear lives: the main menu (#593) or the in-game Options panel (its follow-up) -- the two
+    /// <summary>Where the gear lives: the main menu or the in-game Options panel (its follow-up) -- the two
     /// surfaces the settings panel has a door on.</summary>
     private static bool GearSurface => GameGate.AtMainMenu || GameGate.OptionsOpen;
 
@@ -122,11 +118,10 @@ public sealed unsafe class UiHostService : IExtenderService
         return false;
     }
 
-    /// <summary>The gear's draw (render thread, on the menu and under the in-game Options panel only). The sprite
-    /// face is <see cref="MenuGear.FaceFor"/> the live GUI scale; a miss bakes it right here -- the same edge
-    /// <see cref="ApplyFont"/> re-bakes the text atlas on, and on both surfaces the world HUD is down. The anchor is computed from the live viewport and logged
-    /// on every change of (viewport, face); the engine-side pixel origin (<c>MapGuiSceneToScreen</c>) is the owed
-    /// live check. Zero-alloc once the face is baked.</summary>
+    /// <summary>The gear's draw (render thread, on the menu and under the in-game Options panel only) -- the one piece
+    /// of content the frame host owns itself. The sprite face is <see cref="MenuGear.FaceFor"/> the live GUI scale; a
+    /// miss bakes it right here, the same edge <see cref="ApplyFont"/> re-bakes the text atlas on. The anchor comes
+    /// from the live viewport, logged on every change of (viewport, face). Zero-alloc once the face is baked.</summary>
     private static void DrawGear()
     {
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -167,7 +162,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static bool _announced;
     private const uint GlArrayBuffer = 0x8892;  // not-an-offset: a GL enum
 
-    /// <summary>#456: presents left to sample. Costs a pipeline stall each, so it is a knob that runs out.</summary>
+    /// <summary>presents left to sample. Costs a pipeline stall each, so it is a knob that runs out.</summary>
     private static int _presentProbe;
 
     private static uint PresentPixel()
@@ -202,18 +197,18 @@ public sealed unsafe class UiHostService : IExtenderService
         }
         ResizeTick(window);
         FrameRegistry.Global.Run(FramePhase.Start);
-        // CX-120: in DB mode the 2D UI is drawn BY the DB frame, after its view list, because the DB frame
-        // runs at PrePresent -- after this point -- and would otherwise overwrite everything drawn here.
-        // That is exactly what made CX's chat vanish the moment the world started drawing.
+        // When Alloy renders, the 2D UI is drawn BY its frame, after the view list: that frame runs at PrePresent --
+        // after this point -- and would otherwise overwrite everything drawn here, which is what made CX's chat
+        // vanish the moment the world started drawing.
         if (_nkSlot == null && !CX.Alloy.Renderer.On) DrawWindows();
         FrameRegistry.Global.Run(FramePhase.PrePresent);
         // Must be the LAST thing before the present -- after the window roll-call and after every PrePresent
         // participant (GlContextService's 4.6 bracket switches back to this context in there).
         HandBack();
-        // #238: the present is its own zone. It is the discriminator the other brackets cannot supply --
+        // the present is its own zone. It is the discriminator the other brackets cannot supply --
         // a frame that spends its time HERE is waiting on the GPU or on vsync, which is a different problem
         // from every zone that measures our own CPU work.
-        // #456: the black-frame discriminator, and the only one that is free of the two-context question --
+        // the black-frame discriminator, and the only one that is free of the two-context question --
         // this read is in the ENGINE's context, at the last instruction before the present, so what it sees
         // IS what the swap is about to show. A bright value on a frame that displays black means the swap
         // presented a buffer nobody drew; alternating values mean the frame was lost before it got here.
@@ -226,7 +221,7 @@ public sealed unsafe class UiHostService : IExtenderService
                        + $"  into={CX.Alloy.PostChain.LastInto} resolves={CX.Alloy.PostChain.Resolves}");
         }
         long tSwap = FrameZones.Now;
-        // CX-101: Alloy issues the present when the screen is Alloy's; otherwise the engine's GLRender::SwapBuffers.
+        // Alloy issues the present when the screen is Alloy's; otherwise the engine's GLRender::SwapBuffers.
         if (!CX.Alloy.ScreenOwner.Present(window) && _swapOrig != null) _swapOrig(window);
         FrameZones.Add(FrameZones.Zone.Present, tSwap);
         FrameStats();
@@ -238,32 +233,29 @@ public sealed unsafe class UiHostService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnNkRender(float aa)
     {
-        if (!CX.Alloy.Renderer.On) DrawWindows();   // DB mode: the DB frame draws them, see OnSwap
+        if (!CX.Alloy.Renderer.On) DrawWindows();   // when Alloy renders, its own frame draws them instead
         (*_nkSlot)(aa);
     }
 
-    /// <summary>CX-120: CX's own 2D windows, drawn by the DB frame after its view list. In mode 0 nothing
-    /// calls this -- the two sites above still do, unchanged.</summary>
+    /// <summary>CX's own 2D windows, drawn by the world frame after its view list; the two sites above draw
+    /// them when no such frame runs.</summary>
     internal static void DrawWindowsForDbFrame() => DrawWindows();
 
-    /// <summary>Refresh the session gate, the UI scale and the viewport, run the z-order roll-call, then hand
-    /// the GL state back. The hand-back is #210 (G1) one call earlier: our raw GL desyncs GLRender's shadow
-    /// cache, and what renders next is NUI, not the present.
-    /// <para>CX-99: the roll-call alone stands aside while a movie is on screen. Everything above it still
-    /// runs -- the session gate is what the module-unload edge is read from, and a movie can play inside a
-    /// module. It matters on the FALLBACK path (and on Windows, where <c>nk_sdl_render</c> is not exported
-    /// and the fallback is the only path): <c>CGuiMan::UpdateAndRender</c> skips <c>nk_sdl_render</c> outright
-    /// while a movie plays, so the normal site never reaches a movie frame.</para></summary>
+    /// <summary>Refresh the session gate, the UI scale and the viewport, run the z-order roll-call, then hand the GL
+    /// state back -- one call earlier than the present, because our raw GL desyncs GLRender's shadow cache and what
+    /// renders next is NUI. The roll-call alone stands aside while a movie is on screen; everything above it still
+    /// runs, since the session gate is where the module-unload edge is read and a movie can play inside a module.</summary>
     private static void DrawWindows()
     {
-        // CX-188: the roll-call's head and tail are their own zone. Zone.Ui is the DRAW only, so the gate,
-        // the scale sync, the font re-bake, the viewport query and the engine hand-back were unmeasured --
-        // inside the Seam residual in DB mode and inside `other` in mode 0.
+        // The roll-call's head and tail are their own zone. Zone.Ui is the DRAW only, so the gate, the scale sync,
+        // the font re-bake, the viewport query and the engine hand-back would otherwise sit in the Seam residual.
         long tEdge = FrameZones.Now, ui0 = FrameZones.Ticks(FrameZones.Zone.Ui);
         RefreshGate();
-        SyncUiScale(); ApplyFont();   // #593: every frame, not only in game -- the menu gear and panel honour the UI scale
-        TextRig.SampleViewport();     // CX-709: the frame's one GL_VIEWPORT query; every draw below reads the pair
+        SyncUiScale(); ApplyFont();   // every frame, not only in game -- the menu gear and panel honour the UI scale
+        TextRig.SampleViewport();     // the frame's one GL_VIEWPORT query; every draw below reads the pair
         long tUi = FrameZones.Now;
+        // Only the fallback path ever reaches a movie frame: CGuiMan::UpdateAndRender skips nk_sdl_render outright
+        // while a movie plays, and on Windows nk_sdl_render is not exported, so the fallback is the only path there.
         if (!CX.Alloy.MovieService.OnScreen)
             UiHost.DrawFrame();                   // draw every registered window in z-order (content-owned)
         FrameZones.Add(FrameZones.Zone.Ui, tUi);
@@ -271,7 +263,7 @@ public sealed unsafe class UiHostService : IExtenderService
         FrameZones.Add(FrameZones.Zone.UiEdge, tEdge, FrameZones.Ticks(FrameZones.Zone.Ui) - ui0);
     }
 
-    /// <summary>#210 (G1): the hand-back resync after raw GL in the ENGINE's context, which went past GLRender's
+    /// <summary>The hand-back resync after raw GL in the ENGINE's context, which went past GLRender's
     /// shadow cache -- that cache early-outs on a stale match and skips real GL calls for the rest of the frame.
     /// One engine-side full resync instead of each drawer mirroring the state it touched. It rebinds the engine's
     /// default framebuffer too (Ghidra: <c>GLRender::ResetRenderStates</c>).</summary>
@@ -300,7 +292,7 @@ public sealed unsafe class UiHostService : IExtenderService
         if (_fsLast != 0 && GameGate.InModule)
         {
             long dt = now - _fsLast;
-            FrameZones.EndFrame(dt);   // #238: fold this frame's zone split in, against the same dt
+            FrameZones.EndFrame(dt);   // fold this frame's zone split in, against the same dt
             _fsSum += dt; _fsN++;
             if (dt > _fsMax) _fsMax = dt;
             float ms = dt * 1000f / System.Diagnostics.Stopwatch.Frequency;
@@ -323,7 +315,7 @@ public sealed unsafe class UiHostService : IExtenderService
                 _log?.Info($"UiHostService: [frame] avg {avg:F2}ms ({1000f / avg:F0}fps) max {max:F1}ms, >6.9ms {_fsOver7}/{_fsN}, >16.7ms {_fsOver17}/{_fsN}"
                          + $", gc {gc0 - _gc0}/{gc1 - _gc1}/{gc2 - _gc2} on {(alloc - _alloc) >> 10}KiB allocated" + FrameZones.BoxLine() + (CX.Alloy.AlloyRenderer.VramFreeMib > 0 ? $", vram free {CX.Alloy.AlloyRenderer.VramFreeMib}MiB" : "") + FrameZones.ThreadsLine());
                 _gc0 = gc0; _gc1 = gc1; _gc2 = gc2; _alloc = alloc;
-                // #238: NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
+                // NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
                 // argument evaluation, so a null log would desync it from the _fs* counters reset below
                 // permanently (every later line would then average since boot).
                 string zones = FrameZones.Period() + CX.Graphics.GlContextService.GpuSpanLine();
@@ -331,7 +323,7 @@ public sealed unsafe class UiHostService : IExtenderService
                 _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
             }
         }
-        else FrameZones.Discard();   // #238: menu/loading frames are not the period's
+        else FrameZones.Discard();   // menu/loading frames are not the period's
         _fsLast = now;
     }
 
@@ -343,11 +335,11 @@ public sealed unsafe class UiHostService : IExtenderService
     //   win  = *(gui+chatWindow)        (CGuiInGame's chat window -- NULL until a module loads = the in-area signal)
     //   opt  = *(int*)(intern+0x604)    (CClientExoApp::SetOptionsPanelOpen flag -- 1 while the ESC menu is up)
     //   hud  = *(int*)(gui+toggledOff)  (CGuiInGame::ToggleOff sets this; H key hides all HUD)
-    //   menu = *(intern+0x98)           (the live CMainMenuPanel*, #593 -- non-null from DisplayMainMenu to DestroyMainMenuPanel)
-    //   pnl  = *(gui+optionsPanel)      (the live in-game COptionsPanel*, #593 follow-up -- HandleOptionsButton to HandleOptionsPanelClose)
+    //   menu = *(intern+0x98)           (the live CMainMenuPanel* -- non-null from DisplayMainMenu to DestroyMainMenuPanel)
+    //   pnl  = *(gui+optionsPanel)      (the live in-game COptionsPanel* -- HandleOptionsButton to HandleOptionsPanelClose)
     //   show = win != null && opt == 0 && hud == 0
     //   options = win != null && pnl != null && *(uint*)(pnl+state) == 1   (active and not hidden by a sub-panel)
-    // Chat suppresses CGuiInGameChatWindow::Show (#23), so the vanilla window never activates and its IsVisible
+    // Chat suppresses CGuiInGameChatWindow::Show, so the vanilla window never activates and its IsVisible
     // (win+0xc68) stays 0 -- module presence + no-ESC-menu is the in-area signal now. A null `win` is the
     // main-menu case (no module) => hidden. The [uigate] log fires only on a state transition (rare).
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
@@ -410,11 +402,10 @@ public sealed unsafe class UiHostService : IExtenderService
     /// <summary><c>ui.typeface</c>'s set: rebind <c>default</c> and re-bake (cold).</summary>
     internal static void ApplyTypeface() => TextRig.SetTypeface(UiKnobs.Typeface.V);
 
-    /// <summary>Track the engine's live GUI scale (CAurora::GetGUIScale) into <see cref="Metrics.GameUiScale"/> so
-    /// windowed content scales with the game's UI-scaling option. A cheap float read every frame -- the static it
-    /// reads is set from the resolution, valid before any module (#593); the per-window re-bake/relayout is the
-    /// content's reaction to the changed value (rare -- resolution change / options slider), keeping this hot path
-    /// zero-alloc in the steady state.</summary>
+    /// <summary>Track the engine's live GUI scale (<c>CAurora::GetGUIScale</c>) into <see cref="Metrics.GameUiScale"/>
+    /// so windowed content scales with the game's UI-scaling option. A cheap float read every frame -- the static it
+    /// reads is set from the resolution and valid before any module; the per-window re-bake and relayout is the
+    /// content's rare reaction (a resolution change, the options slider), keeping this hot path zero-alloc.</summary>
     private static void SyncUiScale()
     {
         if (_getGuiScale == null) return;

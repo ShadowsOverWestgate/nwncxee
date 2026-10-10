@@ -10,24 +10,12 @@ namespace CX.Alloy;
 
 /// <summary>Procedural light halos: the Alloy replacement for vanilla's lens-flare quads. The population is
 /// the engine's own <c>LightManager::GetLensFlareLights</c> list (every light node with <c>lensflares 1</c>),
-/// re-read each frame at the enrol slot; the look is a shader pair a hak can override (<c>cx_halo_vs</c>,
-/// <c>cx_halo_fs</c>).
-/// <para>Vanilla (<c>Scene::RenderLensFlares</c> @0x471860) draws each flare as a screen-space quad on
-/// the near plane -- which is why it reads as glued to the screen -- sized and dimmed by
-/// <c>(flareradius - d) / flareradius</c>, tinted <c>light colour + flarecolorshift</c>, and faded by the
-/// occlusion ray it integrates into <c>PartLight+0xa0</c>. The quad becomes a view-aligned billboard of world
-/// size, and its per-pixel occlusion is a depth-disc test against the scene so it slides behind geometry
-/// instead of popping.</para>
-/// <para><b>CX-85: the whole-halo fade is ours too.</b> The shim no longer calls
-/// <c>Scene::RenderLensFlares</c>, so nothing engine-side integrates <c>PartLight+0xa0</c> any more. This pass
-/// does, off Alloy's own depth: <see cref="OccCs"/> samples <see cref="SceneDepth"/> once per halo, the answer
-/// comes back through a <see cref="GpuReadback"/> TWO frames later (so no read ever waits on the GPU), and
-/// <see cref="Step"/> walks the field toward it at the engine's own 3-per-second rate. The field is still
-/// written, not shadowed, so <c>alloy.enabled=0</c> hands the engine a weight it recognises.</para></summary>
+/// re-read each frame at the enrol slot; the look is a shader pair a hak can override. Vanilla's screen-space
+/// near-plane quad becomes a view-aligned billboard of world size, occluded per pixel against the scene.</summary>
 internal static unsafe class Halos
 {
     internal const string ShdHaloVs = "cx_halo_vs", ShdHaloFs = "cx_halo_fs";
-    /// <summary>CX-85's occlusion probe, one invocation per halo. Not an overridable stage: it produces a
+    /// <summary>The occlusion probe, one invocation per halo. Not an overridable stage: it produces a
     /// number the simulation consumes, not a pixel.</summary>
     private const string OccCs = "cx_haloocc_c";
 
@@ -94,13 +82,10 @@ internal static unsafe class Halos
         return (pos - FrameInputs.CameraPos).LengthSquared() < far * far;
     }
 
-    /// <summary>Take the probe's last answer (<see cref="Collect"/> read it, fenced, in Alloy's context) and walk
-    /// each flare's <c>PartLight+0xa0</c> toward it. No GL call: this runs in the ENGINE's context. A sample whose light is no longer a halo is dropped on the
-    /// floor: matching by pointer against this frame's list is what keeps a freed light out of the write.
-    /// <para>No sample (off screen, or the probe never ran) HOLDS the fade. That is deliberate and it is the
-    /// reason <see cref="_occFailed"/> exists as well: a fade nobody is integrating must not silently read as
-    /// "fully occluded", so a probe that cannot build says so once and every halo goes to full brightness with
-    /// only its per-pixel occlusion left.</para></summary>
+    /// <summary>Take the probe's last answer (read fenced, two frames late, in Alloy's context) and walk each
+    /// flare's <c>PartLight+0xa0</c> toward it at the engine's own rate -- nothing engine-side integrates that
+    /// field any more. No GL call: this runs in the ENGINE's context, and a sample whose light is no longer a
+    /// halo is dropped. No sample HOLDS the fade; a probe that cannot build says so once.</summary>
     private static void Occlude()
     {
         if (_occFailed || _count == 0) return;
@@ -137,7 +122,7 @@ internal static unsafe class Halos
 
     /// <summary>The halo population: every light of <paramref name="scene"/> whose node carries
     /// flares, read off the database the way <c>DbLights</c> reads the rig. The size, shift and radius are the
-    /// same three node fields mode 0 reads off <c>MdlNodeLight</c> -- its "sizes" word (+0xc0) is the list
+    /// same three node fields the engine reads off <c>MdlNodeLight</c> -- its "sizes" word (+0xc0) is the list
     /// <c>InternalParseField</c> @0x54baf0 fills from <c>flarepositions</c>, so that is what is read here too.</summary>
     internal static void EnrollDb(Db.DbId scene)
     {
@@ -180,22 +165,19 @@ internal static unsafe class Halos
     }
 
     /// <summary>One flare's occlusion fade after one step: it travels toward <paramref name="target"/> at
-    /// <see cref="FlareRate"/> per second and never overshoots it. Vanilla's target was binary -- the
-    /// occlusion ray either hit or did not -- so this reduces to <c>RenderLensFlares</c>' own
-    /// <c>+/- dt * 3</c> for a target of 0 or 1, and interpolates for the partial coverage Alloy can measure
-    /// and a ray cannot.</summary>
+    /// <see cref="FlareRate"/> per second and never overshoots it. Vanilla's target was binary, so this
+    /// reduces to <c>RenderLensFlares</c>' own <c>+/- dt * 3</c> for a target of 0 or 1, and interpolates for
+    /// the partial coverage Alloy can measure and a ray cannot.</summary>
     internal static float Step(float fade, float target, float dt)
     {
         float step = FlareRate * dt;
         return fade < target ? MathF.Min(target, fade + step) : MathF.Max(target, fade - step);
     }
 
-    /// <summary>A staged halo's tint: the RAW light colour plus the node's shift, as <c>RenderLensFlares</c> @0x471860
-    /// sums them, scaled down by its brightest channel when that is past 1, linearised, times the clamped fade.
-    /// Vanilla clamps each channel only after its distance weight, so a flare's hue survives at every distance but
-    /// the closest; a per-channel clamp here, before the shader's weight, turned an overbright torch -- (1.75, 1.50,
-    /// 1.00) -- white everywhere (!786). The cap keeps the RGBA16F target finite, where the halo's own
-    /// zero-visibility pixels would turn an Inf into NaN. NaN in any input stages as 0.</summary>
+    /// <summary>A staged halo's tint: the RAW light colour plus the node's shift, as <c>RenderLensFlares</c>
+    /// @0x471860 sums them, scaled down by its brightest channel when that is past 1, linearised, times the
+    /// clamped fade. Scaled rather than clamped per channel, which turns an overbright torch white. The cap
+    /// keeps the RGBA16F target finite; NaN in any input stages as 0.</summary>
     internal static Vector3 Tint(Vector3 colour, Vector3 shift, float fade)
     {
         Vector3 v = colour + shift;
@@ -244,7 +226,7 @@ internal static unsafe class Halos
         _drawn += _count;
     }
 
-    /// <summary>CX-85: dispatch this frame's occlusion probe into the ring slot two frames from being read.
+    /// <summary>Dispatch this frame's occlusion probe into the ring slot two frames from being read.
     /// Runs with the halo SSBO and <see cref="SceneDepth"/> already bound, before the draw, so it shares both.</summary>
     private static void Probe(Matrix4x4* view, Matrix4x4* proj)
     {
@@ -352,7 +334,7 @@ internal static unsafe class Halos
           + (_occLate > 0 ? $", {_occLate} probe reads deferred (GPU behind)" : "");
     internal static string Describe() => $"{(_off ? "UNAVAILABLE" : Effects.HalosOn ? "on" : "off")} size {Effects.HaloSize.V:F2} gain {Effects.Halos.V:F2} viz {Effects.HaloViz.V}";
 
-    /// <summary>CX-85: the occlusion integrator, headless. It is the whole of what the port owns on the CPU
+    /// <summary>The occlusion integrator, headless. It is the whole of what the port owns on the CPU
     /// side -- the probe itself has no seam -- and it fails invisibly in both directions: too slow and flares
     /// smear through walls, too fast and they strobe.</summary>
     internal static void SelfCheck(ExtenderLog log)

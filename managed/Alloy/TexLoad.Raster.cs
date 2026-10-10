@@ -5,13 +5,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-54: the TGA hand-back. <c>AurGetImageWrapper</c> @0x484cc0 tries the DDS slot, then 4PC, then
-/// <c>AurGetRaster</c>, a data slot <c>CAuroraInterface::CAuroraInterface</c> @0x1124ac0 fills with
-/// <c>GetRaster</c> @0x1123080. That getter builds a <c>CAuroraTexture</c>, demands its <c>CResTGA</c> (the read
-/// and the decode) and reports w, h and bytes per pixel; the wrapper turns the depth into a format and nothing
-/// after it reads a TGA header. A prepared TGA answers the slot with those three and its pixels, so the whole
-/// <c>CRes</c> path is skipped. Its release goes through <c>AurReleaseRaster</c> with size 0, which reads a tag at
-/// <c>data + w*h*bpp + 4</c>: ours is not the engine's 3, so <see cref="DdsReader"/>'s release frees it here.</summary>
+/// <summary>
+/// The TGA hand-back. <c>AurGetImageWrapper</c> tries the DDS slot, then 4PC, then the <c>AurGetRaster</c> data
+/// slot, whose getter demands a <c>CResTGA</c> and reports w, h and bytes per pixel -- the wrapper turns that
+/// depth into a format and nothing after it reads a TGA header, so answering the slot with those three and the
+/// pixels skips the whole <c>CRes</c> path. <see cref="RasterTag"/> is what tells a buffer of ours apart.
+/// </summary>
 internal static unsafe partial class TexLoad
 {
     /// <summary>The tag at a buffer of ours: not the engine's TGA tag (3) nor <see cref="RasterReader"/>'s forced 0,

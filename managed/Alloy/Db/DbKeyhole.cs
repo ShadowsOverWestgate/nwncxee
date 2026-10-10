@@ -6,26 +6,16 @@ using CX.Services.Camera;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120: <b>the keyhole, fed from the scene database.</b> The hole vanilla cuts through a roof so
-/// the player is visible indoors.
-/// <para>Mode 0 asks the engine's camera per part (<c>Camera::GetCanKeyholeDissolve</c>, reproduced from a
-/// cached box in <c>PartTable.KeyholeDissolvesBox</c>). DB mode reads a COLUMN instead --
-/// <c>AlloyRenderer.Route</c>'s DB branch is <c>SceneDb.PartDissolve[part] &lt; 1f</c> -- and nothing ever
-/// wrote that column. It is seeded to 1 (opaque) and stayed there, so no DB part ever dissolved: the inn's
-/// roof stayed solid and the PC sat under it in the dark while mode 0 cut the hole.</para>
-/// <para>This is the writer. Same rule, same camera words, over the database's own world boxes.</para></summary>
+/// <summary><b>The keyhole, fed from the scene database.</b> The hole cut through a roof so the player stays
+/// visible indoors: this is the writer of <see cref="SceneDb.PartDissolve"/>, which <c>AlloyRenderer.Route</c>
+/// reads as <c>&lt; 1f</c>. The engine's own rule (<c>Camera::GetCanKeyholeDissolve</c>, reproduced in
+/// <c>PartTable.KeyholeDissolvesBox</c>) and the same camera words, over the database's own world boxes.</summary>
 internal static unsafe class DbKeyhole
 {
-    /// <summary>Write <see cref="SceneDb.PartDissolve"/> for every staged DB part of this pass.
-    /// <para>The camera words come off the DB world camera's SHELL. They are the engine's own: the chase
-    /// behaviour CX attaches is the engine's <c>CAurBehaviorCameraFollow</c> running on a layout-compatible
-    /// shell (ADR 0028 section 2), so it writes the keyhole byte, plane and cut exactly where the engine's
-    /// camera carries them -- there is nothing to recompute, only somewhere to read.</para>
-    /// <para>TILE and STATIC parts, which is the database's spelling of the engine's own refusal: its rule
-    /// tests <c>part+0x50 == 0</c> (a part with no gob), which is what <c>Scene::SpawnTile</c> makes -- and a
-    /// STATIC placeable is spawned through that same call (the <c>Quaternion*</c> path, <c>TileBuild.PlaceStatic</c>),
-    /// so vanilla's hole takes non-interactable placeables with the roof. Tile-only here left them standing
-    /// solid in the hole. An interactable placeable is a gob and stays.</para></summary>
+    /// <summary>Write <see cref="SceneDb.PartDissolve"/> for every staged part of this pass. The camera words
+    /// are read off the world camera's SHELL, where the engine's own <c>CAurBehaviorCameraFollow</c> puts them.
+    /// TILE and STATIC parts only: the engine's rule tests <c>part+0x50 == 0</c> (a part with no gob), which is
+    /// what <c>Scene::SpawnTile</c> makes, and a static placeable comes through that same call.</summary>
     internal static void Write(nint cameraShell, int[] order, int n, int[] slotPart, DbId camera)
     {
         Runtime(camera);
@@ -100,25 +90,17 @@ internal static unsafe class DbKeyhole
         return true;
     }
 
-    /// <summary>The camera's own keyhole block, written the way <c>Camera::RenderScene</c> @0x5a7920 writes
-    /// it -- the body CX's DB camera slot replaces, which is exactly why DB mode never had any of this. The
-    /// aperture read SHUT in all 33911 passes of the previous run because nothing filled the byte.
-    /// <para>The engine's rule, verbatim: both global shader params 8 and 9 on and the camera has a scene,
-    /// else the state byte is 0. Then the target is the SCENE's anchor (<c>scene+0x190</c>, the point the sky
-    /// is kept on and the one vanilla centres the hole on), the distance is target-to-camera, and:
-    /// <c>cut = GetGlobalShaderParamf(0x17) + target.z</c>; the plane is the camera's first view-volume plane
-    /// with its xyz NEGATED and <c>w = -w - (dist - near)</c> -- note <c>cam+0x4cc</c> is the NEAR plane, not
-    /// the far one.</para>
-    /// <para>Said once, with every input, because this reads six words off a CX shell and any one of them
-    /// being unfed is a different bug with the same symptom.</para></summary>
+    /// <summary>The camera's keyhole block as <c>Camera::RenderScene</c> @0x5a7920 writes it: state byte 0
+    /// unless global shader params 8 and 9 are both on and the camera has a scene; target = the SCENE's anchor
+    /// (<c>scene+0x190</c>), <c>cut = GetGlobalShaderParamf(0x17) + target.z</c>, plane = the camera's first
+    /// view-volume plane with xyz NEGATED and <c>w = -w - (dist - near)</c> (<c>cam+0x4cc</c> is NEAR).</summary>
     internal static void WriteCameraState(nint cameraShell, DbId camId, DbId scene)
     {
         if (cameraShell == 0) return;
         var cam = new Camera(cameraShell);
         nint sc = SceneDb.Scenes.Valid(scene) ? SceneDb.SceneFacade[scene.Index] : 0;
-        // The WORLD camera only. This slot runs for every camera the frame draws through, GUI panels
-        // included, and a panel's camera has no roof to pierce -- the previous round's one-shot reported a
-        // GUI camera's numbers for exactly that reason.
+        // The WORLD camera only: this slot runs for every camera the frame draws through, GUI panels
+        // included, and a panel's camera has no roof to pierce.
         if (!SceneDb.Scenes.Valid(scene) || !SceneDb.SceneIsWorld[scene.Index]) return;
         int p8 = AlloyLights.GlobalShaderParami(8), p9 = AlloyLights.GlobalShaderParami(9);
         bool on = p8 != 0 && p9 != 0 && sc != 0;
@@ -185,31 +167,20 @@ internal static unsafe class DbKeyhole
                                 + $"viewVolume=0x{vv:x}");
     }
 
-    /// <summary>The keyhole's SHAPE, which is the shader's half of it. The CPU verdict is only an enable bit
-    /// -- <c>CxKeyhole</c> cuts the aperture from <c>uPlayer</c>, <c>uKeyholeCam</c> (the player-to-camera
-    /// distance and the camera pitch) and <c>uKeyholeDia</c> -- and those come off the engine's
-    /// <c>ShaderExposedRuntimeData</c> block, which the ENGINE's render path fills. That path does not run in
-    /// DB mode, so the block held zeros: the aperture maths ran on a zero player at zero distance and the
-    /// "hole" was the whole tile. That is why switching the enable on removed roofs instead of piercing them.
-    /// <para>The block is renderer state, not scene memory, so filling it here is the same kind of write as
-    /// any other uniform -- and it keeps one code path in the uniform upload for both modes.</para></summary>
+    /// <summary>The keyhole's SHAPE, the shader's half of it: the CPU verdict is only an enable bit, and
+    /// <c>CxKeyhole</c> cuts the aperture from <c>uPlayer</c>, <c>uKeyholeCam</c> (the player-to-camera
+    /// distance and the camera pitch) and <c>uKeyholeDia</c>. Those live in the engine's
+    /// <c>ShaderExposedRuntimeData</c> block, which no engine path fills, so Alloy fills it like any uniform.</summary>
     private static void Runtime(DbId camera)
     {
         if (AlloyRenderer.Rt.Ptr == 0 || !SceneDb.Cameras.Valid(camera)) return;
         ShaderExposedRuntimeData rt = AlloyRenderer.Rt;
         int ci = camera.Index;
-        // CamFOLLOW, not CamObj -- the same column <see cref="Target"/> reads, and the same trap. CamObj is the
-        // CAurObject the camera itself IS ((CAurObject*)(camera + 8)), so its position is the EYE: uPlayerPos
-        // was the camera, uKeyholeCam.x (eye-to-"player") was 0 and the pitch fell to its 90-degree fallback,
-        // so CxKeyhole's first line read `off = depth - 0 + 0` -- positive for every fragment in front of the
-        // camera, which returns 1.0 and cuts nothing. 28 parts a frame carried the enable bit and the keyhole
-        // program ran for 0,58 ms of GPU without punching one texel.
+        // CamFOLLOW, not CamObj: CamObj is the CAurObject the camera itself IS ((CAurObject*)(camera + 8)),
+        // so its position is the EYE and the aperture would be centred on the camera, cutting nothing.
         DbId obj = SceneDb.CamFollow[ci];
-        // The RENDERED eye -- DbCamera.PosOf, the camera sub-object's position, which is the point BuildView
-        // puts the view matrix at. The raw CamPos column is where NewCAurCamera left it and the game's own
-        // writes land in the sub-object instead: measured (x,y,0) at the player's own height, 17,46 from the
-        // PC, where the view this frame was built at (1,68 4,00 14,36). Read that way round the pitch came out
-        // 0 degrees for a camera 14 units up.
+        // The RENDERED eye: the camera sub-object's position, where BuildView puts the view matrix. The raw
+        // CamPos column is where NewCAurCamera left it -- the game's writes land in the sub-object instead.
         System.Numerics.Vector3 eye = DbCamera.PosOf(camera);
         // The followed object IS the player for the world camera: the chase behaviour is constructed over it
         // (CameraSlots.SetFollow), which is the same object vanilla's keyhole centres on.
@@ -221,9 +192,7 @@ internal static unsafe class DbKeyhole
         float dist = d.Length();
         rt.CamDist = dist;
         // Degrees above the horizon, POSITIVE as the camera rises -- what uKeyholeCam.y is measured in
-        // (cx_keyhole.glsl divides (90 - pitch) by 45, so 90 is straight down and 0 is level). Measured
-        // against mode 0, which reads 50 on this shot; the first cut of this read -73,19, the right magnitude
-        // with the wrong sign and origin, which shifts `off` by nearly three.
+        // (cx_keyhole.glsl divides (90 - pitch) by 45, so 90 is straight down and 0 is level).
         float flat = MathF.Sqrt(d.X * d.X + d.Y * d.Y);
         rt.CamPitch = dist > 1e-4f ? MathF.Abs(MathF.Atan2(d.Z, flat)) * (180f / MathF.PI) : 90f;
         _rtWrites++;
@@ -233,13 +202,10 @@ internal static unsafe class DbKeyhole
 
     internal static string Stats() => $"dbkeyhole: {_armed} passes armed / {_off} with the aperture shut ({_directed} for a directed or unfollowing camera), {_cut} part dissolves, {_rtWrites} runtime fills, {_sweeps} column sweep(s) / {_skipped} pass(es) skipped (nothing the verdict reads moved)";
 
-    /// <summary>Off-device: the SKIP, which is the only thing here that can be wrong without looking wrong --
-    /// a stale dissolve column is a roof that stays open (or shut) after the camera moved.
-    /// <para>BOTH arms. The shut arm writes 1f over the order; the ARMED arm is reached with a non-tile
-    /// subject, which <see cref="Dissolves"/> refuses before the engine call -- so the camera words go through
-    /// the key and the verdict still needs no engine memory. Both directions in each arm: the skip must skip
-    /// when nothing it reads moved, and must NOT skip when the slot set, a world box, a LOD swap or any
-    /// camera word did.</para></summary>
+    /// <summary>Off-device: the SKIP, the only thing here that can be wrong without looking wrong -- a stale
+    /// dissolve column is a roof that stays open (or shut) after the camera moved. Both arms, both directions:
+    /// the skip must skip when nothing it reads moved, and must NOT skip when the slot set, a world box, a LOD
+    /// swap or any camera word did.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "DbKeyhole.SelfCheck");

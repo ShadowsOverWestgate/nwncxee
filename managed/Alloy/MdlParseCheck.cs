@@ -9,21 +9,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-112's live check: for every model the engine loads, parse the SAME bytes with CX on a worker and
-/// compare the result against the engine's own in-memory tree, node for node. It is the on-device half of the
-/// oracle <c>tools/mdlcheck</c> runs off-device, and it is what proves the parse against the live resource
-/// chain (haks, NWSync, override) rather than against a corpus.
-/// <para><b>The seam is <c>IODispatcher::ReadSync</c></b> -- the one funnel a model MISS goes through
-/// (<c>FindModel</c> answers a hit from its name cache with no I/O), and it returns the freshly built
-/// <c>Model*</c>, so one chained hook gives the name in, the tree out and the engine's own parse time on the
-/// main thread. The tree is snapshotted on the main thread, because a <c>Model*</c> is not a pointer a worker
-/// may hold across an area edge; the snapshot is bounded, counted and reported apart from the parse, so the
-/// claim it supports -- that the CX parse costs the main thread nothing -- stays honest.</para>
-/// <para>Engine-free by construction on the parser's side: this file holds every engine read, and
-/// <c>Alloy/Mdl/</c> holds none.</para>
-/// <para><b>Linux-only on its own line:</b> the hook and the one new offset row both carry their Windows
-/// resolution (<c>?ReadSync@IODispatcher@@...</c> is name-exported and <c>Model+0x50</c> was measured on
-/// <c>nwmain.exe</c>), so there is nothing platform-specific left to decide here.</para></summary>
+/// <summary>The live parse check: for every model the engine loads, parse the SAME bytes with CX on a worker and
+/// compare the trees node for node -- the live resource chain (haks, NWSync, override), not a corpus. The seam is
+/// <c>IODispatcher::ReadSync</c>, the one funnel a model MISS goes through; its tree is snapshotted on the MAIN
+/// thread because a <c>Model*</c> does not survive an area edge. Every engine read is here, not in <c>Alloy/Mdl/</c>.</summary>
 internal static unsafe class MdlParseCheck
 {
     internal static readonly KnobGroup G;
@@ -171,7 +160,7 @@ internal static unsafe class MdlParseCheck
 
     private static void Snapshot(CX.Engine.Model m, Tree t)
     {
-        IntPtr root = *(IntPtr*)(m.Ptr + EngineLayout.MdlParseModelRoot);
+        IntPtr root = m.Root.Ptr;
         if (root == IntPtr.Zero) return;
         Walk(root, -1, t);
     }
@@ -182,14 +171,16 @@ internal static unsafe class MdlParseCheck
         var n = new MdlNode(node);
         int me = t.Name.Count;
         t.Name.Add(n.NameText ?? "");
-        t.Kind.Add(*(uint*)(node + EngineLayout.MdlNodeKind));
+        uint kind = n.Kind;
+        t.Kind.Add(kind);
         t.Part.Add(n.NodeId);
         t.Parent.Add(parent);
         t.Kids.Add(n.ChildCount);
-        bool mesh = (*(uint*)(node + EngineLayout.MdlNodeKind) & EngineLayout.MdlNodeKindTriMesh) == EngineLayout.MdlNodeKindTriMesh
-                    && *(uint*)(node + EngineLayout.MdlNodeKind) != TriggerKind;
-        t.Verts.Add(mesh ? *(ushort*)(node + EngineLayout.MdlVertexCount) : 0);
-        t.Faces.Add(mesh ? *(int*)(node + EngineLayout.MeshFaceCount) : 0);
+        bool mesh = (kind & EngineLayout.MdlNodeKindTriMesh) == EngineLayout.MdlNodeKindTriMesh
+                    && kind != TriggerKind;
+        var tri = new MdlNodeTriMesh(node);
+        t.Verts.Add(mesh ? tri.VertexCount : 0);
+        t.Faces.Add(mesh ? tri.FaceCount : 0);
         t.CtlAt.Add(t.Ctl.Count);
         int cn = n.ControllerCount;
         IntPtr ctl = n.Controllers;
@@ -197,14 +188,14 @@ internal static unsafe class MdlParseCheck
         if (ctl != IntPtr.Zero && cn > 0 && cn < 4096)
             for (int i = 0; i < cn; i++)
             {
-                IntPtr r = ctl + i * EngineLayout.NewControllerStride;
-                int keys = *(short*)(r + EngineLayout.NewControllerKeyCount);
-                int tk = *(ushort*)(r + EngineLayout.NewControllerTimeKey);
-                int vk = *(ushort*)(r + EngineLayout.NewControllerValueKey);
-                byte fmt = *(byte*)(r + EngineLayout.NewControllerFormat);
+                NewController r = new NewController(ctl)[i];
+                int keys = r.KeyCount;
+                int tk = r.TimeKey;
+                int vk = r.ValueKey;
+                byte fmt = r.Format;
                 int cols = fmt & 0xf;
                 bool bez = (fmt & 0x10) != 0;
-                t.Ctl.Add(*(int*)r);
+                t.Ctl.Add(r.Id);
                 t.Ctl.Add(keys);
                 t.Ctl.Add(cols);
                 t.Ctl.Add(bez ? 1 : 0);

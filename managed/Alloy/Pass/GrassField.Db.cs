@@ -5,20 +5,10 @@ using CX.Engine;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120 seam-feed: <b>the grass field's patches, from the scene database.</b> The engine builds
-/// its grass source at area load -- <c>Scene::InitBins</c> and <c>Scene::AddFacesToBins</c> @0x560ef0 file
-/// every tile face whose material is a grass material into a bin's <c>CAurTriangleList</c>, with a blade count
-/// per face -- and DB mode poisons both slots by design, so there were no bins, no lists and no grass.
-/// <para>This is that walk over the database instead, and the rule is the engine's, term for term: a face is
-/// grass when <c>AurGrassMaterialInUse</c> @0x5b4730 says its own material id is in use (the live
-/// <c>g_GrassInfo</c> record's <c>inUse</c> byte), and it carries
-/// <c>(int)(area * g_GrassInfo[mat].density)</c> blades -- <c>CAurTriangleList::AddTriangle</c> @0x5b5650's
-/// own expression, half the cross product's magnitude times the authored density. Everything after that is
-/// the pass's existing machinery: the faces are baked into the resident face buffer by
-/// <see cref="BakeFaces"/>, and the scatter, cull and draw never learn where they came from.</para>
-/// <para>The geometry is the part's OWN drawn mesh at its own placement, which on a tile is the merge plan's
-/// model-space mesh carrying each member's face surfaces (<c>TileBuild.Concat</c>). That is the same triangle
-/// set the tile draws, so a blade can never stand on a face the frame does not show.</para></summary>
+/// <summary>The grass field's patches, from the scene database. The rule is the engine's, term for term: a
+/// face is grass when <c>AurGrassMaterialInUse</c> @0x5b4730 says its own material id is in use, and it
+/// carries <c>(int)(area * g_GrassInfo[mat].density)</c> blades. The geometry is the part's OWN drawn mesh at
+/// its own placement, so a blade can never stand on a face the frame does not show.</summary>
 internal static unsafe partial class GrassField
 {
     /// <summary>Parts one area may offer grass. A 32x32 outdoor area is a few thousand tile parts; a scene
@@ -132,7 +122,7 @@ internal static unsafe partial class GrassField
         take = false;
         CX.Alloy.Mdl.MeshDef? m = SceneDb.PartMeshDef[p];
         if (m == null || m.Faces.Length == 0 || m.Positions.Length == 0) return;
-        // The WALKMESH, and only the walkmesh. Measured against mode 0 in the same area: the faces the
+        // The WALKMESH, and only the walkmesh. Measured against the engine's own binning in the same area: the faces the
         // engine bins are the tile's walkable surface -- sub-metre triangles carrying the surface material
         // ids the grass table is indexed by (`[face] area=0.9 blades=1` against the drawn ground's
         // `area=50 blades=99`). The drawn ground is two coarse quads per tile, so scattering on it put

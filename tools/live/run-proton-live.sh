@@ -12,7 +12,7 @@
 # Default is the Linux harness's own module, so the shots line up with a `run-live.sh` run of the same name.
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-NWN_DIR="${NWN_DIR:-~/gry/steam/Neverwinter Nights}"
+NWN_DIR="${NWN_DIR:-$(python3 "$ROOT/tools/paths.py" NWN_DIR)}"
 PROTON="${PROTON:-$HOME/.steam/root/steamapps/common/Proton - Experimental/proton}"
 MODULE="The Dark Ranger's Treasure"
 WIDTH=1280; HEIGHT=720; SECONDS_TO_RUN=60; MENU=0; REUSE=0

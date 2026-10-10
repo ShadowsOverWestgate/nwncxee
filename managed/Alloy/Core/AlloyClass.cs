@@ -3,11 +3,10 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// #126 (map #68, spec #114 M3, ADR 0011 "Transparency: classify, don't sort everything"): which Alloy pass
-/// a part draws in. The engine sorts nothing inside a draw bucket (#103) and survives on a 0.2 alpha cutout,
-/// so the Alloy pass PICKS an order rather than reproducing one -- and the pick is this enum.
-/// <para>Declaration order IS draw order, and the staging arrays are sorted on it, so each pass owns a
-/// contiguous batch range.</para>
+/// Which Alloy pass a part draws in. The engine sorts nothing inside a draw bucket and survives on a 0.2
+/// alpha cutout, so the Alloy pass PICKS an order rather than reproducing one -- and the pick is this enum.
+/// Declaration order IS draw order, and the staging arrays are sorted on it, so each pass owns a contiguous
+/// batch range.
 /// </summary>
 internal enum AlloyClass
 {
@@ -22,17 +21,10 @@ internal enum AlloyClass
     /// multiplier below 1 (which is also what a fading tile becomes for the frames it fades). Sorted
     /// back-to-front per part, depth writes OFF.</summary>
     Blended = 2,
-    /// <summary>#129: water. Not a blend mode at all -- a SHADING class, the one the engine routes on
-    /// <c>Material::HasBumpyShinyMap</c> (with <c>g_nEnableBumpyWater</c>) or the <c>.mtr</c>'s
-    /// <c>sample_framebuffer 2</c> (value 1 is the late class and draw bucket 5, a different thing --
-    /// see <c>AlloyCensus.SampleFbLate</c>), both of which land in draw bucket 6
-    /// (<c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880). It sits between blended and additive because
-    /// that is where its INPUT is ready: it samples a copy of the finished frame, and ADR 0011 puts the one
-    /// copy after the blended class (so a fading tile is in it) and before additive (so torch glow is not,
-    /// exactly as in vanilla -- see <see cref="PassId.FbCopy"/>).
-    /// <para>Depth writes stay ON, which is what separates it from <see cref="Blended"/>: the engine draws
-    /// bucket 6 under <c>Enable(0)</c>/<c>Disable(1)</c> and leaves the depth mask alone, and additive drawn
-    /// after it must be able to sit in front of the surface rather than be painted over.</para></summary>
+    /// <summary>Water -- not a blend mode but a SHADING class, the one the engine routes on
+    /// <c>Material::HasBumpyShinyMap</c> or the <c>.mtr</c>'s <c>sample_framebuffer 2</c> (value 1 is the late
+    /// class, a different thing). Drawn between blended and additive because that is where its INPUT, a copy
+    /// of the frame, is ready; depth writes stay ON so additive can sit in front of the surface.</summary>
     Water = 3,
     /// <summary>Destination blend <c>GL_ONE</c> -- the engine's own bucket-4 test. No depth write, and no
     /// sort needed: addition commutes.</summary>
@@ -43,25 +35,10 @@ internal static class AlloyClasses
 {
     internal const int Count = 5;
 
-    /// <summary>Classify a part from the same terms the engine's own predicates read -- <c>Material</c>'s
-    /// destination blend factor (bucket 4's test), <c>PartTriMesh::GetIsOpaque</c>, and the two remaining
-    /// reasons <c>Material::GetIsOpaque</c> @0x4c6190 has for saying "not opaque": the SharedMaterial's
-    /// <c>transparency</c> keyword and a sub-1 alpha. Whatever is left is non-opaque because the DIFFUSE
-    /// carries alpha, which is the cutout majority.
-    /// <para>Deliberately not classified by draw bucket: bucket membership is recomputed every frame
-    /// (a tile starts fading and moves to 8, a wall starts dissolving and moves to 1) while these terms are
-    /// material state. The one bucket that overrides is the tilefade cap -- see <see cref="AlloyClass.Opaque"/>
-    /// -- and the one per-frame overlay is the fade, which the draw loop applies live.</para>
-    /// <para>CX-90: which is also why the late class (<c>sample_framebuffer 1</c>, draw bucket 5) gets no
-    /// class of its own. That keyword asks the engine to draw the part near the end of the frame with the
-    /// framebuffer copy bound, and carries no shading of its own -- so Alloy classifies such a part off the
-    /// terms below like any other, which for the content that uses it (<c>transparency 1</c> glass) is the
-    /// blended class, sorted, rather than vanilla's unsorted late slot.</para></summary>
-    /// <para>#129: <paramref name="water"/> comes first of all, because it is the engine's own precedence --
-    /// <c>AddPartsTreeToDrawBuckets</c> tests bumpy-shiny before it looks at the blend pair, and
-    /// <c>sample_framebuffer == 2</c> before it looks at anything else on the SharedMaterial. Water materials
-    /// do declare a blend pair and are never opaque, so testing it later would file a sea in the blended
-    /// sort.</para>
+    /// <summary>Classify a part from the same terms the engine's own predicates read: the material's
+    /// destination blend factor, <c>PartTriMesh::GetIsOpaque</c>, the <c>transparency</c> keyword and a sub-1
+    /// alpha; what is left is non-opaque because the DIFFUSE carries alpha. <paramref name="water"/> is tested
+    /// first, the engine's own precedence -- water declares a blend pair, so later would file a sea as blended.</summary>
     internal static AlloyClass Of(bool water, bool additive, bool opaque, bool declaredTransparent, bool alphaBelowOne)
         => water ? AlloyClass.Water
          : additive ? AlloyClass.Additive
@@ -69,42 +46,23 @@ internal static class AlloyClasses
          : declaredTransparent || alphaBelowOne ? AlloyClass.Blended
          : AlloyClass.Cutout;
 
-    /// <summary>Does this class draw with <c>GL_BLEND</c> on, using the material's own blend pair?
-    /// <para>The three sorted classes, and NOT cutout. #126 put cutout on the blending side, reasoning that
-    /// the engine draws bucket 1 under <c>Enable(0)</c> + <c>Enable(1)</c> (#103's pass table) and that NWN
-    /// foliage is not binary -- 45-69% of a shipped ivy texture's texels sit between alpha 0.2 and 0.9, and
-    /// drawn unblended those become SOLID. Both halves are true and the conclusion was still wrong, because
-    /// cutout also keeps its DEPTH WRITE, and #357 is what those two together look like: a graded texel lets
-    /// the destination through AND stamps depth, so every leaf edge is a hole with the sky in it that then
-    /// rejects the leaves, branches and trees drawn behind it. The class is unsorted by construction, so
-    /// which surface wins each fringe pixel is submission order -- a tree cutting a sky-coloured outline
-    /// through itself.</para>
-    /// <para>Partial transparency and depth writing cannot both be had at this price. Grass has drawn under
-    /// exactly this rule since #127 ("no grass fragment is ever partially transparent AND depth-writing")
-    /// and this is the rest of the class catching up: a texel over the discard is opaque, which is what an
-    /// alpha test has always meant. The soft vine edge is the thing given up, and ADR 0011 already names
-    /// what buys it back -- alpha-to-coverage, which needs the multisampled target the Alloy frame does not
-    /// yet bind.
-    /// <para>ponytail: hard edges on graded foliage. Upgrade path is A2C on an MSAA target, not blending
-    /// this class back on.</para></para></summary>
+    /// <summary>Does this class draw with <c>GL_BLEND</c> on, using the material's own blend pair? The three
+    /// sorted classes, and NOT cutout: a cutout keeps its depth write, and a graded texel that both blends and
+    /// stamps depth punches sky-coloured holes through foliage. ponytail: hard edges on graded foliage; the
+    /// upgrade path is coverage (<see cref="CoverageLayer"/>, opt-in per material), not blending cutout.</summary>
     internal static bool Blends(int cls) => cls != (int)AlloyClass.Opaque && cls != (int)AlloyClass.Cutout;
 
-    /// <summary>The engine's <c>fAlphaDiscardValue</c> for this class (<c>inc_common.shd:593</c>,
-    /// <c>GLRender::SetUniforms</c> @0x4ccbf0: 0.2 when <c>Enable(1)</c> is on, -1.0 when it is not).
-    /// The pass list maps onto it exactly: buckets 1 and 8 draw with the discard on, 0/4/7 with it off.
-    /// A blended part keeps the cutout too -- bucket 8 is drawn under <c>Enable(1)</c>, and a fading tile
-    /// is a bucket-8 part.</summary>
-    /// <para>#129: water joins the no-discard side. The engine draws bucket 6 under <c>Disable(1)</c>
-    /// (<c>Scene::RenderSinglePass</c> @0x46e5f0), and a water fragment's alpha is coverage the shader
-    /// computes rather than anything the diffuse carries -- a 0.2 test on it would punch holes in shallows.</para>
+    /// <summary>The engine's <c>fAlphaDiscardValue</c> for this class (<c>GLRender::SetUniforms</c> @0x4ccbf0:
+    /// 0.2 under <c>Enable(1)</c>, -1.0 otherwise). Cutout and blended get the test -- a fading tile is a
+    /// bucket-8 part, drawn under <c>Enable(1)</c> -- while opaque, additive and water get none: water's alpha
+    /// is coverage the shader computes, so a 0.2 test on it would punch holes in shallows.</summary>
     internal static float Discard(int cls) => cls == (int)AlloyClass.Opaque || cls == (int)AlloyClass.Additive
         || cls == (int)AlloyClass.Water ? -1f : 0.2f;
 
-    /// <summary>Off-device: the classifier's precedence, which is the one thing about it that cannot be read
-    /// off a single line. Additive beats opacity (an additive material is never opaque anyway, but the
-    /// engine tests the blend factor FIRST and so must we, or additive content lands in the blended sort and
-    /// pays one); opacity beats both transparency terms; and a texture-alpha part with nothing declared is a
-    /// cutout, which is the majority of NWN content and the reason the missing sort survives at all.</summary>
+    /// <summary>Off-device: the classifier's precedence, the one thing about it not readable off a single
+    /// line. Additive beats opacity (the engine tests the blend factor first), opacity beats both transparency
+    /// terms, and a texture-alpha part with nothing declared is a cutout -- the majority of NWN content, and
+    /// the reason the missing sort survives at all.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "AlloyClasses.SelfCheck");

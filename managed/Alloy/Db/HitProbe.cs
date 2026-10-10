@@ -7,17 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-118's live instrument: what the ENGINE's hit test costs and what it answers, measured in a real
-/// session, so the CX implementation's own benchmark has something to be compared against.
-/// <para>In Alloy mode the scene database is the only scene (CX-120) and there is nothing to compare -- the
-/// cast IS <see cref="HitTest"/>. Until that lands, every pick still goes through <c>Scene::HitCheck</c>
-/// @0x462960, and this chains it: counts the calls, times them, reads the engine's own BSP-node counter
-/// (<c>counthitcheckscenebspnode</c>) and prints the first few records field by field at the offsets
-/// <c>EngineLayout</c> declares. A record printed here that does not match the decompile is the one way a
-/// wrong offset row could otherwise ship silently.</para>
-/// <para>Armed by <c>alloy.hitcheck</c>; off, nothing is installed. The hook is COLD by nature (a handful of
-/// picks and camera casts per frame) but still allocation-free past the first
-/// <see cref="DumpMax"/> records.</para></summary>
+/// <summary>A live instrument on the engine's own <c>Scene::HitCheck</c> @0x462960, to measure what
+/// <see cref="HitTest"/> has to beat: counts the calls, times them, reads the engine's BSP-node counter
+/// (<c>counthitcheckscenebspnode</c>) and prints the first records field by field at the offsets
+/// <c>EngineLayout</c> declares, so a wrong offset row cannot ship silently. Armed by <c>alloy.hitcheck</c>.</summary>
 internal static unsafe class HitProbe
 {
     /// <summary>Records printed in full before the probe goes quiet. Enough to see a hit, a miss and a
@@ -30,13 +23,10 @@ internal static unsafe class HitProbe
     private static float* _minDoorAlpha;
     private static int _dumped;
 
-    /// <summary>Which cast this is. Averaging them together is what made the first measurement useless:
-    /// <c>Scene::HitCheck</c>'s callers include <c>PartEmitter::moveParticle*</c> (one per particle per
-    /// frame), <c>ComputeZValue</c> (six per creature), the camera spring arm (six to eight per frame) and
-    /// the pickers -- and only the last is what a CX pick has to beat. The buckets are the engine's own
-    /// input fields: a PICK is box-only (<c>+0x20 != 0</c>, which only the pickers set), a GROUND cast is
-    /// statics-only (<c>+0x00 != 0</c>: <c>ComputeZValue</c> and the top-down feedback branch), and
-    /// everything else is a geometry RAY.</summary>
+    /// <summary>Which cast this is; averaging them together makes the measurement useless, because
+    /// <c>Scene::HitCheck</c>'s callers include <c>PartEmitter::moveParticle*</c>, <c>ComputeZValue</c> and the
+    /// camera spring arm, and only the pickers are what a CX pick must beat. Bucketed on the record's own input
+    /// fields: PICK is box-only (<c>+0x20 != 0</c>, only the pickers set it), GROUND statics-only (<c>+0x00</c>).</summary>
     private enum Kind { Pick, Ground, Ray, Count }
     private static readonly long[] _calls = new long[(int)Kind.Count];
     private static readonly long[] _hits = new long[(int)Kind.Count];
@@ -63,9 +53,8 @@ internal static unsafe class HitProbe
         _staticTri = (int*)Native.Sym(SymbolMap.HitcheckStaticTrimesh);
         _groundPlane = (int*)Native.Sym(SymbolMap.EnableNonBspGroundHit);
         _chain = hooks.ChainSceneHitCheck(&OnHitCheck, Priority);
-        // CX-118: the OTHER end of the +9. A floor cast that never arrives is invisible to the slot probe,
-        // so this names ComputeZValue's early-out instead: which area the creature resolved, that area's
-        // CAurScene word, and whether CX knows that pointer as a live scene shell.
+        // A floor cast that never arrives is invisible to the slot probe, so this names ComputeZValue's
+        // early-out instead.
         _origZ = hooks.InstallComputeZValue(&OnComputeZ);
         log.Info(_chain != null
             ? $"HitProbe: armed on Scene::HitCheck (mindooralpha={HitTest.MinDoorAlpha:F3}, "
@@ -87,10 +76,8 @@ internal static unsafe class HitProbe
         int r = _chain != null && *_chain != null ? (*_chain)(scene, from, to, hit, info) : 0;
         long dt = Stopwatch.GetTimestamp() - t0;
         int k = (int)Bucket(info);
-        // CX-120's +9: a GROUND cast (CHitInfo+0x00 != 0) is ComputeZValue's shape, and it is the one whose
-        // answer DB mode has to reproduce. Dump those in full, with the caller chain, so the arm that
-        // answered in the engine is named rather than inferred.
-        // The budget is per scene: a new area gets its own, so a transition is always captured.
+        // A GROUND cast (CHitInfo+0x00 != 0) is ComputeZValue's shape, the one the scene database has to
+        // reproduce; the budget is per scene, so a transition is always captured.
         if (scene != _floorScene) { _floorScene = scene; _floorLeft = FloorMax; }
         if (k == (int)Kind.Ground && _floorLeft > 0) Floor(info, r, from, to);
         _calls[k]++;
@@ -108,8 +95,9 @@ internal static unsafe class HitProbe
     private static Kind Bucket(nint info)
     {
         if (info == 0) return Kind.Ray;
-        if (*(int*)(info + EngineLayout.HitInfoBoxOnly) != 0) return Kind.Pick;
-        if (*(int*)(info + EngineLayout.HitInfoMode) != 0) return Kind.Ground;
+        var h = new CHitInfo(info);
+        if (h.BoxOnly != 0) return Kind.Pick;
+        if (h.Mode != 0) return Kind.Ground;
         return Kind.Ray;
     }
 
@@ -117,10 +105,10 @@ internal static unsafe class HitProbe
     private static nint _zArea;
     private static int _zSaid, _zSentinel;
 
-    /// <summary>CX-118: <c>ComputeZValue</c>'s inputs, before it decides whether to cast at all. The three
-    /// early-outs that leave the 9.0 sentinel are a null area, a null <c>CNWCArea+0x248</c> and a
-    /// <c>GetTile</c> miss; the first two are readable here, and the third is implied when a cast with a live
-    /// scene still never reaches the seam. Budgeted per AREA so a transition is always captured.</summary>
+    /// <summary><c>ComputeZValue</c>'s inputs, before it decides whether to cast at all. The three early-outs
+    /// that leave the 9.0 sentinel are a null area, a null <c>CNWCArea+0x248</c> and a <c>GetTile</c> miss; the
+    /// first two are readable here, and the third is implied when a cast with a live scene never reaches the
+    /// seam. Budgeted per AREA so a transition is always captured.</summary>
     [UnmanagedCallersOnly]
     private static void OnComputeZ(nint self, nint area, nint pos, float f, nint outv)
     {
@@ -135,7 +123,7 @@ internal static unsafe class HitProbe
         bool sentinel = after.Z == 9f;
         if (!head && !(sentinel && _zSentinel < 12)) return;
         if (sentinel) _zSentinel++;
-        nint scene = area != 0 && EngineLayout.AreaScene >= 0 ? *(nint*)(area + EngineLayout.AreaScene) : 0;
+        nint scene = area != 0 ? new CNWCArea(area).Scene.Ptr : 0;
         string known = "area NULL";
         if (area != 0)
         {
@@ -162,33 +150,29 @@ internal static unsafe class HitProbe
                    + $"in=({before.X:F2},{before.Y:F2},{before.Z:F2}) -> z={after.Z:F3} | {tile}");
     }
 
-    /// <summary>Floor casts to dump in full before the probe goes quiet. One area transition issues a
-    /// handful; this covers several transitions.</summary>
-    /// <summary>Floor casts dumped per AREA. ComputeZValue fires every step of a walk, so a single
-    /// budget is spent long before the first transition -- and the transition is the interesting part.</summary>
+    /// <summary>Floor casts dumped per AREA. ComputeZValue fires every step of a walk, so one budget for the
+    /// session is spent long before the first transition -- and the transition is the interesting part.</summary>
     private const int FloorMax = 60;
     private static int _floorLeft = FloorMax;
     private static nint _floorScene;
     private static int* _staticTri, _staticBsp, _groundPlane;
 
-    /// <summary>CX-120: ONE ComputeZValue-shaped floor cast, named end to end -- who asked, the segment, the
-    /// three static-arm globals as they stood at the call, and what came back. The question it answers is
-    /// which of <c>Scene::HitCheck</c>'s arms gives vanilla a floor on a tile whose model carries no
-    /// <c>aabb</c> walkmesh: kind 1 is the BSP/static pass (and the part name says which of its three lists),
-    /// kind 2 is the GOB pass over the tile objects' own trimesh.</summary>
+    /// <summary>ONE ComputeZValue-shaped floor cast, named end to end -- who asked, the segment, the three
+    /// static-arm globals as they stood at the call, and what came back. It answers which of
+    /// <c>Scene::HitCheck</c>'s arms gives vanilla a floor on a tile whose model carries no <c>aabb</c>
+    /// walkmesh: kind 1 is the BSP/static pass (the part name says which list), kind 2 the GOB pass.</summary>
     private static void Floor(nint info, int r, VectorArg from, VectorArg to)
     {
-        byte* p = (byte*)info;
-        int kind = *(int*)(p + EngineLayout.HitInfoKind);
+        var h = new CHitInfo(info);
+        int kind = h.Kind;
         string who = CX.Alloy.Seam.SeamCallers.Chain(4);
         // Only ComputeZValue's own casts: the mode bit is also set by the top-down feedback branch, and
         // mixing the two would answer a different question than the one being asked.
         if (who.Length > 0 && who.IndexOf("ComputeZValue", StringComparison.Ordinal) < 0) return;
         _floorLeft--;
-        nint gob = *(nint*)(p + EngineLayout.HitInfoGob);
-        nint name = *(nint*)(p + EngineLayout.HitInfoPartName);
-        var pt = *(Vec3*)(p + EngineLayout.HitInfoPoint);
-        var nr = *(Vec3*)(p + EngineLayout.HitInfoNormal);
+        nint gob = h.Gob;
+        nint name = h.PartName;
+        Vector3 pt = h.Point, nr = h.Normal;
         Vec3 a = from.Value, b = to.Value;
         string obj = "-";
         if (gob != 0)
@@ -199,7 +183,7 @@ internal static unsafe class HitProbe
         }
         _log?.Always($"[floorcast] kind={kind} r={r} from=({a.X:F2},{a.Y:F2},{a.Z:F2}) to=({b.X:F2},{b.Y:F2},{b.Z:F2}) "
                    + $"hit=({pt.X:F3},{pt.Y:F3},{pt.Z:F3}) nrm=({nr.X:F2},{nr.Y:F2},{nr.Z:F2}) "
-                   + $"face={*(int*)(p + EngineLayout.HitInfoFace)} surface=0x{*(long*)(p + EngineLayout.HitInfoSurface):x} "
+                   + $"face={h.Face} surface=0x{h.Surface:x} "
                    + $"gob=0x{gob:x} {obj} part={(name != 0 ? Marshal.PtrToStringAnsi(name) : "-")} "
                    + $"globals: statictri={(_staticTri != null ? *_staticTri : -1)} "
                    + $"staticbsp={(_staticBsp != null ? *_staticBsp : -1)} "
@@ -207,29 +191,27 @@ internal static unsafe class HitProbe
     }
 
     /// <summary>One engine record, field by field at the offsets <c>EngineLayout</c> declares -- the live
-    /// cross-check on the CX-118 layout rows.</summary>
+    /// cross-check on those layout rows.</summary>
     private static void Dump(nint info, int r, Kind k)
     {
         _dumped++;
-        byte* p = (byte*)info;
-        var pt = *(Vec3*)(p + EngineLayout.HitInfoPoint);
-        var lp = *(Vec3*)(p + EngineLayout.HitInfoLocalPoint);
-        var nr = *(Vec3*)(p + EngineLayout.HitInfoNormal);
-        nint name = *(nint*)(p + EngineLayout.HitInfoPartName);
-        _log?.Info($"[hitprobe] {k} r={r} kind={*(int*)(p + EngineLayout.HitInfoKind)} "
-                 + $"mode={*(int*)(p + EngineLayout.HitInfoMode)} mask=0x{*(long*)(p + EngineLayout.HitInfoSurfaceMask):x} "
-                 + $"box={*(int*)(p + EngineLayout.HitInfoBoxOnly)} inside={*(int*)(p + EngineLayout.HitInfoRejectInside)} "
-                 + $"skipchr={p[EngineLayout.HitInfoSkipCharacters]} dooralpha={p[EngineLayout.HitInfoDoorAlpha]} "
-                 + $"ignore={*(int*)(p + EngineLayout.HitInfoIgnoreCount)} "
+        var h = new CHitInfo(info);
+        Vector3 pt = h.Point, lp = h.LocalPoint, nr = h.Normal;
+        nint name = h.PartName;
+        _log?.Info($"[hitprobe] {k} r={r} kind={h.Kind} "
+                 + $"mode={h.Mode} mask=0x{h.SurfaceMask:x} "
+                 + $"box={h.BoxOnly} inside={h.RejectInside} "
+                 + $"skipchr={h.SkipCharacters} dooralpha={h.DoorAlpha} "
+                 + $"ignore={h.IgnoreCount} "
                  + $"pos=({pt.X:F2},{pt.Y:F2},{pt.Z:F2}) local=({lp.X:F2},{lp.Y:F2},{lp.Z:F2}) "
-                 + $"nrm=({nr.X:F2},{nr.Y:F2},{nr.Z:F2}) face={*(int*)(p + EngineLayout.HitInfoFace)} "
-                 + $"surface=0x{*(long*)(p + EngineLayout.HitInfoSurface):x} safeIdx={*(int*)(p + EngineLayout.HitInfoSafeIndex)} "
-                 + $"gob=0x{*(nint*)(p + EngineLayout.HitInfoGob):x} trigger=0x{*(long*)(p + EngineLayout.HitInfoTrigger):x} "
+                 + $"nrm=({nr.X:F2},{nr.Y:F2},{nr.Z:F2}) face={h.Face} "
+                 + $"surface=0x{h.Surface:x} safeIdx={h.SafeIndex} "
+                 + $"gob=0x{h.Gob:x} trigger=0x{h.Trigger:x} "
                  + $"part={(name != 0 ? Marshal.PtrToStringAnsi(name) : "-")}");
     }
 
-    /// <summary>The period line: the engine's own per-cast cost, which is the number CX-118's
-    /// <c>HitTest.Bench</c> has to beat, and a PASS/FAIL verdict against it.</summary>
+    /// <summary>The period line: the engine's own per-cast cost, which is the number <c>HitTest.Bench</c> has
+    /// to beat, and a PASS/FAIL verdict against it.</summary>
     internal static string Period()
     {
         long total = _calls[0] + _calls[1] + _calls[2];

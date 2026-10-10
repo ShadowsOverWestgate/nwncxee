@@ -7,11 +7,9 @@ namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// The per-window chat state as key/value pairs: rect, toggles, input side, send channel, look (colours,
-/// animation, outline, timestamps) and the ordered tab list, one <see cref="WindowConfig"/> per window.
-/// Window keys use <c>w&lt;N&gt;.</c> prefixes, tab keys <c>w&lt;N&gt;.t&lt;M&gt;.</c>; the pairs live in the
-/// <c>chat</c> group's Hidden bag (<see cref="ChatKnobs.Windows"/>) and reach <c>cx.cfg</c> through it. The
-/// globals that used to sit beside them are knobs now (<c>ui.font</c>, <c>chat.tellopen</c>). Pure -- no native
-/// refs -- so it round-trips off-device in <see cref="SelfCheck"/>.
+/// animation, outline, timestamps) and the ordered tab list, one <see cref="WindowConfig"/> per window. Window
+/// keys use <c>w&lt;N&gt;.</c> prefixes, tab keys <c>w&lt;N&gt;.t&lt;M&gt;.</c>; the pairs live in the <c>chat</c>
+/// group's Hidden bag (<see cref="ChatKnobs.Windows"/>). Pure, so <see cref="SelfCheck"/> round-trips it off-device.
 /// </summary>
 public sealed class ChatConfig
 {

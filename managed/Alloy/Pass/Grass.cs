@@ -4,23 +4,11 @@ namespace CX.Alloy;
 
 /// <summary>The <c>grass</c> group (spec §4.3), and the storage <see cref="GrassField"/> reads: one
 /// declaration per dial, bound from <c>cx.cfg</c> on first touch, set by <c>/grass</c> or the panel. The
-/// Restart rows are read through <c>Boot</c>. Touched from
-/// <see cref="RenderCommands.Register"/> so the group declares at Initialize, on the main thread, whether or
-/// not the pass arms.
-/// <para>Why the defaults: <c>windspeed</c> is a dial rather than a derivation -- uTimeOfDay is the engine's
-/// worldtimerTimeOfDay int and the stock wind shaders divide it by five-digit per-material constants, so
-/// there is no one divisor to inherit. <c>soften</c> is a mip bias, the knob to reach for LAST (a positive
-/// bias on a 2x2 atlas averages neighbouring blade variants); <c>aniso</c> earns its keep because grass is
-/// looked at edge-on. <c>push</c> 1 flung a blade a full height sideways, a blast crater rather than parted
-/// grass. <c>cullshrink</c> below 1 fringes an object rather than stopping at a hard line; <c>cullmax</c>
-/// exists for the tree, whose box is its CANOPY. #355's ladder: inside <c>lod</c> every blade draws; past
-/// it a patch draws the <c>Keep</c> prefix of its shuffled blades (never below <c>lodmin</c>), widened by
-/// <c>keep^-lodwidth</c> and grown by <c>keep^-lodheight</c>; <c>shade</c> is where the fragment stage
-/// stops taking the taps; <c>far</c> overrides the player's grass-distance option (the engine clamps that at
-/// 173u). <c>softedge</c> = the masked-core-plus-blended-fringe foliage technique, needs the prepass.</para></summary>
+/// Restart rows are read through <c>Boot</c>. Touched from <see cref="RenderCommands.Register"/> so the group
+/// declares at Initialize, on the main thread, whether or not the pass arms.</summary>
 internal static class Grass
 {
-    /// <summary><see cref="Style"/>'s values: CX-24's procedural blades (default), or the atlas cards.</summary>
+    /// <summary><see cref="Style"/>'s values: procedural blades (default), or the atlas cards.</summary>
     internal const int StyleBlades = 0, StyleTextures = 1;
 
     internal static readonly KnobGroup G;

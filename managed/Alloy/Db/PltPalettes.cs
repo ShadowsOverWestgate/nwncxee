@@ -6,30 +6,10 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-117: the <b>master palette</b> -- one texture that holds every PLT colour in the game, built
-/// exactly as the engine builds its own.
-/// <para><c>AurSetPalette(slot, resref)</c> @0x485190 grows a single buffer to <c>(slot+1)*256</c> rows of
-/// <see cref="Width"/> RGBA entries, reads the palette TGA, flips it vertically
-/// (<c>ImageFlipY</c>) and copies it in at <c>slot &lt;&lt; 18</c> -- that is 256 rows x 256 entries x 4
-/// bytes per slot, so <b>a palette slot owns 256 rows whatever the file's height</b> (the shipped files are
-/// 256x176). <c>AurCreatePaletteTexture</c> @0x4874d0 then makes one <c>CAurTextureBasic</c>
-/// ("masterPalette") of width 256, height <c>paletteheight</c>, 4 bytes per pixel out of it.</para>
-/// <para>The engine's seven slots, set in <c>CAuroraInterface::CAuroraInterface</c> @0x1124ac0 (the same
-/// seven lines appear in <c>CNWCModule</c> and <c>CNWCMessage</c>): 0 <c>pal_skin01</c>, 1
-/// <c>pal_hair01</c>, 2 <c>pal_armor01</c>, 3 <c>pal_armor02</c>, 4 <c>pal_cloth01</c>, 5
-/// <c>pal_leath01</c>, 6 <c>pal_tattoo01</c>. The shipped files are all 256x176 RGBA TGAs: 256 intensity
-/// columns by the 176 NWN colour indices.</para>
-/// <para>Which PLT layer uses which slot is the GAME layer's decision and is NOT a table in the binary -- it
-/// is the <c>| 0x&lt;slot&gt;00</c> immediate in each scheme builder. For the record (read off
-/// <c>CNWCCreatureAppearance::CreateCloak</c> @0x736c90 / <c>CreateBodyParts</c> @0x734440 and
-/// <c>CNWCItem::UpdateIcons</c> @0x7cbc50): layer 0 skin -&gt; 0, 1 hair -&gt; 1, 2/3 metal1/metal2 -&gt;
-/// <b>2 for a creature, 3 for an item</b>, 4/5 cloth1/cloth2 -&gt; 4, 6/7 leather1/leather2 -&gt; 5, 8/9
-/// tattoo1/tattoo2 -&gt; 6. Alloy does not need it: it stores the row the game computed.</para>
-/// <para><b>Why that matters for the per-instance data:</b> a scheme entry is a GLOBAL row into this one
-/// buffer -- <c>slot*256 + colour</c> -- not a (palette, colour) pair. <c>Material::ReplaceTexturePLT</c>
-/// @0x4c7a10 proves it: for the GPU composite it stores <c>rows[i] / 1792.0</c>, and 1792 is exactly
-/// 7 x 256. So Alloy stores the engine's own integers per object (<see cref="PltColors"/>) and does no
-/// layer-to-palette mapping of its own; the game layer that sets the colours already did it.</para></summary>
+/// <summary>The <b>master palette</b> -- one texture holding every PLT colour, built as <c>AurSetPalette</c>
+/// @0x485190 builds it: one buffer of <c>(slot+1)*256</c> rows of <see cref="Width"/> RGBA entries, each palette
+/// TGA flipped vertically and copied in at <c>slot &lt;&lt; 18</c>, so <b>a slot owns 256 rows whatever the
+/// file's height</b>. A scheme entry is a GLOBAL row, <c>slot*256 + colour</c>, which the game layer computed.</summary>
 internal static unsafe class PltPalettes
 {
     /// <summary>Palette slots the engine declares, and the rows each one owns -- <c>slot &lt;&lt; 18</c>

@@ -4,16 +4,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary><c>/alloy bench</c>: the GPU-cost A/B, run by the renderer instead of by hand in chat. With the camera
-/// held still it steps a fixed list of settings, lets each settle for <see cref="BenchSettle"/> frames, measures
-/// <see cref="BenchMeasure"/> more (frame time, the colour-bracket GPU span, the lit colour terms, every GPU term,
-/// the shadow bake), restores every knob it touched and logs one <c>[bench]</c> line per step against the first.
-/// <para>After the knob steps come the CX-188 ABLATION steps: each runs one compute pass compiled with
-/// <c>CX_ABLATE n</c> (<see cref="AblateProgram"/>), which stops the shader after rung n. Two rungs' GPU terms
-/// differ by exactly the stage between them, so the ladder prices a pass whose total is known and whose shape is
-/// not -- and the <c>[bench] ablation:</c> line at the end states each stage's own cost, so the reader does no
-/// arithmetic. The variants are built lazily, on the first step that asks for one, and the shipped program is
-/// bound again at every step boundary and at finish.</para></summary>
+/// <summary><c>/alloy bench</c>: the GPU-cost A/B. With the camera held still it steps a fixed list of settings,
+/// settles <see cref="BenchSettle"/> frames, measures <see cref="BenchMeasure"/> more (frame time, the colour
+/// bracket's GPU span, every GPU term, the shadow bake), restores every knob it touched and logs one
+/// <c>[bench]</c> line per step against the first; then the <see cref="_benchAbl"/> ablation ladder.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     private const int BenchSettle = 45, BenchMeasure = 150;
@@ -35,7 +29,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Each step's GPU-span delta against the baseline, for the finish notice's three biggest savings.</summary>
     private static double[]? _benchSaved;
 
-    // ---- CX-188: the ablation ladder ---------------------------------------------------------------------
+    // ---- the ablation ladder ---------------------------------------------------------------------
     /// <summary>Which pass an ablation step rebuilds. The GPU term each one is read off is
     /// <see cref="BenchAblTerm"/>.</summary>
     private const int AblLights = 0, AblShadows = 1, AblDebt = 2, AblBlended = 3, AblProbe = 4;
@@ -93,6 +87,11 @@ public sealed unsafe partial class AlloyRenderer
     private static GpuTerm BenchAblTerm(int pass)
         => pass == AblLights ? GpuTerm.Deferred : pass == AblShadows ? GpuTerm.DeferredShadow
          : pass == AblDebt ? GpuTerm.PairDebt : pass == AblBlended ? GpuTerm.Blended : GpuTerm.Deferred;
+    /// <summary>The ladder site a step's pass swaps its program at: the probe steps are the deferred walk's
+    /// own program, higher up its ladder.</summary>
+    private static int AblSite(int pass)
+        => pass == AblShadows ? Ablation.Shadows : pass == AblDebt ? Ablation.Debt
+         : pass == AblBlended ? Ablation.Lit : Ablation.Lights;
     private static string BenchLabel(int step)
         => step < _benchSteps!.Length ? _benchSteps[step].Label : _benchAbl[step - _benchSteps.Length].Label;
 
@@ -114,42 +113,39 @@ public sealed unsafe partial class AlloyRenderer
             ("baseline", Array.Empty<(int, string)>()),
             ("shadow.soft 0 (no contact-hardening search, no disc)", new[] { (0, "0") }),
             ("shadow.taps 0 (no cube soft filter)", new[] { (9, "0") }),
-            // CX-188 step 3: on the deferred path this also stands the per-pixel visibility record down, so
-            // the step reads as "no record, every light one hardware tap" there.
+            // On the deferred path this also stands the per-pixel visibility record down: the step reads
+            // as "no record, every light one hardware tap" there.
             ("shadow.cap 0 (every light one hard tap, no deferred shadow record)", new[] { (10, "0") }),
             ("shadow.deferredres full (the per-pixel shadow record at full resolution)", new[] { (32, "1") }),
-            // CX-188 budget: the per-pixel SHADOW budget. 0 is the pre-budget path -- every shadowing light
-            // tapped, which is what the walk's hardware tap for a pixel's fifth light used to cost -- and 1 is
-            // the budget's floor, one shadow a pixel.
+            // The per-pixel shadow budget: 0 taps every shadowing light, 1 is the floor, one shadow a pixel.
             ("shadow.perpixel 1 (one shadowed light a pixel)", new[] { (34, "1") }),
             ("shadow.perpixel 0 (no per-pixel shadow budget: every light tapped)", new[] { (34, "0") }),
             ("shadow.cubedist 5 (cube shadows ~off)", new[] { (1, "5") }),
             ("shadow.cubedist 15", new[] { (1, "15") }),
             ("light.bincap 8", new[] { (2, "8") }),
             ("light.binreach 0.5", new[] { (3, "0.5") }),
-            // CX-188 budget: light.floor, the PER-LIGHT reach cut. 0 is the authored radius (what binreach
-            // alone used to leave); the coarse step is the one that actually shortens an ordinary lamp, and
-            // what it costs in look is the question the pair answers.
+            // The per-light reach cut: 0 is the authored radius, and the coarse step is the one that
+            // actually shortens an ordinary lamp.
             ("light.floor 0 (no perceptual reach cut: every light to its authored radius)", new[] { (35, "0") }),
             ("light.floor 0.002 (a coarse, just-visible reach cut)", new[] { (35, "0.002") }),
             ("light.relevance 0", new[] { (11, "0") }),
-            // CX-188 budget: the lighting LOD, off by default. The pair is the trade: what the refinements cost
+            // budget: the lighting LOD, off by default. The pair is the trade: what the refinements cost
             // on the faint tail, and what the frame looks like without them.
             ("light.fullmodel 0.05 (plain falloff under 5% of the brightest light)", new[] { (36, "0.05") }),
             ("light.fullmodel 0.25 (plain falloff under a quarter of the brightest)", new[] { (36, "0.25") }),
             ("light.hidden 0 (no mirror walk of baked statics)", new[] { (13, "0") }),
-            // CX-188: the whole move, read against the lit colour terms -- off puts the point-light loop back
+            // the whole move, read against the lit colour terms -- off puts the point-light loop back
             // inside the lit stage and the deferred dispatch does nothing.
             ("light.deferred 0 (forward point-light loop in the lit stage)", new[] { (30, "0") }),
             ("light.lightrec 0 (blended fragments on a deferred surface walk the lights again)", new[] { (12, "0") }),
             ("light.deferredtiles 1 (deferred pass on its own per-tile cull, not the froxel lists)", new[] { (31, "1") }),
             ("lightmap.movertaps 0 (hot lights: ray test only, no light body or shadow reads)", new[] { (29, "0") }),
-            // CX-188 step 4: the pair tiles and the screen-space debt they feed. 0 is the whole feature off --
+            // The pair tiles and the screen-space debt they feed. 0 is the whole feature off --
             // the deferred frame then owes the baked receivers nothing and every static light keeps its page;
             // 4 is the per-mover budget's ceiling, which is what the atlas and the debt walk cost at worst.
             ("lightmap.moverlights 0 (deferred: no creature shadows from baked lights)", new[] { (33, "0") }),
             ("lightmap.moverlights 4 (deferred: four pair tiles per creature)", new[] { (33, "4") }),
-            // CX-188 ablation: the whole HOT/mover path. On a deferred frame this knob removes THREE things --
+            // The whole hot/mover path. On a deferred frame this knob removes THREE things --
             // the pair-tile bakes (the shadow-bake meter on every line below), the pair-debt dispatch (its own
             // GPU term, split further by the pairdebt ladder), and the cluster build's hot gate, which shortens
             // every froxel's live run. The step above removes the first two alone, so the difference between
@@ -173,7 +169,7 @@ public sealed unsafe partial class AlloyRenderer
             ("ao.on 0", new[] { (19, "0") }),
             ("light.ssrplanar 0", new[] { (7, "0") }),
             ("light.ssr 0 + ssrplanar 0", new[] { (6, "0"), (7, "0") }),
-            // CX-188: oit 2 tests depth in the shader (no early-Z), so every blended fragment behind a wall is shaded
+            // oit 2 tests depth in the shader (no early-Z), so every blended fragment behind a wall is shaded
             ("alloy.oit 1 (weighted OIT: hardware depth test, no lists)", new[] { (37, "1") }),
             ("alloy.oit 0 (sorted blending, no OIT)", new[] { (37, "0") }),
             ("alloy.scale 0.5 (GPU unbound: frame = CPU)", new[] { (8, "0.5") }),
@@ -200,7 +196,7 @@ public sealed unsafe partial class AlloyRenderer
         while (_benchStep >= 0)
         {
             for (int i = 0; i < _benchKnobs!.Length; i++) _benchKnobs[i].Parse(_benchWas![i]);
-            DeferredLights.Ablate(0); DeferredShadows.Ablate(0); PairDebt.Ablate(0); Programs.BlendAblate(0);
+            Ablation.Restore(_log);
             if (_benchStep < _benchSteps!.Length)
             {
                 foreach ((int k, string v) in _benchSteps[_benchStep].Set) _benchKnobs[k].Parse(v);
@@ -209,9 +205,7 @@ public sealed unsafe partial class AlloyRenderer
             }
             int a = _benchStep - _benchSteps.Length;
             (string label, int pass, int rung) = _benchAbl[a];
-            bool ok = pass == AblLights || pass == AblProbe ? DeferredLights.Ablate(rung)
-                    : pass == AblShadows ? DeferredShadows.Ablate(rung)
-                    : pass == AblDebt ? PairDebt.Ablate(rung) : Programs.BlendAblate(rung);
+            bool ok = Ablation.Rung(AblSite(pass), rung, _log);
             if (ok) { _benchFrame = 0; return; }
             _log?.Always($"AlloyRenderer: [bench] {label}: REFUSED -- that ablation variant did not link (the driver's "
                        + "own log is above); the pass kept its shipped program and the step is skipped");
@@ -249,7 +243,7 @@ public sealed unsafe partial class AlloyRenderer
         double bake = bakeN > 0 && CasterPass.ShadowGpuSum >= _benchBake0 ? (CasterPass.ShadowGpuSum - _benchBake0) / (double)bakeN / 1e6 : 0.0;
         if (_benchStep == 0) { _benchBaseBlend = blend; _benchBaseFrame = frame; _benchBaseSpan = span; _benchBaseLit = lit; _benchBaseAll = all; _benchBaseBake = bake; }
         _benchSaved![_benchStep] = span - _benchBaseSpan;
-        // CX-188: an ablation step's own pass term, and the cost of the stage this rung added over the last.
+        // an ablation step's own pass term, and the cost of the stage this rung added over the last.
         string stage = "";
         if (_benchStep >= _benchSteps!.Length)
         {
@@ -316,7 +310,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void BenchFinish(string why)
     {
         for (int i = 0; i < _benchKnobs!.Length; i++) _benchKnobs[i].Parse(_benchWas![i]);
-        DeferredLights.Ablate(0); DeferredShadows.Ablate(0); PairDebt.Ablate(0); Programs.BlendAblate(0);
+        Ablation.Restore(_log);
         int done = _benchStep;
         _benchStep = -1;
         BenchAblSummary();

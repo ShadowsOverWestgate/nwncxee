@@ -7,28 +7,16 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120: <b>the same frame, dumped from both scene layers, so the two can be diffed column by
-/// column.</b>
-/// <para>DB mode renders the same area darker and framed differently from mode 0, and eliminating one
-/// hypothesis per live run costs a run each and only ever says what the fault is NOT. This says what differs:
-/// one frame, every input the picture is a function of -- camera, frame uniforms, the light list as the
-/// cluster pass receives it, and the full draw record of a handful of parts picked the SAME way in both runs
-/// -- printed as <c>key=value</c> lines that <c>diff</c> can line up.</para>
-/// <para>Parts are picked by WORLD POSITION, not by slot: the two layers number their slots differently and
-/// nothing else makes "the same tile" mean the same thing in both dumps.</para>
-/// <para>Armed by <c>alloy.framediff</c> = the pass number to dump at (0 = off). A pass number rather than a
-/// toggle because the first pass of a session is before the camera is placed -- the settled frame is the one
-/// worth comparing, and twice now a one-shot at pass 1 has sent me after the wrong thing.</para></summary>
+/// <summary>One frame, dumped as <c>key=value</c> lines <c>diff</c> can line up: every input the picture is a
+/// function of -- camera, frame uniforms, the light list as the cluster pass receives it, the full draw record
+/// of a handful of parts picked by WORLD POSITION rather than by slot, so two dumps name the same tile. Armed
+/// by <c>alloy.framediff</c> = the pass to dump at, counted from the area edge (0 = off).</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>CX-120: <c>CxKeyhole</c>'s inputs and its verdict, re-evaluated ON THE CPU from the very
-    /// uniform values the frame uploads, in BOTH modes, so the two can be diffed term by term. A GPU readback
-    /// is not an option on this driver (any readback waits out the whole queued frame), and the formula is
-    /// short enough to transcribe exactly -- which is the point: the first term that differs is the bug.
-    /// <para>Evaluated at a representative ROOF texel: directly above the player, one tile up. The screen-space
-    /// terms (the aperture disc) are skipped because they are a function of gl_FragCoord and cannot differ
-    /// between modes at the same camera; what CAN differ, and what this prints, is every uniform the cut
-    /// depends on and the FLOOR clamp, which gates the whole thing.</para></summary>
+    /// <summary><c>CxKeyhole</c>'s inputs and its verdict, re-evaluated ON THE CPU from the very uniform values
+    /// the frame uploads -- a GPU readback is not an option on this driver, where any readback waits out the
+    /// whole queued frame. Taken at a representative ROOF texel directly above the player; the screen-space
+    /// aperture disc is a function of gl_FragCoord, so what prints is the uniforms and the FLOOR clamp.</summary>
     private static void KeyholeTerms(Action<string> P)
     {
         ShaderExposedRuntimeData rt = Rt;
@@ -52,16 +40,13 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     private static bool _diffDone;
-    /// <summary>World passes since the last area edge. <c>Counters._frames</c> cannot serve: it is the PERIOD
-    /// counter and is reset every reporting period, so it never reaches a knob value past one period's length
-    /// -- <c>alloy.framediff=1200</c> and <c>2400</c> simply never fired, and 400 fired on whatever period
-    /// happened to be running during the load screen. Counted here, reset by
-    /// <see cref="AlloyRenderer.AreaEdge"/>, so the knob means "N world passes after this area came up" in
-    /// both modes and the two dumps are of comparable frames.</summary>
+    /// <summary>World passes since the last area edge, reset by <see cref="AlloyRenderer.AreaEdge"/>, so the
+    /// knob means "N world passes after this area came up". <c>Counters._frames</c> cannot serve: it is the
+    /// PERIOD counter, reset every reporting period, so it never reaches a value past one period's length.</summary>
     private static long _diffPass;
 
-    /// <summary>CX-120 bring-up: everything the camera-follow object (the PC) carries, so a focus Z that
-    /// disagrees with mode 0 names the column that holds it. DB mode only.</summary>
+    /// <summary>Everything the camera-follow object (the PC) carries, so a wrong focus Z names the column that
+    /// holds it.</summary>
     private static string DbFollowDump()
     {
         DbId cam = SceneInputs.DbWorldCamera;
@@ -88,8 +73,7 @@ public sealed unsafe partial class AlloyRenderer
         if (want <= 0 || _diffDone) return;
         if (++_diffPass < want) return;
         _diffDone = true;
-        string m = "db";
-        void P(string s) => _log?.Always($"[framediff.{m}] {s}");
+        void P(string s) => _log?.Always($"[framediff] {s}");
 
         // ---- (1) camera ----
         ref readonly AlloyView v = ref AlloyCamera.WorldView;
@@ -104,16 +88,13 @@ public sealed unsafe partial class AlloyRenderer
         P($"fi.areaAmb={F3(FrameInputs.AreaAmbient)} has={FrameInputs.HasAreaAmbient}");
         P($"fi.areaDif={F3(FrameInputs.AreaDiffuse)} has={FrameInputs.HasAreaDiffuse} dir={F3(FrameInputs.AreaDiffuseDir)}");
         P($"fi.sun={F3(FrameInputs.SunDir)} has={FrameInputs.HasSun}");
-        // The engine's OWN area uniforms, which are renderer state rather than scene memory: the one row that
-        // says whether a DB frame could simply READ the pair instead of deriving it.
+        // The engine's OWN area uniforms: renderer state rather than scene memory.
         P($"engine.area {FrameRead.EngineAreaTerms()}");
         KeyholeTerms(P);
-        // The AREA's own palette, the game-layer source of the diffuse term: printed in both modes so the
-        // derived value above can be checked against what the area file actually says.
+        // The AREA's own palette, the game-layer source of the diffuse term: what the derived value above is
+        // checked against.
         CNWCArea dbg = SceneInputs.CurrentArea();
-        // Which object is the fog actually in? The area's own Scene pointer and the scene facade this view
-        // drew from, with each one's fog words: a null area scene and a live facade are different faults, and
-        // the row cannot tell them apart.
+        // A null area scene and a live facade are different faults, so both fog words are printed.
         if (!dbg.IsNull)
         {
             Scene asc = dbg.Scene;
@@ -145,8 +126,7 @@ public sealed unsafe partial class AlloyRenderer
               + $"amb={FrameInputs.AreaLightAmbient[i]} static={FrameInputs.AreaLightStatic[i]}");
         }
 
-        // ---- (4) the same parts, both runs: the five NEAREST THE PLAYER, so the two dumps line up on the
-        // region the picture question is about rather than on a corner of the map ----
+        // ---- (4) the five parts NEAREST THE PLAYER, so two dumps line up on the region in question ----
         Vector3 anchor = Rt.Ptr != 0 ? Rt.PlayerPos : _eyePos;
         int n = 0;
         Span<int> pick = stackalloc int[SampleParts];
@@ -156,10 +136,8 @@ public sealed unsafe partial class AlloyRenderer
             {
                 int i = _order[k];
                 if (_oTri[i] == IntPtr.Zero) continue;
-                // NEAREST THE PLAYER, not lowest world coordinate. The old key sorted on the model
-                // translation ascending, so both modes faithfully sampled the same five parts -- all of them
-                // border-ring tiles at the far corner of the area, which can say nothing about the room the
-                // question is about. The player is the one anchor both layers agree on.
+                // NEAREST THE PLAYER, not lowest world coordinate: sorting on the model translation samples
+                // border-ring tiles at the far corner of the area, which say nothing about the room in question.
                 float dx = _oBx[i] - anchor.X, dy = _oBy[i] - anchor.Y, dz = _oBz[i] - anchor.Z;
                 float kq = dx * dx + dy * dy + dz * dz;
                 if (n < SampleParts) { pick[n] = i; key[n] = kq; n++; }
@@ -170,7 +148,7 @@ public sealed unsafe partial class AlloyRenderer
                     if (kq < key[worst]) { pick[worst] = i; key[worst] = kq; }
                 }
             }
-        // insertion sort the sample so both runs print it in the same order
+        // insertion sort the sample so every dump prints it in the same order
         for (int a = 1; a < n; a++)
         {
             int pi = pick[a]; float pk = key[a]; int b = a - 1;
@@ -196,15 +174,9 @@ public sealed unsafe partial class AlloyRenderer
                       + $"count={_dCount[i]} base={_dBase[i]} off={(long)_dOff[i]}");
             }
         // ---- (5) the BLENDED population, named ----
-        // Picked by NODE NAME, which both layers can produce cheaply and which means the same thing in each:
-        // mode 0 reads it off the engine MdlNode the slot enrolled, DB off the part's model. This is what
-        // lets one blended plane be compared lane for lane across the two runs. It is also what settles WHICH
-        // record a complaint is about: the invisible-helper population is full of same-shaped planes, and the
-        // dump that named `sam` in a T_Door also named eight PB_BUT_* button hilites with the same lanes.
-        // The OWNERSHIP TABLE, not _order: the order array is DB mode's own, and walking it in mode 0 prints
-        // slots nothing staged (every lane zero), which is a dump that compares nothing.
-        // NEAREST THE PLAYER, for the same reason the part sample is: the first N of the ownership table are
-        // whatever the table happens to hold, which in a big area is never the thing on screen.
+        // Picked by NODE NAME off the part's model, which settles WHICH record a complaint is about: the
+        // invisible-helper population is full of same-shaped planes. Walked over the OWNERSHIP TABLE, not
+        // _order, and nearest the player, since the table's first N is never what is on screen in a big area.
         int bn = 0;
         Span<int> bpick = stackalloc int[BlendSample];
         Span<float> bkey = stackalloc float[BlendSample];
@@ -235,8 +207,8 @@ public sealed unsafe partial class AlloyRenderer
                 string node = dbp >= 0
                     ? Db.PartTree.NameOf(dbp)
                     : (_oNode[i] == IntPtr.Zero ? "" : new MdlNode(_oNode[i]).NameText ?? "");
-                // The model and the texture it asked for: a record compared lane for lane across the two
-                // layers is only a diff once both dumps agree on WHICH node they are printing.
+                // The model and the texture it asked for: a record compared lane for lane is only a diff
+                // once both dumps agree on WHICH node they are printing.
                 string model = "", tex = "";
                 if (dbp >= 0)
                 {
@@ -270,14 +242,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Parts reported down the centre ray. The roof is one of the first few.</summary>
     private const int KhProbe = 6;
 
-    /// <summary>CX-120: <b>what the screen centre is actually looking at, and whether the keyhole would cut
-    /// it.</b> Every other keyhole row is about the camera's terms; this one is about the SURFACE -- the
-    /// staged parts the centre ray pierces, nearest first, each with the enable bit the stage wrote, the
-    /// record's own dissolve lane, and <c>CxKeyhole</c> re-evaluated at that fragment on the CPU.
-    /// <para>Printed in both modes from the same walk, so "mode 0 punches this surface and DB does not" is one
-    /// diff rather than two guesses. The noise term is taken at its mean (0,5): the simplex field is a
-    /// function of the world point and cannot shift a verdict by more than its own 0,35 weight, which the
-    /// printed level shows the margin against.</para></summary>
+    /// <summary>What the screen centre is looking at, and whether the keyhole would cut it: the staged parts
+    /// the centre ray pierces, nearest first, each with the enable bit the stage wrote, the record's dissolve
+    /// lane, and <c>CxKeyhole</c> re-evaluated at that fragment on the CPU. The noise term is taken at its mean
+    /// (0,5) -- its own 0,35 weight bounds how far the simplex field could shift a verdict.</summary>
     private static void KeyholeColumn(Action<string> P)
     {
         ShaderExposedRuntimeData rt = Rt;
@@ -371,7 +339,7 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void Mat(string name, in Matrix4x4 m)
     {
-        _log?.Always($"[framediff.db] {name}=[{m.M11:F4},{m.M12:F4},{m.M13:F4},{m.M14:F4}]"
+        _log?.Always($"[framediff] {name}=[{m.M11:F4},{m.M12:F4},{m.M13:F4},{m.M14:F4}]"
                    + $"[{m.M21:F4},{m.M22:F4},{m.M23:F4},{m.M24:F4}]"
                    + $"[{m.M31:F4},{m.M32:F4},{m.M33:F4},{m.M34:F4}]"
                    + $"[{m.M41:F4},{m.M42:F4},{m.M43:F4},{m.M44:F4}]");

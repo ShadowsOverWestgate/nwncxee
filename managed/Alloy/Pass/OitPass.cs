@@ -3,44 +3,31 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>Order-independent transparency for the blended class, two modes behind <c>/alloy oit</c>.
-/// <para>Mode 1: weighted blended (McGuire &amp; Bavoil 2013). The class draws in ONE pass, unsorted,
-/// depth-tested against the opaque set and writing no depth, into an accumulation pair -- premultiplied
-/// colour times a depth weight (RGBA32F, ONE/ONE) and a revealage product (R16F, ZERO/ONE_MINUS_SRC_COLOR)
-/// -- which <see cref="End"/> composites over the frame in one full-screen draw. Any number of layers
-/// combine; nothing a translucent surface draws can hide another. Approximate: stacked layers blur.</para>
-/// <para>Mode 2 (#490, the default): per-pixel linked lists. Every fragment ALSO appends a (colour, depth) node to an
-/// SSBO behind an atomic per-pixel head, and the resolve sorts each pixel's list and composites it exactly.
-/// The pair is written underneath only while the net is armed (<see cref="NetFrames"/> after an overflow
-/// reads back, or under a pair viz): an armed frame whose node buffer overflows resolves the weighted way with
-/// nothing missing, an unarmed one resolves its truncated lists. The count reads back two frames late with no
-/// CPU wait, so the first overflowing frames of a burst lose their net (CX-7). Heads live in a pixel-indexed
-/// SSBO rather than an image: same atomics, no image binding to add.</para>
-/// <para>Replaces the sorted, depth-writing blended pass and its per-creature one-layer sweep, whose four
-/// depth decisions (opaque prepass, run sweep, colour draw, hi-Z) each punched a hole in a different
-/// scene -- the floor decal under a light shaft, two ghosted creatures on it. Stands down to the old path
-/// when the frame has no owned depth to attach (post not resolving) or a target refused.</para></summary>
+/// <summary>Order-independent transparency for the blended class, two modes behind <c>/alloy oit</c>. Mode 1:
+/// weighted blended (McGuire &amp; Bavoil 2013) -- one unsorted pass, depth-tested and writing no depth, into
+/// an accumulation pair <see cref="End"/> composites in one full-screen draw; approximate, stacked layers
+/// blur. Mode 2 (default): per-pixel linked lists, sorted and composited exactly, with the pair as its net.</summary>
 internal static unsafe class OitPass
 {
     private const uint R16F = 0x822D, RGBA32F = 0x8814;   // not-an-offset: GL internal-format enums
     /// <summary>SSBO binding points of the head table (count at 0, then one head per pixel) and the node pool.</summary>
     private const uint BindHeads = 22, BindNodes = 23;   // 21 is CullPass.BindRej (#489)
     private const int NodeBytes = 16;
-    /// <summary>Mode 2 frames the weighted pair stays written after an overflow reads back (CX-7).
+    /// <summary>Mode 2 frames the weighted pair stays written after an overflow reads back.
     /// ponytail: a fixed ~2 s at 60 fps, unmeasured; tie it to the overflow rate if bursts outlast it.</summary>
     private const long NetFrames = 120;
     /// <summary>Mode 2's object table for the frame: a creature's parts share one id, and the resolve composites
     /// the nearest node of an id once, so a ghosted creature is translucent as a whole rather than per part.
     /// ponytail: 255 ids a frame, first come; a 256th object gets 0 (per-part again). Linear scan, ~100 batches.</summary>
     private static readonly IntPtr[] _gobs = new IntPtr[255];
-    private static int _gobN;
     internal static int GobId(IntPtr gob)
     {
-        if (gob == IntPtr.Zero || !_linked) { _gobZero++; return 0; }
-        for (int i = 0; i < _gobN; i++) if (_gobs[i] == gob) return i + 1;
-        if (_gobN == _gobs.Length) return 0;
-        _gobs[_gobN++] = gob;
-        return _gobN;
+        var g = _gl;
+        if (gob == IntPtr.Zero || !g.Linked) { _gobZero++; return 0; }
+        for (int i = 0; i < g.GobN; i++) if (_gobs[i] == gob) return i + 1;
+        if (g.GobN == _gobs.Length) return 0;
+        _gobs[g.GobN++] = gob;
+        return g.GobN;
     }
     /// <summary>The head table: the node count, then one head per pixel.</summary>
     private static long HeadBytes(int w, int h) => 4L + 4L * w * h;
@@ -52,9 +39,9 @@ internal static unsafe class OitPass
     internal static int Mode => Renderer.Oit.V;
     /// <summary>True while the lit twin that carries the append block (<see cref="WithLists"/>) exists. Without it
     /// mode 2 stands down to the weighted pair: a linked resolve over lists nothing appended to draws nothing.</summary>
-    internal static bool ListsArmed;
+    internal static bool ListsArmed { get => _gl.ListsArmed; set => _gl.ListsArmed = value; }
     /// <summary>True inside a bracket that is resolving through the lists: IssueColour binds the twin then.</summary>
-    internal static bool Linked => _linked;
+    internal static bool Linked => _gl.Linked;
     /// <summary>The define that compiles the append block into a fragment stage, after its #version line.</summary>
     internal static string WithLists(string fs)
     {
@@ -62,63 +49,81 @@ internal static unsafe class OitPass
         if (v < 0) return fs;
         return fs.Insert(fs.IndexOf('\n', v) + 1, "#define CX_OIT_LISTS 1\n");
     }
-    private static uint _fbo, _accum, _reveal, _prog, _nodes;
-    /// <summary>The head table, cleared on the GPU by <see cref="_progClear"/> (a full-screen draw writing zeros)
-    /// rather than by glClearBufferSubData: any CPU-issued write to a buffer the GPU still holds is an implicit
-    /// sync, and one per frame serialised the CPU and GPU -- the plaza's frame rate halved for it.</summary>
-    private static uint _heads, _progClear;
-    private static int _uClearStride;
     /// <summary>The count comes back through a GPU copy into a persistently mapped ring, read two frames later
     /// behind a fence: no GL call in the frame ever waits.</summary>
     private const int ReadSlots = 3;
-    private static uint _readBuf;
-    private static uint* _readMap;
-    private static readonly IntPtr[] _fence = new IntPtr[ReadSlots];
-    private static long _skippedReads, _frame, _netUntil, _netRuns;
-    private static int _w, _h, _uAccum, _uReveal, _uViz, _uMode, _uDim, _uNet, _cap;
+
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name, mapped
+    /// pointer or fence from the dead context survives as a field nobody remembered to zero. The bracket's
+    /// per-frame latches ride here too -- a frame cannot span a context loss.</summary>
+    private sealed class OitState
+    {
+        public uint Fbo, Accum, Reveal, Prog, Nodes;
+        /// <summary>The head table, cleared on the GPU by <see cref="ProgClear"/> (a full-screen draw writing
+        /// zeros) rather than by glClearBufferSubData: any CPU-issued write to a buffer the GPU still holds is
+        /// an implicit sync, and one per frame serialised the CPU and GPU -- the plaza's frame rate halved.</summary>
+        public uint Heads, ProgClear;
+        public int UClearStride;
+        public uint ReadBuf;
+        public uint* ReadMap;
+        public readonly IntPtr[] Fence = new IntPtr[ReadSlots];
+        public long Frame, NetUntil;
+        public int W, H, UAccum, UReveal, UViz, UMode, UDim, UNet, Cap;
+        public bool Failed, ListsFailed, Linked, Net, EngagedLogged;
+        /// <summary>The lit twin that carries the append block: a program name, so the context owns it.</summary>
+        public bool ListsArmed;
+        /// <summary>The frame's own draw framebuffer, read at <see cref="Begin"/> and restored by
+        /// <see cref="End"/>.</summary>
+        public int RestoreFbo;
+        /// <summary>How many object ids this frame's table holds.</summary>
+        public int GobN;
+    }
+
+    private static OitState _gl = new();
+    private static long _skippedReads, _netRuns;
     /// <summary><c>/alloy oitviz</c>: 1 = revealage as grey, 2 = accumulated mean colour, 3 = accumulated weight/10,
     /// 4 = list length/16 (mode 2), 5 = the nearest node's object id as a colour (mode 2). Unblended.</summary>
     internal static int Viz => Renderer.OitViz.V;
-    private static bool _failed, _listsFailed, _linked, _net, _engagedLogged;
     private static ExtenderLog? _log;
     private static long _runs, _linkedRuns, _overflowFrames, _nodesPeak, _nodesSum, _gobPeak, _gobZero;
 
     internal static void Init(ExtenderLog log) => _log = log;
-    /// <summary>The frame's own draw framebuffer, read at <see cref="Begin"/> and restored by <see cref="End"/>.</summary>
-    private static int _restoreFbo;
     /// <summary>A program's <c>uOit</c> (0 outside the bracket, else the mode -- 1 when the lists refused)
     /// and <c>uOitDim</c> (head-table stride in pixels, node capacity), set on bind.</summary>
     internal static void Upload(int locOit, int locDim, bool inBracket)
     {
-        Gl.Uniform1i(locOit, !inBracket ? 0 : _linked ? 2 : 1);
+        var g = _gl;
+        Gl.Uniform1i(locOit, !inBracket ? 0 : g.Linked ? 2 : 1);
         UploadDim(locDim);
     }
     private static void UploadDim(int loc)
     {
-        int* dim = stackalloc int[2] { _w, _cap };
+        var g = _gl;
+        int* dim = stackalloc int[2] { g.W, g.Cap };
         Gl.Uniform2iv(loc, 1, dim);
     }
 
     /// <summary>Open the accumulation pair for the blended range. False = draw the old way this frame.</summary>
     internal static bool Begin(uint depthTex, int* viewport)
     {
-        if (_failed || Mode == 0 || depthTex == 0 || Gl.BlendFunci == null || Gl.DrawBuffers == null) return false;
+        var g = _gl;
+        if (g.Failed || Mode == 0 || depthTex == 0 || Gl.BlendFunci == null || Gl.DrawBuffers == null) return false;
         int w = viewport[0] + viewport[2], h = viewport[1] + viewport[3];
         if (!EnsureTargets(w, h) || !EnsurePrograms()) return false;
-        _linked = Mode == 2 && ListsArmed && EnsureLists(w, h);
-        _gobN = 0;
-        if (_linked) { _frame++; if (ReadOverflow()) _netUntil = _frame + NetFrames; }
-        _net = !_linked || _frame < _netUntil || Viz is >= 1 and <= 3;
-        if (_linked && _net) _netRuns++;
-        int cur; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &cur); _restoreFbo = cur;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        g.Linked = Mode == 2 && ListsArmed && EnsureLists(w, h);
+        g.GobN = 0;
+        if (g.Linked) { g.Frame++; if (ReadOverflow()) g.NetUntil = g.Frame + NetFrames; }
+        g.Net = !g.Linked || g.Frame < g.NetUntil || Viz is >= 1 and <= 3;
+        if (g.Linked && g.Net) _netRuns++;
+        int cur; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &cur); g.RestoreFbo = cur;
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, g.Fbo);
         // Both modes test against the scene depth in hardware, read-only. Nothing in the bracket may SAMPLE it: a
         // depth texture sampled while attached is decompressed by the driver, which taxed the next frame's opaque pass.
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, depthTex, 0);
         uint* bufs = stackalloc uint[2] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1 };
-        if (!_net) { bufs[0] = Gl.NONE; bufs[1] = Gl.NONE; }
+        if (!g.Net) { bufs[0] = Gl.NONE; bufs[1] = Gl.NONE; }
         Gl.DrawBuffers(2, bufs);
-        if (_net)
+        if (g.Net)
         {
             float* zero = stackalloc float[4] { 0f, 0f, 0f, 0f };
             float* one = stackalloc float[4] { 1f, 1f, 1f, 1f };
@@ -129,14 +134,14 @@ internal static unsafe class OitPass
         Gl.Enable(Gl.BLEND);
         Gl.BlendFunci(0, Gl.ONE, Gl.ONE);
         Gl.BlendFunci(1, Gl.ZERO, Gl.ONE_MINUS_SRC_COLOR);
-        if (_linked)
+        if (g.Linked)
         {
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHeads, _heads);
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindNodes, _nodes);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHeads, g.Heads);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindNodes, g.Nodes);
             // last frame's resolve read the table; this frame's clear writes it, then the appends read it
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
-            Gl.UseProgram(_progClear);
-            Gl.Uniform1i(_uClearStride, _w);
+            Gl.UseProgram(g.ProgClear);
+            Gl.Uniform1i(g.UClearStride, g.W);
             Gl.ColorMask(0, 0, 0, 0); Gl.Disable(Gl.DEPTH_TEST);
             Gl.BindVertexArray(PostChain.FullscreenVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
@@ -144,7 +149,7 @@ internal static unsafe class OitPass
             Gl.ColorMask(1, 1, 1, 1); Gl.Enable(Gl.DEPTH_TEST);
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
             _linkedRuns++;
-            if (!_engagedLogged) { _engagedLogged = true; _log?.Info($"OitPass: mode 2 engaged -- {_w}x{_h}, cap {_cap}, heads {_heads}, nodes {_nodes}"); }
+            if (!g.EngagedLogged) { g.EngagedLogged = true; _log?.Info($"OitPass: mode 2 engaged -- {g.W}x{g.H}, cap {g.Cap}, heads {g.Heads}, nodes {g.Nodes}"); }
         }
         _runs++;
         return true;
@@ -153,21 +158,22 @@ internal static unsafe class OitPass
     /// <summary>Read the node count End copied two frames ago, if its fence has passed. True = it overflowed.</summary>
     private static bool ReadOverflow()
     {
-        int slot = (int)((_frame + 1) % ReadSlots);
-        IntPtr fence = _fence[slot];
+        var g = _gl;
+        int slot = (int)((g.Frame + 1) % ReadSlots);
+        IntPtr fence = g.Fence[slot];
         if (fence == IntPtr.Zero) return false;
         bool over = false;
         uint st = Gl.ClientWaitSync(fence, 0, 0);
         if (st == Gl.ALREADY_SIGNALED || st == Gl.CONDITION_SATISFIED)
         {
-            uint count = _readMap[slot];
-            over = count > (uint)_cap;
+            uint count = g.ReadMap[slot];
+            over = count > (uint)g.Cap;
             if (over) _overflowFrames++;
             if (count > _nodesPeak) _nodesPeak = count;
             _nodesSum += count;
         }
         else _skippedReads++;
-        Gl.DeleteSync(fence); _fence[slot] = IntPtr.Zero;
+        Gl.DeleteSync(fence); g.Fence[slot] = IntPtr.Zero;
         return over;
     }
 
@@ -175,77 +181,78 @@ internal static unsafe class OitPass
     /// GL_BLEND on with the depth mask off, the state the passes after the blended class expect to find.</summary>
     internal static void End(int* viewport)
     {
+        var g = _gl;
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, 0, 0);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)_restoreFbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)g.RestoreFbo);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        if (_linked) Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
-        Gl.UseProgram(_prog);
-        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.OitAccum); Gl.BindTexture(Gl.TEXTURE_2D, _accum);
-        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.OitReveal); Gl.BindTexture(Gl.TEXTURE_2D, _reveal);
+        if (g.Linked) Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
+        Gl.UseProgram(g.Prog);
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.OitAccum); Gl.BindTexture(Gl.TEXTURE_2D, g.Accum);
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.OitReveal); Gl.BindTexture(Gl.TEXTURE_2D, g.Reveal);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.Uniform1i(_uAccum, (int)TextureSlots.OitAccum); Gl.Uniform1i(_uReveal, (int)TextureSlots.OitReveal);
-        Gl.Uniform1i(_uViz, Viz);
-        Gl.Uniform1i(_uMode, _linked ? 2 : 1);
-        Gl.Uniform1i(_uNet, _net ? 1 : 0);
-        UploadDim(_uDim);
+        Gl.Uniform1i(g.UAccum, (int)TextureSlots.OitAccum); Gl.Uniform1i(g.UReveal, (int)TextureSlots.OitReveal);
+        Gl.Uniform1i(g.UViz, Viz);
+        Gl.Uniform1i(g.UMode, g.Linked ? 2 : 1);
+        Gl.Uniform1i(g.UNet, g.Net ? 1 : 0);
+        UploadDim(g.UDim);
         new PassState(depth: false, depthWrite: false, blend: Viz == 0,
-                      blendSrc: _linked ? Gl.ONE : Gl.ONE_MINUS_SRC_ALPHA, blendDst: Gl.SRC_ALPHA).Apply();
+                      blendSrc: g.Linked ? Gl.ONE : Gl.ONE_MINUS_SRC_ALPHA, blendDst: Gl.SRC_ALPHA).Apply();
         Gl.BindVertexArray(PostChain.FullscreenVao);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindVertexArray(0);
         // The draw loop tracks the depth test as ON and never re-enables it; the water and additive passes
         // after this one would otherwise draw through every wall.
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.LEQUAL);
-        if (_gobN > _gobPeak) _gobPeak = _gobN;
-        if (_linked)
+        if (g.GobN > _gobPeak) _gobPeak = g.GobN;
+        if (g.Linked)
         {
-            int slot = (int)(_frame % ReadSlots);
+            int slot = (int)(g.Frame % ReadSlots);
             Gl.MemoryBarrier(Gl.BUFFER_UPDATE_BARRIER_BIT);
-            Gl.CopyNamedBufferSubData(_heads, _readBuf, IntPtr.Zero, (IntPtr)(slot * 4), (IntPtr)4);
-            _fence[slot] = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+            Gl.CopyNamedBufferSubData(g.Heads, g.ReadBuf, IntPtr.Zero, (IntPtr)(slot * 4), (IntPtr)4);
+            g.Fence[slot] = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
         }
-        _linked = false;
+        g.Linked = false;
     }
 
     internal static string Stats(int frames)
     {
+        var g = _gl;
         long n = _runs, l = _linkedRuns, nr = _netRuns, o = _overflowFrames, peak = _nodesPeak, sum = _nodesSum, gp = _gobPeak, gz = _gobZero, sk = _skippedReads;
         _runs = 0; _linkedRuns = 0; _netRuns = 0; _overflowFrames = 0; _nodesPeak = 0; _nodesSum = 0; _gobPeak = 0; _gobZero = 0; _skippedReads = 0;
-        if (_failed) return "oit STOOD DOWN";
+        if (g.Failed) return "oit STOOD DOWN";
         if (n == 0) return "oit idle";
-        string s = $"oit {(float)n / System.Math.Max(frames, 1):F2} runs/frame at {_w}x{_h}";
-        if (l > 0) s += $" linked {l} nodes avg {sum / System.Math.Max(l - sk, 1)} peak {peak} ({sk} reads not ready) cap {_cap} overflow {o} frames, net {nr} frames, objects {gp} peak/frame, {gz} ungrouped batches" + (_listsFailed ? " (lists REFUSED)" : "");
+        string s = $"oit {(float)n / System.Math.Max(frames, 1):F2} runs/frame at {g.W}x{g.H}";
+        if (l > 0) s += $" linked {l} nodes avg {sum / System.Math.Max(l - sk, 1)} peak {peak} ({sk} reads not ready) cap {g.Cap} overflow {o} frames, net {nr} frames, objects {gp} peak/frame, {gz} ungrouped batches" + (g.ListsFailed ? " (lists REFUSED)" : "");
         return s;
     }
 
-    internal static void ContextLost()
-    {
-        _fbo = 0; _accum = 0; _reveal = 0; _prog = 0; _progClear = 0; _nodes = 0; _heads = 0; _readBuf = 0; _readMap = null;
-        for (int i = 0; i < ReadSlots; i++) _fence[i] = IntPtr.Zero;
-        _w = 0; _h = 0; _cap = 0; _failed = false; _listsFailed = false; _linked = false; _netUntil = 0;
-    }
+    /// <summary>Context loss: the names, the mapped readback and the fences died with it, so the whole GL
+    /// state goes at once -- the two stand-down latches with it, since a pool the dead context refused may be
+    /// cut on the next one.</summary>
+    internal static void ContextLost() => _gl = new OitState();
 
     private static bool EnsureTargets(int w, int h)
     {
-        if (_accum != 0 && w == _w && h == _h) return true;
+        var g = _gl;
+        if (g.Accum != 0 && w == g.W && h == g.H) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
+        if (g.Fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); g.Fbo = f; }
         // 32-bit: the accumulation is HDR colour times a weight up to 3e3, and a few stacked emissive flame
         // layers overflow fp16 to inf -- which resolved as a white patch over the lamp and the torch.
-        RenderTarget.Create(ref _accum, RGBA32F, w, h, Gl.NEAREST);
-        RenderTarget.Create(ref _reveal, R16F, w, h, Gl.NEAREST);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _accum, 0);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _reveal, 0);
+        RenderTarget.Create(ref g.Accum, RGBA32F, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref g.Reveal, R16F, w, h, Gl.NEAREST);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, g.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, g.Accum, 0);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, g.Reveal, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
-            _failed = true;
+            g.Failed = true;
             _log?.Info($"OitPass: the accumulation target is incomplete (0x{status:x}) -- blended draws the sorted way on this context");
             return false;
         }
-        _w = w; _h = h;
-        _cap = 0;   // the lists are sized to the target; a resize re-cuts them on the next mode-2 frame
+        g.W = w; g.H = h;
+        g.Cap = 0;   // the lists are sized to the target; a resize re-cuts them on the next mode-2 frame
         _log?.Info($"OitPass: accumulation pair {w}x{h} RGBA32F + R16F ready -- blended class is order-independent");
         return true;
     }
@@ -253,65 +260,65 @@ internal static unsafe class OitPass
     /// <summary>The head tables and node pool for mode 2, cut to the current target. Immutable GPU-only stores.</summary>
     private static bool EnsureLists(int w, int h)
     {
-        if (_listsFailed) return false;
+        var g = _gl;
+        if (g.ListsFailed) return false;
         if (Gl.FenceSync == null)
         {
-            _listsFailed = true;
+            g.ListsFailed = true;
             _log?.Info("OitPass: glFenceSync is unresolved -- mode 2 resolves the weighted way on this context");
             return false;
         }
         int cap = w * h * Layers;
-        if (_nodes != 0 && cap == _cap) return true;
-        if (_nodes != 0) { uint* old = stackalloc uint[2] { _nodes, _heads }; Gl.DeleteBuffers(2, old); }
+        if (g.Nodes != 0 && cap == g.Cap) return true;
+        if (g.Nodes != 0) { uint* old = stackalloc uint[2] { g.Nodes, g.Heads }; Gl.DeleteBuffers(2, old); }
         Gl.DrainErrors();   // drain: the refusal test below must see only this allocation
         uint* b = stackalloc uint[2]; Gl.CreateBuffers(2, b);
-        _nodes = b[0]; _heads = b[1];
-        Gl.NamedBufferStorage(_nodes, (IntPtr)((long)(cap + 1) * NodeBytes), null, 0);
-        Gl.NamedBufferStorage(_heads, (IntPtr)HeadBytes(w, h), null, 0);
-        if (_readBuf == 0)
+        g.Nodes = b[0]; g.Heads = b[1];
+        Gl.NamedBufferStorage(g.Nodes, (IntPtr)((long)(cap + 1) * NodeBytes), null, 0);
+        Gl.NamedBufferStorage(g.Heads, (IntPtr)HeadBytes(w, h), null, 0);
+        if (g.ReadBuf == 0)
         {
             const uint flags = Gl.MAP_READ_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
-            uint r; Gl.CreateBuffers(1, &r); _readBuf = r;
-            Gl.NamedBufferStorage(_readBuf, (IntPtr)(ReadSlots * 4), null, flags);
-            _readMap = (uint*)Gl.MapNamedBufferRange(_readBuf, IntPtr.Zero, (IntPtr)(ReadSlots * 4), flags);
+            uint r; Gl.CreateBuffers(1, &r); g.ReadBuf = r;
+            Gl.NamedBufferStorage(g.ReadBuf, (IntPtr)(ReadSlots * 4), null, flags);
+            g.ReadMap = (uint*)Gl.MapNamedBufferRange(g.ReadBuf, IntPtr.Zero, (IntPtr)(ReadSlots * 4), flags);
         }
-        if (_progClear == 0)
+        if (g.ProgClear == 0)
         {
-            _progClear = GlProgram.Graphics(PostChain.FullscreenVs, OitClearFs, _log, "OitPass clear");
-            _uClearStride = GlProgram.Loc(_progClear, "uStride");
+            g.ProgClear = GlProgram.Graphics(PostChain.FullscreenVs, OitClearFs, _log, "OitPass clear");
+            g.UClearStride = GlProgram.Loc(g.ProgClear, "uStride");
         }
-        if (Gl.GetError() != 0 || _readMap == null || _progClear == 0)
+        if (Gl.GetError() != 0 || g.ReadMap == null || g.ProgClear == 0)
         {
-            _listsFailed = true;
+            g.ListsFailed = true;
             _log?.Info($"OitPass: the node pool ({(long)cap * NodeBytes >> 20} MB) or its readback refused -- mode 2 resolves the weighted way on this context");
             return false;
         }
-        _cap = cap;
-        Gl.ZeroBuffer(_heads, HeadBytes(w, h));   // once, before any GPU use: no sync to take
+        g.Cap = cap;
+        Gl.ZeroBuffer(g.Heads, HeadBytes(w, h));   // once, before any GPU use: no sync to take
         _log?.Info($"OitPass: linked lists ready, {cap} nodes ({(long)cap * NodeBytes >> 20} MB, {Layers}/pixel) -- blended class sorts per pixel");
         return true;
     }
 
     private static bool EnsurePrograms()
     {
-        if (_prog != 0) return true;
-        _prog = GlProgram.Graphics(PostChain.FullscreenVs, OitResolveFs, _log, "OitPass resolve");
-        if (_prog == 0) { _failed = true; return false; }
-        _uAccum = GlProgram.Loc(_prog, "uAccum"); _uReveal = GlProgram.Loc(_prog, "uReveal"); _uViz = GlProgram.Loc(_prog, "uViz");
-        _uMode = GlProgram.Loc(_prog, "uMode"); _uDim = GlProgram.Loc(_prog, "uOitDim");
-        _uNet = GlProgram.Loc(_prog, "uNet");
+        var g = _gl;
+        if (g.Prog != 0) return true;
+        g.Prog = GlProgram.Graphics(PostChain.FullscreenVs, OitResolveFs, _log, "OitPass resolve");
+        if (g.Prog == 0) { g.Failed = true; return false; }
+        g.UAccum = GlProgram.Loc(g.Prog, "uAccum"); g.UReveal = GlProgram.Loc(g.Prog, "uReveal"); g.UViz = GlProgram.Loc(g.Prog, "uViz");
+        g.UMode = GlProgram.Loc(g.Prog, "uMode"); g.UDim = GlProgram.Loc(g.Prog, "uOitDim");
+        g.UNet = GlProgram.Loc(g.Prog, "uNet");
         return true;
     }
 
-    /// <summary>Composite. Mode 1: colour = accum.rgb / accum.a (the weighted mean), alpha = revealage, under
-    /// ONE_MINUS_SRC_ALPHA / SRC_ALPHA. Mode 2: the pixel's list gathered into a depth-sorted local array and
-    /// composited front to back; premultiplied colour plus transmittance under ONE / SRC_ALPHA. A list longer
-    /// than the array spills its farthest nodes into an unsorted tail behind the sorted ones, and a frame
-    /// whose count passed the capacity takes the mode 1 branch when the net wrote the pair, else composites
-    /// the truncated lists.</summary>
     /// <summary>Zero the head table and the count from the GPU, one texel per pixel. Colour writes are masked
     /// by the caller, so this is a buffer write with a rasteriser for an index generator.</summary>
     internal static string OitClearFs => ShaderSource.Get("cx_oitclear_f.glsl");
 
+    /// <summary>Composite. Mode 1: colour = accum.rgb / accum.a (the weighted mean), alpha = revealage, under
+    /// ONE_MINUS_SRC_ALPHA / SRC_ALPHA. Mode 2: the pixel's list gathered into a depth-sorted local array and
+    /// composited front to back, premultiplied colour plus transmittance under ONE / SRC_ALPHA; a list longer
+    /// than the array spills its farthest nodes into an unsorted tail behind the sorted ones.</summary>
     internal static string OitResolveFs => ShaderSource.Get("cx_oitresolve_f.glsl");
 }

@@ -11,12 +11,10 @@ using CX.Services.Chat.Core.Model;
 namespace CX.Services.Chat.Render;
 
 /// <summary>
-/// Chat-coupled owned-render pass (map #13). Owns the per-window <see cref="Frame"/> publish/animation
-/// buffering and drives the shared <see cref="TextRig"/> primitives (program, atlas, VAO/VBO rig,
-/// portrait rig) to draw the chat windows inside the SwapBuffers hook. Callers build a batch cold
-/// (ingest/input/resize thread) via <see cref="VertexBatch"/> and <see cref="Publish(RenderFrame[])"/>;
-/// the hot <see cref="Draw"/> only uploads-if-changed and issues one <c>glDrawArrays</c> per window,
-/// allocating nothing in steady state. The generic drawing primitives live in <see cref="TextRig"/>.
+/// Chat-coupled owned-render pass. Owns the per-window <see cref="Frame"/> publish/animation buffering and
+/// drives the shared <see cref="TextRig"/> primitives (program, atlas, VAO/VBO rig, portrait rig) to draw the
+/// chat windows inside the SwapBuffers hook. Callers build a batch cold (ingest/input/resize thread) via
+/// <see cref="VertexBatch"/>; the hot <see cref="Draw"/> uploads-if-changed, one draw per window, zero-alloc.
 /// </summary>
 public static unsafe class ChatRenderer
 {
@@ -28,13 +26,10 @@ public static unsafe class ChatRenderer
 
     private static bool _diagged;              // one-shot: log GL error + viewport on the first drawn frame
 
-    /// <summary>A published frame: the built <see cref="RenderFrame"/> plus a per-frame
-    /// <see cref="Scratch"/> buffer (same length, allocated cold at publish). The hot draw copies the base
-    /// verts into scratch and applies the fade/slide there, so it allocates nothing and a concurrent
-    /// <see cref="Publish(RenderFrame[])"/> can never hand the animator a half-built array.
-    /// <see cref="Settled"/>/<see cref="OpaqueCount"/> track the settled-frame cache (#53): when all span
-    /// alphas are stable (0 or 1) and residual is 0, Scratch holds the correct data from the last ApplyAnim
-    /// and subsequent draws skip the copy+fade walk.</summary>
+    /// <summary>A published frame: the built <see cref="RenderFrame"/> plus a per-frame <see cref="Scratch"/>
+    /// buffer (same length, allocated cold at publish). The hot draw copies the base verts into scratch and
+    /// fades them there, so it allocates nothing and a concurrent publish can never hand the animator a half-built
+    /// array. <see cref="Settled"/>/<see cref="OpaqueCount"/>: stable alphas let a draw skip that walk.</summary>
     private sealed class Frame
     {
         public readonly RenderFrame Rf;
@@ -43,18 +38,17 @@ public static unsafe class ChatRenderer
         public int OpaqueCount;
         public Frame(RenderFrame rf, float[] scratch) { Rf = rf; Scratch = scratch; }
     }
-    /// <summary>All published frames (one per chat window, #41). Volatile-swapped atomically by
+    /// <summary>All published frames (one per chat window). Volatile-swapped atomically by
     /// <see cref="Publish(RenderFrame[])"/>; the hot <see cref="Draw"/> iterates the snapshot.</summary>
     private static volatile Frame[] _frames = System.Array.Empty<Frame>();
 
     private static int _drawCount;
     private static bool _portraitDrew;   // one-shot: log the first portrait that actually binds a live TID
 
-    /// <summary>Publish frames for all chat windows (#41). Reuses the <see cref="Frame"/> wrapper (and its
-    /// Scratch buffer + Settled state) when the <see cref="RenderFrame"/> is reference-equal to a prior
-    /// publish, so a focusedOnly/dirty rebuild avoids LOH scratch allocations for unchanged windows (#53).
-    /// Changed frames recycle an old scratch buffer when one is large enough (each claimed at most once),
-    /// always wrapped in a fresh <see cref="Frame"/> (Settled=false) so the hot draw never tears Rf+Scratch.</summary>
+    /// <summary>Publish frames for all chat windows. Reuses the <see cref="Frame"/> wrapper (and its Scratch
+    /// buffer + Settled state) when the <see cref="RenderFrame"/> is reference-equal to a prior publish, so a
+    /// focusedOnly/dirty rebuild avoids LOH scratch allocations. A changed frame recycles a large-enough old
+    /// scratch buffer (claimed once) in a fresh <see cref="Frame"/>, so the hot draw never tears Rf+Scratch.</summary>
     public static void Publish(RenderFrame[] rfs)
     {
         Frame[] old = _frames;
@@ -98,10 +92,10 @@ public static unsafe class ChatRenderer
 
     private static bool _demoOn;
     private const string Demo =
-        "<cFFD200>SoW</c> chat -- Ćma œuf ß: <c46C246>Привет</c>, " +
+        "<cFFD200>CX</c> chat -- Ćma œuf ß: <c46C246>Привет</c>, " +
         "<c4AA3FF>мир</c>! now wrap this line across the box.";
 
-    /// <summary>Toggle the hardcoded demo string over the shared primitives (slice #19 owned-render demo).</summary>
+    /// <summary>Toggle the hardcoded demo string over the shared primitives (the owned-render demo).</summary>
     public static bool ToggleDemo()
     {
         if (_atlas == null) { _log?.Info("TextRig: no atlas; can't draw text"); return false; }
@@ -159,8 +153,8 @@ public static unsafe class ChatRenderer
 
     // ---- draw ---------------------------------------------------------------------------------
 
-    /// <summary>Hot: draw all published frames (one per chat window, #41) through the owned GL3 program.
-    /// Applies the fade/slide/scroll (map #13) per frame; the slide residual only moves the focused window's
+    /// <summary>Hot: draw all published frames (one per chat window) through the owned GL3 program.
+    /// Applies the fade/slide/scroll per frame; the slide residual only moves the focused window's
     /// body (<see cref="RenderFrame.ApplyResidual"/>). One GL state save/restore wraps all windows; the VBO
     /// is re-specified per window (N<=4, tiny buffers — negligible bus cost). Zero-alloc in every path.</summary>
     public static void Draw()
@@ -175,7 +169,7 @@ public static unsafe class ChatRenderer
         float globalResidual = ChatAnim.Tick(System.Environment.TickCount64, focusTau);
         System.DateTime now = System.DateTime.UtcNow;
 
-        // #210: no state snapshot. UiHostService resyncs the engine on hand-back; everything below sets the
+        // no state snapshot. UiHostService resyncs the engine on hand-back; everything below sets the
         // full preamble it needs, so nothing here is inherited from another window either.
         Gl.ActiveTexture(Gl.TEXTURE0);
 
@@ -323,7 +317,7 @@ public static unsafe class ChatRenderer
         }
     }
 
-    // ---- portrait pass (#26) ------------------------------------------------------------------
+    // ---- portrait pass ------------------------------------------------------------------
 
     /// <summary>At most this many portraits per frame (bounds the stack scratch below). Far above the
     /// rows a chat body can show; a silent cap, so log if we ever hit it.</summary>
@@ -347,7 +341,7 @@ public static unsafe class ChatRenderer
         // resref) can touch GL and rebind ARRAY_BUFFER, so it must never run between our BindBuffer and
         // BufferData -- keep all resolves ahead of the single upload below. Steady state is a per-frame
         // resman lookup returning a borrowed pointer (verified: no AddRef, no GL on the hit path) + a TID
-        // read; zero GC alloc on our side. We never cache the pointer -- see ResolveTid (#33).
+        // read; zero GC alloc on our side. We never cache the pointer -- see ResolveTid.
         int* tids = stackalloc int[k];
         float* verts = stackalloc float[Floats * 6 * k];
         int drawn = 0;
@@ -383,9 +377,9 @@ public static unsafe class ChatRenderer
     }
 
     /// <summary>Cosmetic reset at a session (module) boundary: re-arm the one-shot first-portrait log for the
-    /// next session. Crash-safety no longer lives here -- the portrait pointer is never cached (see ResolveTid,
-    /// #33), so nothing engine-owned survives a boundary to drop. Does NOT touch GL objects that outlive a
-    /// session (atlas, programs, VAOs/VBOs). Cold, zero-alloc.</summary>
+    /// next session. Nothing engine-owned survives a boundary to drop -- the portrait pointer is never cached
+    /// (see ResolveTid). Does NOT touch GL objects that outlive a session (atlas, programs, VAOs/VBOs). Cold,
+    /// zero-alloc.</summary>
     public static void ClearSessionState()
     {
         _portraitDrew = false;   // let the next session log its first live portrait again
@@ -408,7 +402,7 @@ public static unsafe class ChatRenderer
         if (_attrVerts == null || _attrEpoch != TextRig.AtlasEpoch) { BuildAttribution(); _attrEpoch = TextRig.AtlasEpoch; }
         if (_attrCount == 0) return;
 
-        // #210: no state snapshot. UiHostService resyncs the engine on hand-back; everything below sets the
+        // no state snapshot. UiHostService resyncs the engine on hand-back; everything below sets the
         // full preamble it needs, so nothing here is inherited from another window either.
         Gl.ActiveTexture(Gl.TEXTURE0);
 

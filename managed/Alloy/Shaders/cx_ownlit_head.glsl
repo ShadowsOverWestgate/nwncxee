@@ -110,7 +110,7 @@ const int CX_SLOT_FLOW = 32;
 // TWO modifiers, not one: fLegacyEnvMapSpecularityModifier 8.0 and fLegacyEnvMapRoughnessModifier
 // 3.0 (:60-62). Sharing 8.0 would saturate the roughness curve at envLevel 0.125 and render every
 // legacy shiny surface at the floor. 3.0 is the OLD generation's value, which is the one this client
-// runs (#107 s11); the split-include fork in sow-topdata says 2.5.
+// runs (#107 s11); the newer split-include generation says 2.5.
 const float CX_ENV_SPEC_MAX = 0.98, CX_ENV_SPEC_SCALE = 8.0, CX_ENV_ROUGH_SCALE = 3.0;
 // inc_standard.shd:250-252: the albedo is desaturated toward this grey in proportion to reflectivity,
 // so the reflection is not counted twice. DISPLAY space -- the engine does it before the :253 linearise.

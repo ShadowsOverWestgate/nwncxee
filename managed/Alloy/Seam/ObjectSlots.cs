@@ -11,7 +11,7 @@ namespace CX.Alloy.Seam;
 /// <summary>The engine's <c>Vector</c> as it is laid out and passed: three floats. SysV classifies both
 /// eightbytes SSE, so it arrives in xmm0:xmm1 with no hidden buffer; Win64 passes anything over 8 bytes by
 /// reference. Declaring it by value is correct on both -- NativeAOT lowers it per platform -- which is why only
-/// by-value RETURNS need a per-OS declaration (CX-183 section 4).</summary>
+/// by-value RETURNS need a per-OS declaration.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct EVec
 {
@@ -33,13 +33,10 @@ public struct EQuat
     public static EQuat Identity => new() { W = 1f };
 }
 
-/// <summary>CX-120 seam-obj: the <c>CAurObject</c> interface (80 slots) and the <c>Gob</c>-only slots the game
-/// reaches (14), over <see cref="SceneDb"/>. One <c>[UnmanagedCallersOnly]</c> static per slot; the slot index
-/// is the Linux one and <see cref="SeamVtables"/> places it at the Windows index.
-/// <para>Every body follows the same three steps: resolve the handle (a retired or alien pointer takes the
-/// poison path and the slot returns zero), do the column work, and -- for a setter -- keep the shell's
-/// mirrored word current and mark one <see cref="Dirty"/> bit. Nothing here allocates: game code calls these
-/// per frame on the game thread, where a NativeAOT collection would land in the frame.</para></summary>
+/// <summary>The <c>CAurObject</c> interface (80 slots) and the <c>Gob</c>-only slots the game reaches (14),
+/// over <see cref="SceneDb"/>: one <c>[UnmanagedCallersOnly]</c> static per slot, declared at the LINUX index
+/// and placed at the Windows one by <see cref="SeamVtables"/>. A body resolves the handle (retired or alien
+/// poisons), works the columns, mirrors the shell word and marks a <see cref="Dirty"/> bit; never allocates.</summary>
 public sealed unsafe partial class ObjectSlots : ISeamProvider
 {
     /// <summary>The three ±10000 seeds <c>Gob::GetMinimumBoundingBox()</c> @0x436f60 writes before it asks the
@@ -134,10 +131,9 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
     private static void Destruct(nint self) => Destroy(self, freeing: false);
 
     /// <summary>The DELETING destructor (Linux slot 1, and the one Windows destructor slot after the pair
-    /// collapses). This is the half that frees: <c>Gob::~Gob</c> @0x4443c0 is the body plus
-    /// <c>operator delete(this, 0x4c0)</c>, where @0x444140 is the body alone. The split is not cosmetic --
-    /// a caller that invokes the complete-object destructor (slot 0) expects the storage to SURVIVE, and
-    /// retiring there poisons a shell the game goes on using.</summary>
+    /// collapses): the half that frees. <c>Gob::~Gob</c> @0x4443c0 is the body plus
+    /// <c>operator delete(this, 0x4c0)</c>, @0x444140 the body alone -- and a caller that invokes the
+    /// complete-object destructor (slot 0) expects the storage to SURVIVE, so retiring there poisons a live shell.</summary>
     [UnmanagedCallersOnly]
     private static void DestructDelete(nint self) => Destroy(self, freeing: true);
 
@@ -180,9 +176,8 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
 
     /// <summary>The scene this object was in has been destroyed. The engine's own teardown
     /// (<c>Scene::~Scene</c> @0x472e40) is a loop of <c>Gob::SetScene(child, NULL)</c>, so this DETACHES: the
-    /// object keeps its record, its parts and its facade, and the game deletes it when it is ready.
-    /// <para>The shell's +0x88 word goes to 0 with it, which is what the engine's own detach leaves, and what
-    /// every raw reader of that word then sees.</para></summary>
+    /// object keeps its record, its parts and its facade, and the game deletes it when it is ready. The shell's
+    /// +0x88 word goes to 0 with it, which is what the engine's detach leaves for any raw reader of that word.</summary>
     internal static void LeaveDeadScene(DbId id)
     {
         if (!SceneDb.Objects.Valid(id)) return;
@@ -234,12 +229,8 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         SceneDb.ObjSeamFlags[i] = 0;
     }
 
-    /// <summary>Release a <c>CExoArrayList</c> the ENGINE grew inside our shell (the attachment list at
-    /// +0x4a8, which <c>Gob::AddAttachment</c> @0x5424a0 reallocs in place). The array belongs to whichever
-    /// heap grew it, so the rule is the same as for the SafePointer list: free it on Linux, count it on
-    /// Windows, where nwmain statically links its CRT and exports no <c>free</c>.</summary>
     /// <summary>Free the two heap blocks a shell owns -- its callback list and its attach list. Every kind of
-    /// shell has them, so a TEXT object's destroy (CX-119, which runs through the record rather than through
+    /// shell has them, so a TEXT object's destroy (which runs through the record rather than through
     /// <see cref="Destroy"/>) calls this too; without it a string's callback blocks leak.</summary>
     internal static void FreeShellLists(nint shell)
     {
@@ -248,6 +239,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         FreeEngineList(shell + SeamLayout.GobAttachList);
     }
 
+    /// <summary>Release a <c>CExoArrayList</c> the ENGINE grew inside our shell (the attachment list at +0x4a8,
+    /// which <c>Gob::AddAttachment</c> @0x5424a0 reallocs in place). The array belongs to whichever heap grew
+    /// it, so the rule is the SafePointer list's: free it on Linux, count it on Windows, where nwmain statically
+    /// links its CRT and exports no <c>free</c>.</summary>
     private static void FreeEngineList(nint list)
     {
         nint arr = *(nint*)list;
@@ -306,9 +301,9 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         return NativeNames.Of(name);
     }
 
-    /// <summary><c>Gob::Render(bool)</c> @0x452260. In DB mode nothing draws from a per-object call: Alloy
-    /// draws the published snapshot (ADR 0028 section 5), so a direct call is a no-op and is counted. The game
-    /// layer never calls it (the engine's scene does), which is what the count is there to prove.</summary>
+    /// <summary><c>Gob::Render(bool)</c> @0x452260. Nothing draws from a per-object call: Alloy draws the
+    /// published snapshot (ADR 0028 section 5), so a direct call is a no-op and is counted. The game layer
+    /// never calls it (the engine's scene does), which is what the count is there to prove.</summary>
     [UnmanagedCallersOnly]
     private static void Render(nint self, byte shadowPass)
     {
@@ -317,7 +312,7 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
             Facade.Log?.Always("seam: Gob::Render was called directly on a facade -- Alloy draws from the frame snapshot, so the call did nothing");
     }
 
-    /// <summary>Direct <c>Gob::Render</c> calls, which DB mode cannot honour.</summary>
+    /// <summary>Direct <c>Gob::Render</c> calls, which nothing can honour.</summary>
     public static long DirectRenderCalls { get; private set; }
 
     // ---- scene and attachment ----
@@ -346,11 +341,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         return 1;
     }
 
-    /// <summary>Move <paramref name="id"/> into <paramref name="sc"/>: leave whatever scene it was in, join
-    /// the new one, and mirror the scene pointer at the shell's +0x88. <c>DbScene.Join</c> is what actually
-    /// makes it a MEMBER -- the object count word, the draw order, <c>Scene::GetObject</c>, the highlight set
-    /// and the scene destroy all read that list, so writing <c>ObjScene</c> alone leaves a scene that holds
-    /// nothing and answers 0 to <c>GetAurSceneObjectCount</c>.</summary>
+    /// <summary>Move <paramref name="id"/> into <paramref name="sc"/>: leave whatever scene it was in, join the
+    /// new one, and mirror the scene pointer at the shell's +0x88. <c>DbScene.Join</c> is what actually makes it
+    /// a MEMBER -- the object count word, the draw order, <c>Scene::GetObject</c>, the highlight set and the
+    /// scene destroy all read that list, so writing <c>ObjScene</c> alone leaves a scene that holds nothing.</summary>
     internal static void JoinScene(DbId id, nint shell, DbId sc, nint sceneShell)
     {
         DbId was = SceneDb.ObjScene[id.Index];
@@ -362,15 +356,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         PropagateScene(id, shell, sc, sceneShell);
     }
 
-    /// <summary>Carry a scene change down the attachment tree. The engine did it through the
-    /// <c>"UpdateScenes"</c> event: every <c>CAurBehaviorAttach</c> registers <c>UpdateScenesAttach</c>
-    /// @0x49fc70 for <c>"*"</c>, and that handler re-runs the attachment, which re-inherits the parent's
-    /// scene. CX builds no behaviour object, so the walk is here -- and it has to exist, or a control tree
-    /// attached before its panel was activated never learns the scene the panel later got.
-    /// <para>No depth cap, because the engine's recursion has none: a button list chains each row to the row
-    /// before it, so the character sheet's skill list is a chain ~40 deep, and a cap of 16 left every row past
-    /// it in the viewport its page had left (worse the taller the sheet). An explicit stack, so a long chain
-    /// costs no native stack; re-entrant, since each call works above the stack top it found.</para></summary>
+    /// <summary>Carry a scene change down the attachment tree. The engine did it through the <c>"UpdateScenes"</c>
+    /// event each <c>CAurBehaviorAttach</c> registers for; CX builds no behaviour object, so the walk is here, and
+    /// it must exist or a control tree attached before its panel was activated never learns the panel's scene. No
+    /// depth cap (a button list chains ~40 deep), on an explicit stack, re-entrant: each call works above the top.</summary>
     internal static void PropagateScene(DbId id, nint shell, DbId sc, nint sceneShell)
     {
         int floor = _carryTop, steps = 0;
@@ -468,10 +457,8 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
 
     /// <summary><c>Gob::AttachToObject(CAurObject*, char const*, int)</c> @0x43e0e0: ride
     /// <paramref name="parent"/>'s named part, or detach when <paramref name="parent"/> is null. The engine
-    /// returns <c>void*</c> and <c>RemoveAuroraObject</c> only tests it against 0, so the seam answers the
-    /// object's own shell as the non-null token.
-    /// <para>DIFFERENCE: the engine's return is the attachment record it created; nothing in the game layer
-    /// dereferences it (CX-182 section 3), so the seam does not build one.</para></summary>
+    /// returns the attachment record it created, which nothing in the game layer dereferences -- it is only
+    /// tested against 0 -- so the seam builds none and answers the object's own shell as the non-null token.</summary>
     [UnmanagedCallersOnly]
     private static nint AttachToObject(nint self, nint parent, nint partName, int flags)
     {
@@ -497,13 +484,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         SceneDb.Touch(id, Dirty.Tree | Dirty.Xform);
     }
 
-    /// <summary>The LAST statement of both <c>Gob::AttachToObject</c> @0x43e0e0 and
-    /// <c>Gob::AttachToPart</c> @0x43e2a0: <c>SetScene(this, *(Scene**)(parent + 0x88))</c>. Attaching to an
-    /// object INHERITS its scene, and that is how the whole GUI control tree gets one -- a panel attaches
-    /// only its own root model (<c>CGuiPanel::Activate</c> @0x6878b0 calls <c>AttachToScene</c> on
-    /// <c>this+0x10</c> and on nothing else), and every control below it rides in on this line. Without it a
-    /// tab button's <c>GetScene</c> answers NULL and <c>CGuiTabSet::FixRenderOrderHack</c> @0x696fe0 derefs
-    /// it unchecked -- which is exactly the character-select crash.</summary>
+    /// <summary>The LAST statement of both <c>Gob::AttachToObject</c> @0x43e0e0 and <c>Gob::AttachToPart</c>
+    /// @0x43e2a0: <c>SetScene(this, *(Scene**)(parent + 0x88))</c>. Attaching to an object INHERITS its scene,
+    /// and that is how the whole GUI control tree gets one -- a panel attaches only its own root model, and
+    /// every control below it rides in on this line; without it <c>FixRenderOrderHack</c> @0x696fe0 derefs NULL.</summary>
     private static void InheritScene(DbId id, nint shell, DbId parent)
     {
         nint ps = Facade.ObjectShell(parent);
@@ -513,10 +497,8 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
 
     /// <summary>The engine's <c>Gob::AddAttachment</c> @0x5424a0, which only ever ran from a
     /// <c>CAurBehaviorAttach</c> constructor: append <paramref name="child"/> to <paramref name="parent"/>'s
-    /// <c>CExoArrayList&lt;Gob*&gt;</c> at +0x4a8, deduplicated, and stop at 16 as the engine does. CX builds
-    /// no behaviour object, so the seam does it here -- the list is what <c>GetAttachedGobs</c> answers from
-    /// and the game calls that (<c>CNWCCreatureAppearance</c>, <c>CNWCCreature</c>, <c>CNWCObject</c>,
-    /// <c>CNWCPlaceable</c>).</summary>
+    /// <c>CExoArrayList&lt;Gob*&gt;</c> at +0x4a8, deduplicated, and stop at 16 as the engine does. CX builds no
+    /// behaviour object, so the seam does it here -- the list is what <c>GetAttachedGobs</c> answers from.</summary>
     private static void AddAttachment(nint parent, nint child)
     {
         if (parent == 0 || child == 0) return;
@@ -555,13 +537,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         }
     }
 
-    /// <summary>Clear the attachment columns -- what <c>AttachToObject(NULL, "", 0)</c> does, and the first
-    /// half of what <c>RemoveAuroraObject</c> @0x58b210 does to let an object go.</summary>
     /// <summary>The object half of a <c>CAurString</c> attach (that interface's slots 2 and 3, which
-    /// <see cref="TextSlots"/> answers for the record): unlink the text from its old parent's attach list, and --
-    /// once the text record has taken its columns -- link it into the new parent's list and inherit the parent's
-    /// scene, as the last line of <c>Gob::AttachToObject</c> does for any gob. Without it a label never joins
-    /// its panel's scene, so the GUI scenes hold no text and nothing draws it.</summary>
+    /// <see cref="TextSlots"/> answers for the record): unlink the text from its old parent's attach list and,
+    /// once the text record has taken its columns, link it into the new parent's list and inherit the parent's
+    /// scene, as the last line of <c>Gob::AttachToObject</c> does for any gob.</summary>
     internal static void UnlinkText(DbId id) => Detach(id);
 
     /// <inheritdoc cref="UnlinkText"/>
@@ -573,6 +552,8 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         InheritScene(id, shell, parent);
     }
 
+    /// <summary>Clear the attachment columns -- what <c>AttachToObject(NULL, "", 0)</c> does, and the first
+    /// half of what <c>RemoveAuroraObject</c> @0x58b210 does to let an object go.</summary>
     private static void Detach(DbId id)
     {
         DbId was = SceneDb.ObjAttachTo[id.Index];
@@ -646,11 +627,9 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
     public static long SceneLessGets { get; private set; }
 
     /// <summary><c>Gob::GetAttachedGobs(List&lt;CAurObject*&gt;&amp;)</c> @0x439350: append every gob attached
-    /// to this one to the caller's list. The list is <c>{T* array, int count, int capacity}</c> and the engine
-    /// grows it with <c>realloc</c>, so the seam calls the engine's OWN
-    /// <c>CExoArrayList&lt;CAurObject*&gt;::Add</c> @0x4b3540 rather than reallocating across a CRT boundary.
-    /// The source is the shell's attachment list at +0x4a8, which the game's behaviour objects fill through
-    /// <c>Gob::AddAttachment</c> without a vtable.</summary>
+    /// to this one to the caller's list. The list is <c>{T* array, int count, int capacity}</c> grown with
+    /// <c>realloc</c>, so the seam calls the engine's OWN <c>CExoArrayList&lt;CAurObject*&gt;::Add</c> @0x4b3540
+    /// rather than reallocating across a CRT boundary. The source is the shell's attach list at +0x4a8.</summary>
     [UnmanagedCallersOnly]
     private static void GetAttachedGobs(nint self, nint list)
     {
@@ -704,17 +683,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         Flag(id, SeamFlag.Skinned, m != null && SeamBridge.HasSkinnedMesh(m));
     }
 
-    /// <summary><c>Gob::ReattachReference(CAurObject*, char const*)</c> @0x43fc50: walk THIS object's part
-    /// tree and, for every <c>reattachable</c> reference node that has an instance, re-file that INSTANCE as
-    /// a rider of <paramref name="other"/>'s named part -- then turn this object's own local +Z onto the line
-    /// to it. <paramref name="other"/> null puts the instance back on its own reference part.
-    /// <para>This is the beam edge. <c>CNWCVisualEffectOnObject::AttachBeam</c> @0x815a70 attaches the beam
-    /// object to the SOURCE (<c>AttachToObject</c>) and then calls this with the TARGET, so the beam hangs off
-    /// the caster while its reference instance rides the victim; <c>SetEmitterTarget</c> @0x4aa7d0 reads that
-    /// instance back off the reference part and makes it the p2p emitter's target. The seam used to re-attach
-    /// <c>this</c> instead, which moved the whole beam onto the target and left every bolt untargeted.</para>
-    /// <para>DIFFERENCE: the engine also rebuilds the reference node's instance subtree; CX's part tree
-    /// expands references at build time (CX-114), so there is no node to rebuild.</para></summary>
+    /// <summary><c>Gob::ReattachReference(CAurObject*, char const*)</c> @0x43fc50: walk THIS object's part tree
+    /// and re-file every <c>reattachable</c> reference node's instance as a rider of <paramref name="other"/>'s
+    /// named part, then turn this object's local +Z onto the line to it; null puts the instance back. The beam
+    /// edge: the beam hangs off the caster while its instance rides the victim, read back by <c>SetEmitterTarget</c>.</summary>
     [UnmanagedCallersOnly]
     private static void ReattachReference(nint self, nint other, nint partName)
     {
@@ -747,11 +719,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         return r != null && r.Reattachable;
     }
 
-    /// <summary><c>Gob::ReattachReference</c>'s last statement: <c>rot = RotationArc(localZ, at - pos) *
-    /// rot</c>, so a beam model that draws along its own +Z points at where its reference instance went. Both
-    /// positions are the engine's two <c>Gob::GetPosition</c> reads -- <c>Gob+0xa8</c>, which for an
-    /// ATTACHED gob is the world position its attach behaviour last wrote, so the DB reads the composed
-    /// matrix rather than the local offset that column holds.</summary>
+    /// <summary><c>Gob::ReattachReference</c>'s last statement: <c>rot = RotationArc(localZ, at - pos) * rot</c>,
+    /// so a beam model that draws along its own +Z points at where its reference instance went. Both positions
+    /// are the engine's <c>Gob::GetPosition</c> reads of <c>Gob+0xa8</c>, which for an ATTACHED gob is the world
+    /// position its attach behaviour last wrote, so this reads the composed matrix, not that local column.</summary>
     private static void LookAt(DbId id, DbId at)
     {
         Quaternion q = SceneDb.ObjRot[id.Index];
@@ -819,11 +790,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         NoteKind(self, type);
     }
 
-    /// <summary>The game has said what kind of object this is, so the record can carry it: mode 0 answers
-    /// "is this a creature?" by reading <c>Gob+0x498 == 5</c> and walking the attachment chain, and the DB
-    /// path answers it from <see cref="ObjFlag.Creature"/> instead -- one flags read where the engine walked
-    /// up to eight hops. Nothing set the flag before, so every creature record was classed an object and took
-    /// an object's receiver class.</summary>
+    /// <summary>The game has said what kind of object this is, so the record can carry it: the engine answers
+    /// "is this a creature?" by reading <c>Gob+0x498 == 5</c> and walking the attachment chain, and CX answers
+    /// it from <see cref="ObjFlag.Creature"/> instead -- one flags read where the engine walked up to eight
+    /// hops, and the flag is what gives a creature record a creature's receiver class.</summary>
     private static void NoteKind(nint self, int type)
     {
         DbId id = Facade.Object(self, 44);
@@ -848,7 +818,7 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         NoteKind(self, *(int*)(a + SeamLayout.GobExternalType));
     }
 
-    // ---- textures and materials: the work is CX-117's, the seam only resolves and marks ----
+    // ---- textures and materials: the seam only resolves and marks ----
 
     [UnmanagedCallersOnly]
     private static int ReplaceTexture2(nint self, nint from, nint to)
@@ -870,11 +840,10 @@ public sealed unsafe partial class ObjectSlots : ISeamProvider
         return ObjectTex.Replace(id, Str(from), Str(to), 0, subtree != 0, got[..n]);
     }
 
-    /// <summary>Copy the engine's layer rows onto the object's PLT columns (CX-117's
-    /// <c>PltColors.SetRows</c>). A row is the master-palette row for that layer, and the engine's own bound
-    /// is 258 entries. The object's rows are only the fallback a part with none of its own reads; the rows
-    /// that colour a swapped part are pinned on it by <c>ObjectTex.Replace</c>, from <paramref name="dst"/>.
-    /// Returns how many rows <paramref name="dst"/> holds.</summary>
+    /// <summary>Copy the engine's layer rows onto the object's PLT columns (<c>PltColors.SetRows</c>). A row is
+    /// the master-palette row for that layer, and the engine's own bound is 258 entries. The object's rows are
+    /// only the fallback a part with none of its own reads; the rows that colour a swapped part are pinned on
+    /// it by <c>ObjectTex.Replace</c>, from <paramref name="dst"/>. Returns how many rows it holds.</summary>
     private static int PltRows(DbId id, int layers, nint rows, Span<int> dst)
     {
         if (rows == 0 || layers <= 0) return 0;

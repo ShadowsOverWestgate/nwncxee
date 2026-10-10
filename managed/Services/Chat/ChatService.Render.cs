@@ -15,25 +15,25 @@ public sealed unsafe partial class ChatService
     /// <summary>Always-closed stub passed to non-focused window builds so EmitSettings doesn't duplicate.</summary>
     private static readonly SettingsWindow _closedSettings = new();
 
-    /// <summary>Slice #21: build the windows from the persisted state, observe ingest, and register the framework
-    /// Window whose content-draw is the whole chatbox. The atlas is the frame host's (<c>UiHostService</c> bakes
-    /// it at <c>ui.font</c>), so the first content draw is the first real build.</summary>
+    /// <summary>Builds the windows from the persisted state, observes ingest, and registers the framework Window
+    /// whose content-draw is the whole chatbox. The atlas is the frame host's (<c>UiHostService</c> bakes it at
+    /// <c>ui.font</c>), so the first content draw is the first real build.</summary>
     private static void InitRender(ExtenderLog log, HookService hooks)
     {
-        // Tabs are pure receive-filters now (#25); the send channel is the dropdown (window-level).
-        // Default is a single All tab; the player adds per-channel tabs via the settings window (#39).
+        // Tabs are pure receive-filters; the send channel is the dropdown (window-level).
+        // Default is a single All tab; the player adds per-channel tabs via the settings window.
         _layout = new ChatLayout(new ChatWindow(60, 40, 520, 300,
         [
             new Tab("All",  0xffffffff),
         ]));
         LoadConfig();   // the bag bound pre-main: rects, toggles, tabs are there at Initialize
         _store.AddObserver(OnIngest);  // new line -> slide-in/hold + rebuild (cold network thread)
-        // #216: the chatbox is the extender's one text surface, so it is where any service's on-screen
-        // notice lands -- an Alloy dropout above all. Set here rather than published as a chat API: Notice
-        // is the seam, and nothing outside this file needs to know a chatbox drew the line.
+        // The chatbox is the extender's one text surface, so it is where any service's on-screen notice
+        // lands -- an Alloy dropout above all. Set here rather than published as a chat API: Notice is the
+        // seam, and nothing outside this file needs to know a chatbox drew the line.
         Notice.Sink = EchoLocal;
 
-        // Register the framework Window whose content IS the whole chatbox (#62/#64). UiHostService drives
+        // Register the framework Window whose content IS the whole chatbox. UiHostService drives
         // DrawContent once per frame in z-order; the framework input layer (UiInputService) routes captured
         // input through the window's delegates. The chatbox owns many sub-windows internally (ChatLayout), so it
         // stays one framework Window with a hit-test override (its UI extends outside any single rect -- popped-out
@@ -55,7 +55,7 @@ public sealed unsafe partial class ChatService
 
     private static Window? _uiWindow;
     private static bool _booted;                  // first-frame viewport relayout done
-    private static int _swapTid;                  // managed thread id of the frame-present thread (probe, #33)
+    private static int _swapTid;                  // managed thread id of the frame-present thread (probe)
     private static bool _wasInModule;             // last frame's GameGate.InModule, for the module-unload edge
     private static float _appliedScale = float.NaN;   // Metrics.Scale we last relaid at (font / GUI-scale edge); NaN = never
     private static int _appliedEpoch = -1;        // TextRig.AtlasEpoch we last relaid at (re-bake edge: typeface, a new face)
@@ -83,11 +83,10 @@ public sealed unsafe partial class ChatService
         public void FireMouse(int button, int sdlMods) { }
     }
 
-    /// <summary>Pull every chat window back inside the live viewport. The rect is restored from
-    /// <c>cx.cfg</c> in absolute pixels, so a client that comes up smaller than the one that wrote it --
-    /// windowed after fullscreen, a different monitor, a Proton prefix -- lands the box past the edge, where it
-    /// draws every frame and nobody can see or drag it back. Same <see cref="Window.ClampAxis"/> Dialog uses.
-    /// Viewport is whatever the last draw measured, so this is a no-op on the very first frame.</summary>
+    /// <summary>Pull every chat window back inside the live viewport. Rects are restored from <c>cx.cfg</c> in
+    /// absolute pixels, so a client that comes up smaller than the one that wrote them (windowed after
+    /// fullscreen, another monitor, a Proton prefix) lands the box past the edge, undraggable. Viewport is
+    /// whatever the last draw measured, so this is a no-op on the very first frame.</summary>
     private static void KeepOnScreen()
     {
         float vpW = TextRig.ViewportW, vpH = TextRig.ViewportH;
@@ -104,11 +103,10 @@ public sealed unsafe partial class ChatService
         }
     }
 
-    /// <summary>The chat window's per-frame content draw (invoked by UiHostService via <see cref="UiHost.DrawFrame"/>).
-    /// Lays out for the live viewport once, reacts to the host-published gate + scale edges, then draws the box
-    /// in-game (or the attribution overlay on the main menu). Hot + zero-alloc in the steady state: the bootstrap,
-    /// session reset and scale relayout are all edge-gated (rare). Draws through ChatRenderer, which keeps chat's
-    /// live-verified cold->hot frame hand-off internally.</summary>
+    /// <summary>The chat window's per-frame content draw (UiHostService, via <see cref="UiHost.DrawFrame"/>). Lays
+    /// out for the live viewport once, reacts to the host-published gate + scale edges, then draws the box in-game
+    /// (or the attribution overlay on the main menu). Hot and zero-alloc in the steady state: bootstrap, session
+    /// reset and scale relayout are edge-gated. Draws through ChatRenderer, which owns the cold->hot hand-off.</summary>
     private static void OnFrame()
     {
         if (!_booted)
@@ -119,7 +117,7 @@ public sealed unsafe partial class ChatService
             _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
             Rebuild();   // re-layout for the live viewport width
         }
-        // Module-unload edge (was inside the old InGame() gate): drop cached engine ptrs + stale state (#33).
+        // Module-unload edge (was inside the old InGame() gate): drop cached engine ptrs + stale state.
         // It now fires once per frame on the render thread instead of possibly on the input thread; ResetSession
         // is documented idempotent and zero-alloc, so the move is safe.
         bool inModule = GameGate.InModule;
@@ -163,19 +161,19 @@ public sealed unsafe partial class ChatService
             ChatRenderer.Draw();
             DrawSettings();
             // Dialog and the quickbar draw themselves: each registers its own framework Window and UiHostService's
-            // z-order roll-call invokes their content-draw after ours (#63). No cross-call from here.
+            // z-order roll-call invokes their content-draw after ours. No cross-call from here.
         }
         else if (!inModule) ChatRenderer.DrawOverlay();   // main menu (no module): the attribution overlay
     }
 
-    /// <summary>New line ingested: auto-open Tell routing (#46), then compensate every window whose active
+    /// <summary>New line ingested: auto-open Tell routing, then compensate every window whose active
     /// tab matches (scroll hold / slide-in), then publish ONCE. Cold (network thread).</summary>
     private static void OnIngest(ChatLine line)
     {
         GlyphAtlas? atlas = TextRig.Atlas;
         if (_layout == null || atlas == null) { Rebuild(); return; }
 
-        // #46: route incoming Tells before the scroll-compensation loop so a new tab is visible on rebuild.
+        // route incoming Tells before the scroll-compensation loop so a new tab is visible on rebuild.
         // ponytail: races the input thread's AddTab/AddWindow; atomic array swap keeps it memory-safe.
         if ((line.Channel & 0x002) != 0)
             RouteIncomingTell(line);
@@ -214,7 +212,7 @@ public sealed unsafe partial class ChatService
     private static VertexBatch? _panelBatch;
 
     /// <summary>Per frame (render thread, hot): the settings panel over every window, from its live state --
-    /// a drag or a hover shows next frame with no rebuild (as the main panel draws; CX-683). Allocates nothing
+    /// a drag or a hover shows next frame with no rebuild, as the main panel draws. Allocates nothing
     /// while open and idle: the batch is reused and <see cref="KnobPanel.Emit"/> is zero-alloc.</summary>
     private static void DrawSettings()
     {
@@ -235,16 +233,16 @@ public sealed unsafe partial class ChatService
     }
 
     /// <summary>Rebuild vertex batches for all windows and publish them. Only the focused window gets the
-    /// input strip, settings panel, and slide residual (#41). Non-focused windows whose
+    /// input strip, settings panel, and slide residual. Non-focused windows whose
     /// <see cref="ChatWindow.Dirty"/> flag is false reuse their last-built frame, skipping the build +
-    /// LOH scratch alloc (#53). The focused window is always rebuilt (it owns drag chrome, grip, strip).</summary>
+    /// LOH scratch alloc. The focused window is always rebuilt (it owns drag chrome, grip, strip).</summary>
     private static void Rebuild()
     {
         GlyphAtlas? atlas = TextRig.Atlas;
         if (_layout == null || atlas == null) return;
         ChatWindow[] wins = _layout.Windows;   // snapshot
         int n = wins.Length;
-        // Ghost tab: find the source window (if any) to append a floating ghost frame (#42).
+        // Ghost tab: find the source window (if any) to append a floating ghost frame.
         int dragSrc = -1;
         for (int i = 0; i < n; i++) if (wins[i].TabDragActive) { dragSrc = i; break; }
         var frames = new RenderFrame[n + (dragSrc >= 0 ? 1 : 0)];
@@ -300,7 +298,7 @@ public sealed unsafe partial class ChatService
         }
     }
 
-    /// <summary>The window's own face (CX-683): its typeface / text size at the GUI scale, else the UI atlas.
+    /// <summary>The window's own face: its typeface / text size at the GUI scale, else the UI atlas.
     /// Hot-safe (a baked-face lookup, never a bake); <see cref="EnsureFace"/> baked it cold when it was picked or
     /// loaded, so a miss here is the bake having refused -- the UI face stands in.</summary>
     private static GlyphAtlas WindowAtlas(ChatWindow win, GlyphAtlas atlas)
@@ -311,11 +309,10 @@ public sealed unsafe partial class ChatService
 
     private static float WindowFacePx(ChatWindow win) => TextRig.FacePx(win.FontPx);
 
-    /// <summary>Bake a window's own face if it has one. COLD (a miss re-bakes the sheet): a pick on the gear, and
-    /// the scale edge (where the frame host re-bakes the UI atlas anyway). A refused bake logs; the window then
-    /// draws with the UI face. ponytail: every (typeface, px) ever picked stays in the sheet for the session; when
-    /// it fills, later picks fall back to the UI face. Upgrade: release the window's previous face when no other
-    /// window shares it.</summary>
+    /// <summary>Bake a window's own face if it has one. COLD (a miss re-bakes the sheet): a gear pick, or the
+    /// scale edge where the frame host re-bakes the UI atlas anyway. A refused bake logs and the window draws with
+    /// the UI face. ponytail: every (typeface, px) picked stays in the sheet for the session and later picks fall
+    /// back to the UI face once it fills; upgrade = release a window's previous face when nothing shares it.</summary>
     private static void EnsureFace(ChatWindow win)
     {
         if (!TextRig.Ready || (win.FontPx <= 0 && win.Typeface.Length == 0)) return;
@@ -340,12 +337,10 @@ public sealed unsafe partial class ChatService
         return frame;
     }
 
-    /// <summary>Reset all per-session state at a module boundary (#33), fanned in from the gate's
-    /// window-drop-to-zero edge (which fires on clean exit and disconnect alike). Crash-critical clear first:
-    /// the engine frees its portrait textures when a module unloads, so a cached <c>CAurTexture*</c> would
-    /// dangle into the next session and crash when bound (confirmed via core dump). Then the cosmetic clears
-    /// so the new session starts visually clean -- no prior lines, no half-open edit/scroll/panel state.
-    /// Idempotent and zero-alloc, so it's safe to fire from the (hot) gate read on the transition frame.</summary>
+    /// <summary>Reset all per-session state at a module boundary (the gate's window-drop-to-zero edge, which fires
+    /// on clean exit and disconnect alike). Order matters: the engine frees its portrait textures on module unload,
+    /// so a cached <c>CAurTexture*</c> must be dropped first or it dangles into the next session and crashes when
+    /// bound. Idempotent and zero-alloc -- safe to fire from the hot gate read on the transition frame.</summary>
     private static void ResetSession()
     {
         ChatRenderer.ClearSessionState();   // crash-critical: freed engine textures must not carry over

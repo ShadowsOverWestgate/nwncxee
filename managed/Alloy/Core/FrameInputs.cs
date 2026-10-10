@@ -4,12 +4,10 @@ using System.Numerics;
 namespace CX.Alloy;
 
 /// <summary>
-/// This frame's CONSTANTS: the engine state every Alloy pass shades and fits against -- camera, area
-/// terms, sun, fog and the light snapshot. #257 made it a block that is READ, once per world frame, by
-/// <see cref="FrameRead"/> and <see cref="SceneInputs"/>; nothing here is captured off a rendering call
-/// site any more and no value is decided by a contest between passes. Sun direction and camera pose both
-/// change continuously (time-of-day, movement), so these are live values, not one-shot latches. The read
-/// and every consumer are on the render thread, so plain fields suffice.
+/// This frame's CONSTANTS: the engine state every Alloy pass shades and fits against -- camera, area terms,
+/// sun, fog and the light snapshot. A block that is READ once per world frame by <see cref="FrameRead"/> and
+/// <see cref="SceneInputs"/>; nothing is captured off a rendering call site and no value is settled by a
+/// contest between passes. The read and every consumer are on the render thread, so plain fields suffice.
 /// </summary>
 public static class FrameInputs
 {
@@ -25,10 +23,10 @@ public static class FrameInputs
     public static Quaternion CameraRot { get => Read.CameraRot; set => _cur.CameraRot = value; }
     /// <summary>True once the scene camera has been read this session.</summary>
     public static bool HasSceneCam { get => Read.HasSceneCam; set => _cur.HasSceneCam = value; }
-    /// <summary>World-space position and forward of the camera the SCENE is drawn with. Since #257 this is
-    /// the SAME read as <see cref="CameraPos"/>/<see cref="CameraRot"/> -- <c>CurrentCamera</c> inside the
-    /// world scene's render IS the scene camera -- so the pair is kept only because the shadow path names
-    /// it (#99), not because the two can disagree.</summary>
+    /// <summary>World-space position and forward of the camera the SCENE is drawn with -- the SAME read as
+    /// <see cref="CameraPos"/>/<see cref="CameraRot"/>, since <c>CurrentCamera</c> inside the world scene's
+    /// render IS the scene camera. The pair survives because the shadow path names it, not because the two
+    /// can disagree.</summary>
     public static Vector3 SceneCamPos { get => Read.SceneCamPos; set => _cur.SceneCamPos = value; }
     public static Vector3 SceneCamFwd { get => Read.SceneCamFwd; set => _cur.SceneCamFwd = value; }
     /// <summary>The scene projection's <c>p11</c> (<c>1 / tan(fovy/2)</c>), from <see cref="CamFovy"/>.</summary>
@@ -47,7 +45,7 @@ public static class FrameInputs
     /// when the GL one does, which is what makes it a usable generation key for the frame's target.</summary>
     public static float CamViewW { get => Read.CamViewW; set => _cur.CamViewW = value; }
     public static float CamViewH { get => Read.CamViewH; set => _cur.CamViewH = value; }
-    /// <summary>Scene fog, read straight off <c>Scene+0x140..0x14c</c> (#257) rather than out of
+    /// <summary>Scene fog, read straight off <c>Scene+0x140..0x14c</c> rather than out of
     /// <c>GLRender::m_fog</c> after asking the engine to fill it. The colour is DISPLAY space, as the block
     /// stores it -- the stages that fog linearise it themselves.</summary>
     public static bool FogOn { get => Read.FogOn; set => _cur.FogOn = value; }
@@ -89,7 +87,7 @@ public static class FrameInputs
     /// computes occlusion for a light that is not where the BRDF thinks it is.</summary>
     public static Vector3[] LocalLightPos { get => Read.LocalLightPos; set => _cur.LocalLightPos = value; }
     /// <summary>Light reach (cube far plane) = <c>GetLightAdjustedRadius</c>, the engine's own lit radius off
-    /// <c>PartLight+0x70</c>. #186: exactly the sphere the receiver's attenuation has support over, so nothing
+    /// <c>PartLight+0x70</c>: exactly the sphere the receiver's attenuation has support over, so nothing
     /// outside it is worth baking.</summary>
     public static float[] LocalLightRange { get => Read.LocalLightRange; set => _cur.LocalLightRange = value; }
     /// <summary>Light RGB (<c>+0x64</c>) -- for light-&gt;slot matching / debug, not the cube itself.</summary>
@@ -147,8 +145,8 @@ public static class FrameInputs
     // --- Extender-owned point lighting: EVERY active point light in the area (shadow-casting or not),
     // snapshotted from the same master-list walk and fed to the Alloy pass's clustered light SSBO (#83).
 
-    /// <summary>Point lights snapshotted this walk -- the Alloy path's set. The clustered path has no light
-    /// ceiling by design (#83), and since #257 neither has the snapshot that feeds it.</summary>
+    /// <summary>Point lights snapshotted this walk -- the Alloy path's set. The deferred path has no light
+    /// ceiling by design, and neither has the snapshot that feeds it.</summary>
     public static int LightCount { get => Read.LightCount; set => _cur.LightCount = value; }
     /// <summary>World pos (xyz) + lit range (w), packed for a single glUniform4fv.</summary>
     public static Vector4[] AreaLightPosRange { get => Read.AreaLightPosRange; set => _cur.AreaLightPosRange = value; }
@@ -158,7 +156,7 @@ public static class FrameInputs
     /// bind.</summary>
     public static IntPtr[] AreaLightId { get => Read.AreaLightId; set => _cur.AreaLightId = value; }
     /// <summary>Cube slot per area light (-1 = casts no shadow / no cube) -- resolved at the pass slot right
-    /// after the bake (#118), so the mapping and the cube contents are the same frame's, and read by the owned
+    /// after the bake, so the mapping and the cube contents are the same frame's, and read by the owned
     /// lit stage.</summary>
     public static int[] AreaLightSlot { get => Read.AreaLightSlot; set => _cur.AreaLightSlot = value; }
     /// <summary>Ambient-class light (PartLight type@0x80 != 0): vanilla adds <c>c * att</c> straight to the
@@ -166,10 +164,10 @@ public static class FrameInputs
     public static bool[] AreaLightAmbient { get => Read.AreaLightAmbient; set => _cur.AreaLightAmbient = value; }
     /// <summary>The slot value the lit stage reads as "ambient class"; -1 stays "no cube".</summary>
     public const int AmbientSlot = -2;
-    /// <summary>#674: this light is in the lightmap pages (the three-branch static rule, classified at the
-    /// walk). A baked surface skips it in the real-time loop; uploaded as the static bit in the record's w.</summary>
+    /// <summary>This light is in the lightmap pages (the three-branch static rule, classified at the walk).
+    /// A baked surface skips it in the real-time loop; uploaded as the static bit in the record's w.</summary>
     public static bool[] AreaLightStatic { get => Read.AreaLightStatic; set => _cur.AreaLightStatic = value; }
-    /// <summary>CX-56: a static light's index in the bake's set (-1 = none), uploaded above the static bit: what a
+    /// <summary>A static light's index in the bake's set (-1 = none), uploaded above the static bit: what a
     /// baked surface's pick names its mover shares by.</summary>
     public static int[] AreaLightSetIndex { get => Read.AreaLightSetIndex; set => _cur.AreaLightSetIndex = value; }
     /// <summary>Area lights that resolved to a real cube slot on the last walk. Zero while cubes render is
@@ -204,24 +202,10 @@ public static class FrameInputs
         AreaLightSlot[LightCount++] = -1;
     }
 
-    /// <summary>CX-120: the frame's inputs as a VALUE the frame owns, rather than a set of globals.
-    /// <para>Every field below used to be a <c>public static</c> that the game thread wrote and every pass
-    /// read. That is sound while one thread does both -- which is what this class's own header asserted --
-    /// and it stops being sound the moment the renderer runs on a thread of its own: the game thread writes
-    /// frame N+1's camera and fog while the render thread is still shading N, and a torn <c>Vector3</c> or a
-    /// half-updated light array is a frame lit by two different worlds.</para>
-    /// <para>So the state lives here, in two instances: <see cref="_cur"/> is the game thread's, written by
-    /// the walks exactly as before, and <see cref="_pub"/> is the frame the render side reads.
-    /// <see cref="Publish"/> copies one into the other at the frame boundary. Until a render thread exists
-    /// <see cref="_pub"/> is null and <see cref="Read"/> is <see cref="_cur"/>, so today this is the same
-    /// single object it has always been -- no copy, no behaviour change, and mode 0 is untouched by
-    /// construction.</para>
-    /// <para><b>NOT armed, and two things stand between here and armed</b> (review #6, and
-    /// <c>RenderThread.FrameInputsPublished</c> is the precondition that states it): nothing calls
-    /// <see cref="Publish"/> or <see cref="Unpublish"/> anywhere, and the array properties return the
-    /// READER's array, so a producer that writes an ELEMENT through one of them -- <c>SceneInputs</c> does,
-    /// <c>FrameInputs.AreaLightSlot[i] = ...</c> -- would be writing into the published copy the moment
-    /// publishing began. Those writers go through <see cref="Cur"/> first.</para></summary>
+    /// <summary>The frame's inputs as a VALUE the frame owns, in two instances: <see cref="_cur"/> is the game
+    /// thread's, written by the walks, and <see cref="_pub"/> is what the render side reads once
+    /// <see cref="Publish"/> copies one into the other at the frame boundary. Not armed: nothing publishes, and
+    /// the array properties return the READER's array, so a writer of ELEMENTS goes through <see cref="Cur"/>.</summary>
     public sealed class Frame
     {
         public bool HasSun;
@@ -282,13 +266,10 @@ public static class FrameInputs
     /// needs the array objects themselves (growth, <c>Array.Resize</c>).</summary>
     internal static Frame Cur => _cur;
 
-    /// <summary>Publish this frame's inputs for the render side. Called on the GAME thread at the frame
-    /// boundary, after the walks and before the draw is handed over. Allocation-free in the steady state:
-    /// the destination arrays are grown once and kept.
-    /// <para>Not called while the renderer is single-threaded -- there is nothing to protect from, and a copy
-    /// per frame to feed the same thread that just wrote it would be pure cost. The renderer IS
-    /// single-threaded today, so this has no caller at all; see the <see cref="Frame"/> header for what else
-    /// the first caller owes.</para></summary>
+    /// <summary>Publish this frame's inputs for the render side: on the GAME thread at the frame boundary,
+    /// after the walks and before the draw is handed over, allocation-free in the steady state. The renderer
+    /// is single-threaded today, so this has no caller at all; the <see cref="Frame"/> header says what the
+    /// first one owes.</summary>
     public static void Publish()
     {
         Frame dst = _pub ??= new Frame();

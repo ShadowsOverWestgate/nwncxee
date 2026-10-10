@@ -6,17 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>
-/// CX-101: Alloy owns the screen's clears and its present once the GUI is Alloy's (<see cref="GuiPass.Capturing"/>)
-/// and no engine-drawn world needs the engine's own. The engine's screen clears -- <c>Update</c>'s frame
-/// <c>Clear(3)</c>, every GUI view's <c>Clear(2)</c> -- are swallowed at <c>RenderInterface::Clear</c> when they target
-/// the default framebuffer; Alloy clears depth per GUI run (<see cref="GuiCapture.DepthOf"/>) and colour at the first
-/// GUI flush of a frame no world frame covered. The present is <c>SDL_GL_SwapWindow</c> issued from here, with the two
-/// steps <c>GLRender::SwapBuffers</c> @0x4d2070 wraps around it: bind the default framebuffer, then
-/// <c>ResetRenderStates</c> so the engine's state cache agrees with its context again.
-/// <para>A clear aimed at an engine framebuffer object passes: the only engine render-to-texture paths left are the
-/// snapshots, and they read back what the world frame drew.</para>
-/// </summary>
+/// <summary>Alloy owns the screen's clears and its present once the GUI is Alloy's and no engine-drawn world
+/// needs the engine's own. The engine's screen clears are swallowed at <c>RenderInterface::Clear</c> when they
+/// target the default framebuffer -- one aimed at an engine framebuffer object passes; the present is
+/// <c>SDL_GL_SwapWindow</c> from here, between the bind and <c>ResetRenderStates</c> the engine wraps it in.</summary>
 internal static unsafe class ScreenOwner
 {
     private static ExtenderLog? _log;
@@ -74,9 +67,9 @@ internal static unsafe class ScreenOwner
         _origClearColor(r, g, b, a);
     }
 
-    /// <summary>The present, in the ENGINE context (the one whose back buffer the GUI hand-back and every engine-context
-    /// draw landed in -- on Windows the 4.6 context's is a different one, #456). False = not Alloy's to present; the
-    /// caller runs the engine's <c>GLRender::SwapBuffers</c>.</summary>
+    /// <summary>The present, in the ENGINE context -- the one whose back buffer the GUI hand-back and every
+    /// engine-context draw landed in, which on Windows is not the 4.6 context's. False = not Alloy's to present;
+    /// the caller runs the engine's <c>GLRender::SwapBuffers</c>.</summary>
     internal static bool Present(IntPtr window)
     {
         if (!Owned) return false;
@@ -94,8 +87,8 @@ internal static unsafe class ScreenOwner
     }
 
     internal static string Stats() => _origClear == null ? "screen: engine (not armed)"
-        // The clear colour is on the line because it IS the void: every pixel the world does not cover ends
-        // up this colour in both modes, and nothing else in a session reports it.
+        // The clear colour is on the line because it IS the void: every pixel the world does not cover ends up
+        // this colour, and nothing else in a session reports it.
         : $"screen: {(Owned ? "Alloy" : "engine")} -- {_presents} Alloy presents, {_swallowed} engine clears swallowed, "
         + $"{_passed} passed, clear=({ClearRgba[0]:F3},{ClearRgba[1]:F3},{ClearRgba[2]:F3}), {RspShim.StrayDraws} stray engine draws";
 }

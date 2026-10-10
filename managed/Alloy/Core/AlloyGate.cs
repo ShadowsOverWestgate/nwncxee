@@ -19,22 +19,10 @@ internal enum AlloyStand
     Idle,
 }
 
-/// <summary>
-/// #263 (ADR 0018 strand 1 step 8): the ONE place a frame is decided to be Alloy's or the engine's, and it
-/// decides ONCE. The config half is <c>alloy.enabled=0</c> in <c>cx.cfg</c>; the capability half is asked at the
-/// first present and frozen the moment it answers. After that nothing re-asks, so the two resource worlds
-/// are never warm at once -- which is what makes exclusive residency ownership (steps 4-7) affordable.
-/// </summary>
-/// <remarks>
-/// <para>#216 made the verdict frame-atomic; #263 makes it session-atomic. What went with the live toggle is
-/// the whole hand-back vocabulary: under the #215 shim an unowned part is <i>nothing</i> (#236), so a
-/// refusal taken after the frame is Alloy's cannot buy a vanilla frame -- there is no engine frame behind it
-/// and no way to warm one mid-session. Such a refusal is therefore a <see cref="Fail"/>: a log line, one
-/// on-screen notice naming the restart, and no mode change.</para>
-/// <para>ADR 0010 stands: both renderers ship, and a device that cannot run Alloy still runs every other
-/// extender feature. What is gone is <i>live toggling</i>, not the branch. Bare <c>/alloy</c> reports the two
-/// pieces of state (<see cref="Renderer.Status"/>).</para>
-/// </remarks>
+/// <summary>The one place a frame is decided to be Alloy's or the engine's, and it decides ONCE per session:
+/// the config half is <c>alloy.enabled=0</c> in <c>cx.cfg</c>, the capability half is asked at the first present
+/// and frozen the moment it answers. Nothing re-asks, so the two resource worlds are never warm at once -- a
+/// refusal taken after the frame is Alloy's is therefore a <see cref="Fail"/>, never a mode change.</summary>
 internal static class AlloyGate
 {
     private static AlloyStand _stand = AlloyStand.Idle;
@@ -48,12 +36,12 @@ internal static class AlloyGate
     private static string _decidedWhy = "";
     /// <summary>A failure taken after the decision froze on Alloy. Reported, never acted on.</summary>
     private static string _failed = "";
-    /// <summary>#456: does every engine offset Alloy reads carry a resolution for the platform we booted on?
+    /// <summary>Does every engine offset Alloy reads carry a resolution for the platform we booted on?
     /// Asked once at <see cref="Arm"/> -- the answer is a property of the build, not of the frame.</summary>
     private static bool _layoutOk = true;
     private static ExtenderLog? _log;
 
-    /// <summary>CX-95 narrowed this term: it says there is no WORLD frame, nothing more. The GUI scenes are Alloy's on
+    /// <summary>This term says there is no WORLD frame, nothing more. The GUI scenes are Alloy's on
     /// their own verdict (<see cref="GuiPass.Capturing"/>), main menu included.</summary>
     private const string NoModule = "no module is loaded, so there is no world frame (the GUI is GuiPass's)";
 
@@ -94,14 +82,8 @@ internal static class AlloyGate
 
     /// <summary>The whole refusal set, in report order: configuration and choice first (they are not
     /// failures), then capability. Asked until it answers <see cref="AlloyStand.Alloy"/> or
-    /// <see cref="AlloyStand.Choice"/>, then never again. Allocation-free -- every reason is a literal.
-    /// <para>An <see cref="AlloyStand.Incapable"/> answer here does NOT freeze: before the first Alloy frame
-    /// it means "not yet" as often as "never" (the 4.6 context is created from a present, the programs build
-    /// on first use), and the cost of asking again is one branch on a frame that is rendering vanilla anyway.
-    /// It freezes the moment it stops being true.</para>
-    /// <para>The gamma entry is the one ADR 0016 names by hand: it gates the Alloy DECODES, which live in the
-    /// stages and cannot be switched per pass, so a client with <c>GAMMA_CORRECTION</c> off has no
-    /// self-consistent Alloy variant at all.</para></summary>
+    /// <see cref="AlloyStand.Choice"/>, then never again; allocation-free, every reason a literal. An
+    /// <see cref="AlloyStand.Incapable"/> answer does not freeze: cold it means "not yet" as often as "never".</summary>
     private static AlloyStand Evaluate(out string why)
     {
         if (_optedOut)

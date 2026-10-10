@@ -2,7 +2,7 @@ namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// One chat tab: a pure <em>receive</em> filter into the shared <see cref="ChatStore"/> plus its own
-/// scrollback offset. The send channel is window-level (a dropdown, not a tab) since #25. A <c>class</c>:
+/// scrollback offset. The send channel is window-level (a dropdown, not a tab). A <c>class</c>:
 /// <see cref="ScrollPx"/> mutates as the user scrolls.
 /// </summary>
 public sealed class Tab
@@ -22,9 +22,9 @@ public sealed class Tab
     /// <summary>New messages arrived while this tab was not active. Cleared on focus.</summary>
     public bool Unread;
 
-    /// <summary>The channel last used while this tab was active (CX-59), written through by
+    /// <summary>The channel last used while this tab was active, written through by
     /// <see cref="ChatWindow.SendChannel"/> and given back by <see cref="ChatWindow.SelectTab"/>; null until the
-    /// tab is first active this session. Session memory: the shell clears it on relog (#25) and it is not persisted.</summary>
+    /// tab is first active this session. Session memory: the shell clears it on relog and it is not persisted.</summary>
     public Channel? SendChannel;
 
     /// <summary>The unsent input line parked on this tab (<c>chat.drafts</c>): set when chat closes unsent or the

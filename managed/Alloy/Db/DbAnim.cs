@@ -56,13 +56,10 @@ public static class RunFlags
     public const int FadeNow = 0x200;      // not-an-offset: AnimRun+0xc flag bit
 }
 
-/// <summary>CX-120 seam-anim: the animation runtime, behaviour solvers, dangly and skin poses over
-/// <see cref="SceneDb"/>, and the transform step that composes <c>ObjWorld</c>/<c>PartWorld</c>. Game thread.
-/// <para>This is the DB-mode replacement for <c>Scene::Animate</c> + <c>Gob::Animate</c>: the queue advance,
-/// the pose walk, the keyframe and lifecycle events, the behaviour solve and the look-at, ported from
-/// <c>Alloy/Anim/*</c> and <c>Alloy/Behavior/*</c> (which drive the same semantics over the ENGINE's objects in
-/// mode 0) onto record columns. Nothing here reads engine memory except a game-constructed
-/// <c>CAurBehavior</c>, which stays a real engine-layout object by ADR 0028 section 2.</para></summary>
+/// <summary>The animation runtime, behaviour solvers, dangly and skin poses over <see cref="SceneDb"/>, and the
+/// transform step that composes <c>ObjWorld</c>/<c>PartWorld</c>. Game thread. This replaces
+/// <c>Scene::Animate</c> + <c>Gob::Animate</c>: the queue advance, the pose walk, the keyframe and lifecycle
+/// events, the behaviour solve and the look-at. The one engine-layout object it reads is <c>CAurBehavior</c>.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>Objects that may hold a run queue at once. An object takes a block on its first
@@ -145,12 +142,10 @@ public static unsafe partial class DbAnim
     private static int _objects, _skipped, _runs, _crossfades, _dropped, _lookAts, _posed, _controllers;
     private static int _queueFull, _unbound, _noBlock, _bezier, _morphs, _traced;
 
-    /// <summary>The animation clock the GAME handed this period, summed. Its source is not the global
-    /// <c>DeltaT</c> the particle sim reads (that is the pause-frozen timer at
-    /// <c>CClientExoAppInternal+0x50</c>): the <c>Animate</c> slot's dt comes from
-    /// <c>CClientAIMaster::UpdateState</c> @0xa91c30 via the timer at <c>+0x60</c>, which <c>MainLoop</c>
-    /// snapshots unconditionally. So a period with animation time and no particle time is a PAUSED game,
-    /// and a period with neither is a frame that never reached the game's update.</summary>
+    /// <summary>The animation clock the GAME handed this period, summed. NOT the global <c>DeltaT</c> the particle
+    /// sim reads (the pause-frozen timer at <c>CClientExoAppInternal+0x50</c>): the <c>Animate</c> slot's dt comes
+    /// from <c>CClientAIMaster::UpdateState</c> @0xa91c30 via the timer at <c>+0x60</c>, snapshotted
+    /// unconditionally. So animation time with no particle time is a PAUSED game, and neither is no game update.</summary>
     private static float _periodDt;
     /// <inheritdoc cref="_periodDt"/>
     private static int _periodCalls;
@@ -314,15 +309,10 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>
-    /// Has this record anything to do at all? A scene's member list is walked every frame, but in a settled
-    /// area nearly every member is a tile or a placeable with no run queue, no behaviour, no look-at, no ramp
-    /// and no dangly part -- and stepping one cost a behaviour classify, three gate reads, an empty queue
-    /// walk, a part-range scan for dangly nodes and another for skins. The ladder measured 650 object steps a
-    /// frame on a scene where a handful animate; this is the test that makes the other 640 free.
-    /// <para>Every term is a transition something else already records, so nothing has to be invalidated: the
-    /// run count, the behaviour column, the look-at flag, the two ramp rates, and the two tree facts scanned
-    /// once per part range. <see cref="ObjAnim.Moved"/> is deliberately NOT here -- a moved object is composed
-    /// from the dirty list, which is where a placement change belongs.</para>
+    /// Has this record anything to do at all? A scene's member list is walked every frame and in a settled area
+    /// nearly every member has no run queue, behaviour, look-at, ramp or dangly part, so this test is what makes
+    /// stepping them free. Every term is a transition something else already records, so nothing needs
+    /// invalidating; <see cref="ObjAnim.Moved"/> is deliberately NOT one -- a moved object composes from the dirty list.
     /// </summary>
     private static bool Idle(int i)
         => _runN[i] == 0 && _behavior[i] == 0 && !_lookAt[i].Active
@@ -331,14 +321,10 @@ public static unsafe partial class DbAnim
 
     private static int _idle;
 
-    /// <summary><c>Gob::Animate</c>'s point-source gust @0x59dc66: a wind-enabled object that MOVED since its
-    /// last step registers one source at its new position -- radius 1.0, life the distance moved, strength the
-    /// object's own <c>Gob+0x1a0</c>. In vanilla this term is the whole of the felt wind (see
-    /// <see cref="CX.Alloy.AlloyWind"/>'s remarks); DB mode owns this function, so nothing raised it and grass,
-    /// cloaks and smoke stood still. It also stamps the previous position <c>Gob::GetPreviousPosition</c>
-    /// answers, which the engine writes here and nothing else did.
-    /// <para>Hot -- once per member per frame. The flag test comes first so an object with no wind costs one
-    /// load, and nothing allocates.</para></summary>
+    /// <summary><c>Gob::Animate</c>'s point-source gust @0x59dc66: a wind-enabled object that MOVED since its last
+    /// step registers one source at its new position -- radius 1.0, life the distance moved, strength the object's
+    /// own <c>Gob+0x1a0</c>. This term is the whole of the felt wind. It also stamps the previous position
+    /// <c>Gob::GetPreviousPosition</c> answers. Hot, once per member per frame: flag test first, no allocation.</summary>
     private static void MovedGust(int i)
     {
         if ((SceneDb.ObjSeamFlags[i] & (uint)SeamFlag.Wind) == 0) return;
@@ -395,35 +381,10 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>
-    /// The gate the engine has and this does NOT. Verified in the dump (CX-188), because the saving is the
-    /// single largest one left in this file: <c>Gob::Animate</c> @0x59d8c0 returns immediately -- before the
-    /// run-time advance, before the <c>"start"</c>/<c>"loop"</c> events, before <c>AnimateHierarchy</c>
-    /// @0x599990 -- when the gob has a model root, <c>Gob::IsInViewVolume</c> @0x544780 is false, and the
-    /// model's classification byte does not say <i>effect</i>. So in vanilla an off-screen creature, tile or
-    /// door freezes its animation CLOCK and fires no animation events; only wind and the look-at control
-    /// survive, and only effect-classified models keep animating. <c>PartDanglyMesh::Animate</c> @0x59bbb0
-    /// has no test of its own -- the whole <c>Part::Animate</c> @0x59ad00 recursion is downstream of that
-    /// gate -- and a node light is pushed from inside the hierarchy walk
-    /// (<c>AnimateStaticLight</c> @0x57d820), so a held torch freezes with it.
-    /// <para><b>What blocks the port is the flag's PRODUCER, not the gate.</b> <c>Gob+0x1b</c> is written by
-    /// <c>ManageSceneBSP</c> @0x57fa80, which runs only from <c>Scene::Render</c> @0x5762d0: it clears every
-    /// gob, traverses the tile BSP against the view volume, and re-enables what is inside (caching the squared
-    /// camera distance in <c>Gob+0x140</c> for <c>Gob::SetLODModel</c> @0x53e6a0). The gate therefore reads
-    /// LAST FRAME's render result. DB mode replaced that render, and its own per-frame verdict
-    /// (<c>AlloyRenderer.RouteWanted</c> / <c>SphereInPass</c>) is per ownership SLOT, is reached one phase
-    /// AFTER this, and leaves no per-object stamp behind.</para>
-    /// <para><see cref="SceneDb.ObjVisible"/> does not answer it either: that is the GAME's enable/disable --
-    /// what the draw and the hit test gate on -- not a cull result, so gating on it would freeze a
-    /// deliberately hidden object's pose and resume it stale when the game shows it again. So every object
-    /// whose own gate and its scene's gate are open advances, on screen or not.</para>
-    /// <para>ponytail: the saving needs a per-object frame stamp written where the route gate accepts a slot
-    /// (<c>SceneDb.PartObj</c> of the accepted slot, beside <see cref="SceneDb.ObjSphere"/>), after which this
-    /// gate reads "routed within the last frame or two". Three consumers then have to be answered, each of
-    /// which reads a pose with NO frustum of its own and so would see a frozen one: <c>HitBounds.Refresh</c>
-    /// (folded from inside <see cref="Animate"/> itself, and <c>HitTest.Cast</c> hits any object),
-    /// <c>DbLights.Walk</c> (every light part's world matrix, for a light that may spill into view), and the
-    /// skinned branch of <c>CasterPass.Admit</c> (an unconditional shadow mover every frame). The other half
-    /// of the same answer is CX-105's animation-rate LOD, which is not ported to DB mode either.</para>
+    /// The gate the engine has and this does NOT: <c>Gob::Animate</c> @0x59d8c0 advances no clock and fires no
+    /// event when <c>Gob::IsInViewVolume</c> @0x544780 is false and the model is not effect-classified. Unportable
+    /// as written -- the flag is <c>ManageSceneBSP</c>'s @0x57fa80, from the render Alloy replaced. ponytail: a
+    /// per-object route stamp buys it, once <c>HitBounds</c>, <c>DbLights</c> and <c>CasterPass</c> are answered.
     /// </summary>
     private static void VisibilityGateNotPorted() { }
 
@@ -644,8 +605,8 @@ public static unsafe partial class DbAnim
     private static bool SceneGate(DbId scene)
         => SceneDb.Scenes.Valid(scene) && SceneDb.SceneAnimOn[scene.Index];
 
-    /// <summary>The period line: what moved, what was refused, and why. In a still scene the compose counts
-    /// read 0, which is CX-115's change-driven claim made checkable from a running session.</summary>
+    /// <summary>The period line: what moved, what was refused, and why. In a still scene the compose counts read
+    /// 0, which makes the change-driven claim checkable from a running session.</summary>
     public static string Period(int frames)
     {
         if (!Renderer.On) return "";

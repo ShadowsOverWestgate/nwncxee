@@ -7,37 +7,14 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 (seam-scene): the <c>CAurCamera</c> interface, implemented by CX. 33 interface slots
-/// (<c>_ZTV10CAurCamera</c> @0x186d628, Windows rva 0xd82d00) plus the 8 <c>Camera</c>-only slots the primary
-/// sub-vtable carries beyond it.
-///
-/// <para><b>The two vptrs.</b> A <c>Camera</c> is <c>: CAurCamera, Gob</c> -- <c>CAurCamera</c>'s vptr at +0
-/// and <c>Gob</c>'s at +8, both binaries agreeing to the byte. <c>GuiAttachViewport</c> @0x68bda0 reaches the
-/// object half as the literal <c>(CAurObject*)(camera + 8)</c>, so the shell must carry both and the Gob-side
-/// table must <c>this</c>-adjust by -8 before running. That is seam-obj's facade machinery; what this file
-/// owns is the <c>CAurCamera</c> half, and <see cref="SceneDb.CamObj"/> is the object record the +8
-/// sub-object resolves to.</para>
-///
-/// <para><b>The plane type at the boundary</b> is <see cref="AurPlane"/>, four plain floats, not
-/// <see cref="System.Numerics.Plane"/>: the latter's <c>Normal</c> is the <c>[Intrinsic]</c>
-/// <c>Vector3</c>, and an intrinsic type's register classification is not something to bet an ABI on.</para>
-/// <para><b>Seven of the 33 return by value</b> (slots 7-12 and 32) -- five <c>Vector</c>, two
-/// <c>Quaternion</c>, and slot 32 is the set's only <c>Plane</c>. Each is declared PER OS, not with a shared
-/// <c>sret</c> position: SysV returns all three types in xmm0:xmm1 with no hidden pointer at all, so
-/// <c>this</c> stays in rdi and the integer arguments do not shift, while Win64 takes
-/// <c>(this=rcx, sret=rdx, args...)</c> and returns the buffer in rax. A single declaration would be wrong on
-/// Linux twice over (CX-183 §4).</para>
-///
-/// <para><b>The frame.</b> Slot 3 <c>RenderScene</c> is the frame's load-bearing slot: the game drives every
-/// view through it (<c>CGuiMan::UpdateAndRender</c>'s panel-view walk, the world view, and the two post-NUI
-/// overlay views), and in DB mode it RECORDS the view -- camera matrices built from the record's own columns
-/// -- instead of drawing. The renderer draws the frame's whole view list at the present boundary
-/// (<see cref="RenderSnapshot"/>, ADR 0028 section 5).</para></summary>
+/// <summary>The <c>CAurCamera</c> interface, implemented by CX: 33 interface slots (<c>_ZTV10CAurCamera</c>
+/// @0x186d628, Windows rva 0xd82d00) plus the 8 <c>Camera</c>-only slots the primary sub-vtable carries. A
+/// <c>Camera</c> is <c>: CAurCamera, Gob</c>, the <c>Gob</c> vptr at +8; slot 3 <c>RenderScene</c> RECORDS the
+/// view, and the renderer draws the frame's whole list at the present boundary (ADR 0028 section 5).</summary>
 internal static unsafe class CameraSlots
 {
-    /// <summary>CX-120 bring-up: name each camera slot the first time the game calls it. The chase camera is
-    /// installed by a call CX has to receive, and "which calls actually arrive" is a fact no amount of reading
-    /// the slot table can establish. Once per slot, DB mode only.</summary>
+    /// <summary>Name each camera slot the first time the game calls it: which calls actually arrive is a fact
+    /// no amount of reading the slot table can establish. Once per slot.</summary>
     private static readonly System.Collections.Generic.HashSet<string> _traced = new();
     private static void Trace(string slot)
     {
@@ -53,15 +30,16 @@ internal static unsafe class CameraSlots
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
-    /// <summary>The <c>CAurCamera</c> interface table (33 slots), Linux slot index.</summary>
+    /// <summary>The <c>CAurCamera</c> interface table (33 slots), Linux slot index. The seven by-value slots
+    /// (7-12, 32) are declared PER OS: SysV returns <c>Vector</c>/<c>Quaternion</c>/<c>Plane</c> in xmm0:xmm1
+    /// with no hidden pointer, Win64 takes <c>(this=rcx, sret=rdx, ...)</c>. The boundary plane is
+    /// <see cref="AurPlane"/>, four plain floats, never the <c>[Intrinsic]</c>-backed <c>Plane</c>.</summary>
     internal static readonly IntPtr[] Table = Build();
 
-    /// <summary>The 8 extra slots <c>Camera</c>'s PRIMARY sub-vtable carries on Linux (indices 33..40). On
-    /// Windows only one of them -- <c>SetFadePlanes</c>, Linux 37 -- is a new primary virtual (Windows primary
-    /// slot 32); the other seven live in Camera's <c>Gob</c> vftable as <c>adjustor{8}</c> thunks, because GCC
-    /// duplicates a secondary-base override into the primary table and MSVC does not (rule 3 of the three
-    /// cross-OS mapping rules). seam-obj's vtable builder is what honours that split; this array is the
-    /// Linux-indexed bodies.</summary>
+    /// <summary>The 8 extra slots <c>Camera</c>'s PRIMARY sub-vtable carries on Linux (indices 33..40), as
+    /// Linux-indexed bodies. On Windows only <c>SetFadePlanes</c> (Linux 37) is a new primary virtual (Windows
+    /// primary slot 32); the other seven live in Camera's <c>Gob</c> vftable as <c>adjustor{8}</c> thunks,
+    /// because GCC duplicates a secondary-base override into the primary table and MSVC does not.</summary>
     internal static readonly IntPtr[] PrimaryExtra = BuildExtra();
 
     private static IntPtr[] Build()
@@ -183,12 +161,8 @@ internal static unsafe class CameraSlots
 
     /// <summary>The camera block these two downcasts must answer with. Both slots also sit in the GOB-side
     /// table (<c>SeamTable.CameraGob</c>), where the engine calls them with the <c>+8</c> sub-object as
-    /// <c>this</c> -- so answering <c>self</c> hands back a <c>CAurObject*</c> that the caller then treats as
-    /// a <c>Camera*</c>. <c>CAurBehaviorSubwindow::Control</c> @0x68b720 does exactly that: it takes
-    /// <c>AsCamera(owner)</c> and calls vtable <c>+0x70</c> on it WITHOUT a null check, so with the +8 pointer
-    /// it reached Gob slot 14 instead of <c>Camera::SetViewPort</c> -- silently, and every GUI viewport camera
-    /// kept an empty rect. <see cref="Facade.Shell"/> applies the vptr's own offset-to-top, so this is the
-    /// identity when the slot is reached through the primary table.</summary>
+    /// <c>this</c> and <c>CAurBehaviorSubwindow::Control</c> @0x68b720 then calls vtable <c>+0x70</c> on the
+    /// result with NO null check, so answering <c>self</c> there would land on a <c>Gob</c> slot instead.</summary>
     private static nint Base(nint self)
     {
         nint shell = Facade.Shell(self);
@@ -198,20 +172,9 @@ internal static unsafe class CameraSlots
     // ---- the frame ------------------------------------------------------------------------------------
 
     /// <summary>Slot 3, <c>Camera::RenderScene</c> -- THE frame slot. Build this camera's view from its own
-    /// columns and hand it to the feed, in the order the game issued it. Nothing draws here: the renderer
-    /// draws the whole frame's view list at the present boundary.
-    /// <para>The engine's own body also skips an off-screen GUI view and bumps the scene's external-animate
-    /// counter when it does; CX keeps that skip -- a view with a degenerate rect is recorded as invalid and
-    /// the feed drops it -- but does not touch the counter, which is the game's to increment
-    /// (<c>CAurObject::AnimateExternal</c> owns it).</para>
-    /// <para><b>Every caller, in order</b> (read out of <c>CGuiMan::UpdateAndRender</c> @0x680450 and
-    /// <c>CNWCModule::Update</c> @0x8df0a0; <c>CX-109</c> §1 carries the disassembly):
-    /// the panel scenes all <c>Animate</c> first, in <c>CGuiMan+0x18</c>'s list order; then the same list
-    /// renders, each view's camera being the <c>CSceneView</c>'s <c>+8</c>; then the two overlay views at
-    /// <c>CGuiMan+0x40</c>/<c>+0x48</c>, after NUI; and the WORLD view separately, from
-    /// <c>CNWCModule::Update</c> through <c>CNWCModule+0xe8</c>. The list order is the panel z-order --
-    /// <c>CGuiPanel::RenderSceneViewFirst</c>/<c>Last</c> reorder it -- which is why the frame's view list is
-    /// append-only here and never sorted.</para></summary>
+    /// columns and hand it to the feed IN THE ORDER the game issued it: that order is the panel z-order, which
+    /// is why the frame's view list is append-only and never sorted. Nothing draws here; the renderer draws
+    /// the whole list at the present boundary, and a view with a degenerate rect is recorded invalid.</summary>
     [UnmanagedCallersOnly]
     private static void RenderScene(nint self)
     {
@@ -225,11 +188,9 @@ internal static unsafe class CameraSlots
         // refresh -- the world clock every owned stage animates on. This slot replaces that body, so the
         // refresh happens here or nowhere (see SceneSlots.UniformsForFrame).
         SceneSlots.UniformsForFrame(SceneDb.SceneFacade[scene.Index]);
-        // CX-120 (seam-feed's edit in seam-scene's file, by the coordinator's call): the keyhole state is
-        // written HERE in vanilla, which is why DB mode never had it -- this slot replaces the body that does
-        // it. AFTER RequestView, which is what fills the camera's view volume (RenderSnapshot ->
-        // DbCamera.SetViewVolume): the rule needs plane 0, and SetPosition/SetRotation clear the volume every
-        // time the chase camera moves, so before the request there is nothing to read.
+        // The keyhole state is written by the body this slot replaces, and it must come AFTER RequestView,
+        // which fills the camera's view volume (RenderSnapshot -> DbCamera.SetViewVolume): the rule needs
+        // plane 0, and SetPosition/SetRotation clear the volume every time the chase camera moves.
         RenderSnapshot.RequestView(scene, cam);
         DbKeyhole.WriteCameraState(self, cam, scene);
         DbFeed.RequestView(scene, cam);
@@ -298,17 +259,10 @@ internal static unsafe class CameraSlots
         return self;
     }
 
-    /// <summary>Slot 21, <c>Camera::SetFollow(CAurObject*)</c> -- and it does far more than record a target.
-    /// <para><c>Camera::SetFollow</c> @0x5aa500 CONSTRUCTS the chase camera: <c>operator_new(0x90)</c>, then
-    /// <c>CAurBehaviorCameraFollow::CAurBehaviorCameraFollow(camera + 8, target)</c> -- the owner is the
-    /// camera's OWN <c>CAurObject</c> sub-object -- and installs it through <c>SetBehavior</c>. That behaviour
-    /// is what places the camera every frame; nothing else does.</para>
-    /// <para>Recording the target and nothing else is why every DB-mode area rendered an empty world: the
-    /// camera stayed at the origin with <c>CamBehavior == 0</c>, the view matrix was built there, and an area
-    /// that lies entirely in front of that camera shaded no fragments. ADR 0028 keeps <c>CAurBehavior</c>
-    /// objects real engine-layout objects the game constructs and CX calls through their vtables -- so the
-    /// seam runs the engine's OWN constructor here rather than inventing a stand-in.</para>
-    /// <para>A null target clears the follow, exactly as the engine's null branch does.</para></summary>
+    /// <summary>Slot 21, <c>Camera::SetFollow(CAurObject*)</c>, which does far more than record a target:
+    /// @0x5aa500 CONSTRUCTS the chase camera -- <c>operator_new(0x90)</c>, then the engine's own
+    /// <c>CAurBehaviorCameraFollow(camera + 8, target)</c>, the owner being the camera's OWN <c>CAurObject</c>
+    /// sub-object -- and installs it through <c>SetBehavior</c>. That behaviour places the camera; null clears.</summary>
     [UnmanagedCallersOnly]
     private static void SetFollow(nint self, nint obj)
     {
@@ -331,15 +285,9 @@ internal static unsafe class CameraSlots
     // ---- behaviour: the game's own objects -----------------------------------------------------------
 
     /// <summary>Slot 29, <c>Camera::SetBehavior</c>. The pointer is a GAME-constructed engine-layout
-    /// <c>CAurBehavior</c> subclass (<c>GuiAurAttachToObject</c> allocates 0x88/0x90 bytes, runs the engine's
-    /// constructor and patches the vptr), so it is held as a raw pointer and called through its vtable -- never
-    /// turned into a record.
-    /// <para>The three readers <see cref="SetFollow"/> names have to agree here too, and the third one --
-    /// <c>DbAnim</c>'s table, which is what the per-frame solver dispatches on -- was missing. This slot is
-    /// how <c>GuiAttachViewport</c> @0x68bda0 installs a GUI panel's <c>CAurBehaviorSubwindow</c>, and that
-    /// behaviour is the ONLY thing that ever calls <c>Camera::SetViewPort</c>: unsolved, every panel camera
-    /// kept an empty rect, so every panel was drawn over the whole screen with no clip -- the load menu's
-    /// list spilling past its frame, and a panel landing wherever the full-screen ortho put it.</para></summary>
+    /// <c>CAurBehavior</c> subclass (0x88/0x90 bytes, the engine's constructor, the game's vptr), held raw and
+    /// called through its vtable. All three readers <see cref="SetFollow"/> names must agree here too,
+    /// <c>DbAnim</c>'s solver table included, or <c>GuiAttachViewport</c>'s subwindow never sets a panel rect.</summary>
     [UnmanagedCallersOnly]
     private static void SetBehavior(nint self, nint behavior)
     {
@@ -378,17 +326,19 @@ internal static unsafe class CameraSlots
     }
 
     /// <summary>Slots 23/24/25, <c>GetYaw</c>/<c>GetPitch</c>/<c>GetDist</c>. The engine reads these off the
-    /// camera's BEHAVIOUR (after <c>AsBehaviorCameraFollow()</c>), at <c>behavior+0x54</c>/<c>+0x5c</c>/
-    /// <c>+0x48</c> -- the very fields <c>CNWCModule::InterpolateYaw</c>/<c>Pitch</c>/<c>Dist</c> write
-    /// directly. So does CX.</summary>
+    /// camera's BEHAVIOUR (after <c>AsBehaviorCameraFollow()</c>) -- the very fields
+    /// <c>CNWCModule::InterpolateYaw</c>/<c>Pitch</c>/<c>Dist</c> write directly. So does CX.</summary>
     [UnmanagedCallersOnly]
-    private static float GetYaw(nint self) => DbCamera.BehaviorFloat(Id(self), DbCamera.BehYaw);
+    private static float GetYaw(nint self)
+    { var f = DbCamera.BehaviorFollow(Id(self)); return f.IsNull ? 0f : f.Yaw; }
 
     [UnmanagedCallersOnly]
-    private static float GetPitch(nint self) => DbCamera.BehaviorFloat(Id(self), DbCamera.BehPitch);
+    private static float GetPitch(nint self)
+    { var f = DbCamera.BehaviorFollow(Id(self)); return f.IsNull ? 0f : f.Pitch; }
 
     [UnmanagedCallersOnly]
-    private static float GetDist(nint self) => DbCamera.BehaviorFloat(Id(self), DbCamera.BehDist);
+    private static float GetDist(nint self)
+    { var f = DbCamera.BehaviorFollow(Id(self)); return f.IsNull ? 0f : f.Dist; }
 
     // ---- the viewport and clip block -----------------------------------------------------------------
 
@@ -493,13 +443,9 @@ internal static unsafe class CameraSlots
     // ---- hit tests: the hit stream's HitTest ---------------------------------------------------------
 
     /// <summary>Slot 13, <c>Camera::HitCheck(int, int, Vector*, CHitInfo*)</c>: the pick from a screen pixel,
-    /// and the one slot every mouse hover, click, tooltip and drop in the game goes through -- for the world
-    /// and for every GUI panel alike.
-    /// <para>The segment is <see cref="DbCamera.PickSegment"/>, which has the engine's BOTH arms: a
-    /// perspective camera casts <c>MouseDir</c> from near to far, and an ORTHO one (every GUI panel, and the
-    /// main menu) casts a world -Z segment through the pixel's mapped position. Taking only the perspective
-    /// arm, as this slot first did, makes <c>MouseDir</c>'s <c>tan(0)</c> collapse every pixel onto the
-    /// camera's own axis -- the main menu's buttons then cannot be clicked at all.</para></summary>
+    /// the one slot every mouse hover, click, tooltip and drop goes through, world and GUI panel alike. The
+    /// segment is <see cref="DbCamera.PickSegment"/>, which keeps the engine's BOTH arms -- perspective casts
+    /// <c>MouseDir</c> near to far, ORTHO (every GUI panel) a world -Z segment through the mapped pixel.</summary>
     [UnmanagedCallersOnly]
     private static int HitCheckScreen(nint self, int px, int py, Vec3* at, nint info)
     {
@@ -579,13 +525,8 @@ internal static unsafe class CameraSlots
 
     /// <summary>Linux primary slot 36, <c>Camera::HitCheck(Vector, Vector, Vector*, CHitInfo*)</c>. The
     /// engine's whole body @0x5aa420 is <c>Gob::HitCheck(this + 8)</c> -- the camera's own <c>Gob</c> half,
-    /// which has no model and no parts, so it can only ever return null. It is a <c>Gob</c> override that
-    /// happens to live in <c>Camera</c>'s table (Windows: slot 37 of Camera's Gob vftable at rva 0xd82f18 --
-    /// the TSV said interface slot 12, which is the <c>HitCheck(int,int,...)</c> overload, and that row is
-    /// corrected).
-    /// <para>So this answers null and casts nothing. Running a scene cast here (as it first did) would pick
-    /// geometry for a call the game expects to find nothing, which is worse than useless: the one caller
-    /// shape that reaches it would start reporting hits vanilla never reports.</para></summary>
+    /// which has no model and no parts, so it can only ever return null (Windows: slot 37 of Camera's Gob
+    /// vftable, rva 0xd82f18). So this answers null: a scene cast would report hits vanilla never reports.</summary>
     [UnmanagedCallersOnly]
     private static nint HitCheckRay(nint self, VectorArg from, VectorArg to, Vec3* at, nint info)
     {
@@ -594,18 +535,10 @@ internal static unsafe class CameraSlots
         return 0;
     }
 
-    /// <summary>Slot 20, <c>Camera::HitCheckViewVolumeNearest(Vector const&amp;, Vector const&amp;, Vector*,
-    /// int*)</c> @0x5a4060, read term for term rather than guessed:
-    /// <list type="bullet">
-    /// <item>Only the four SIDE planes are intersected (<c>i = 2..5</c>); near and far are rejectors, not
-    /// candidates.</item>
-    /// <item>A candidate is dropped if it lies outside ANY OTHER plane
-    /// (<c>n.P + d &gt; 0</c> for <c>j != i</c>) -- the engine's own inside-negative convention.</item>
-    /// <item>The out-<c>Vector</c> is written CAMERA-RELATIVE (<c>P -= cam.pos</c>), not in world space.</item>
-    /// <item>The fourth argument is a FOUND FLAG (0/1), not a plane index.</item>
-    /// <item>The return is the view-axis depth (<c>dot(P_rel, plane[0].n)</c>, plane 0 being near), kept only
-    /// while <c>0 &lt; depth &lt; best</c>, and the miss value is the FAR CLIP, not zero.</item>
-    /// </list></summary>
+    /// <summary>Slot 20, <c>Camera::HitCheckViewVolumeNearest</c> @0x5a4060, term for term: only the four SIDE
+    /// planes are candidates (<c>i = 2..5</c>, near and far only reject); a candidate outside ANY other plane
+    /// (<c>n.P + d &gt; 0</c>, inside-negative) is dropped; the out-<c>Vector</c> is CAMERA-RELATIVE; argument
+    /// four is a FOUND FLAG; the return is view-axis depth while <c>0 &lt; depth &lt; best</c>, miss = FAR clip.</summary>
     [UnmanagedCallersOnly]
     private static float HitCheckViewVolumeNearest(nint self, Vec3* from, Vec3* to, Vec3* at, int* found)
     {

@@ -1,9 +1,8 @@
 namespace CX.Alloy.Db;
 
 /// <summary>The four slots <c>StringGob</c> declares as NEW virtuals rather than <c>CAurString</c> overrides,
-/// so they sit in the primary table (Linux 104-107, Windows 93-96) and not in the <c>CAurString</c> one. They
-/// are plain reads of state the setters above already keep; added by the CX-120 seam-obj stream when a live
-/// DB-mode run reached one, and the text stream is welcome to fold them into <c>TextSlots.cs</c>.</summary>
+/// so they sit in the primary table (Linux 104-107, Windows 93-96) and not in the <c>CAurString</c> one. Plain
+/// reads of state the setters already keep.</summary>
 public static partial class TextSlots
 {
     /// <summary><c>StringGob::GetAlignment()</c>.</summary>

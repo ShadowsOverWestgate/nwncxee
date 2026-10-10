@@ -6,12 +6,10 @@ using CX.Alloy;   // MdlCache.Hash: the one content hash
 
 namespace CX.Graphics;
 
-/// <summary>Linked programs kept as driver binaries in <c>cx-shaders/</c> beside cx.cfg, keyed by every stage's
-/// exact text and <see cref="GlContextService.Driver"/>. A launch after the first skips the link -- seconds per
-/// lit variant on NVIDIA (2026-09-29: 10,5 s at the first area frame). NVIDIA's blob is not final code: the first
-/// draw finishes it (probe shader: 12 s link, then 34 ms load + 3,8 s first draw) unless the driver's own disk cache
-/// holds the result (15 ms) -- which is why cx-launch gives that cache a private path. A blob the driver refuses
-/// is deleted and the program compiles as before.</summary>
+/// <summary>Linked programs kept as driver binaries in <c>cx-shaders/</c> beside cx.cfg, keyed by every
+/// stage's exact text and <see cref="GlContextService.Driver"/>, so a launch after the first skips the link;
+/// a blob the driver refuses is deleted and the program compiles as before. An NVIDIA blob is not final code
+/// -- the first draw finishes it unless the driver's own disk cache, which cx-launch keeps private, holds it.</summary>
 internal static unsafe class ProgramBinary
 {
     /// <summary>Entries unused this long are swept at the session's first lookup: every CX release or shader

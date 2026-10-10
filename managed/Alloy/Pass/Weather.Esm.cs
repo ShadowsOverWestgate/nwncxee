@@ -4,16 +4,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>The filtered cover map: the exposure read the lit stage makes is one bilinear fetch of a
-/// variance shadow map (VSM: depth and depth squared, Gaussian-blurred) baked from the cover layer, not a
-/// set of compares. Fixed compare taps make plateaus across the feather (nine taps, nine visible bands under
-/// an awning); rotating them per pixel makes grain only TAA hides, and most players run SMAA. A pre-filtered
-/// map has neither: the blur runs once per cover BAKE (held frames pay nothing) and the edge is as wide as
-/// the "Cover edge" knob says. VSM and not ESM, which this first shipped as: an exponential map's ramp is
-/// 1/(c x roof height) of the feather -- under a 5 m roof the 0.5 m knob drew a 2 cm edge, and 2 m drew
-/// 10 cm -- where Chebyshev's ramp spans the kernel whatever stands above. Shares the snapshot-depth unit,
-/// re-bound at every lit program bind like the SSAO term; the OIT accumulate takes that unit back, and the
-/// stage falls back to a hard compare for those draws (uOit != 0).</summary>
+/// <summary>The filtered cover map: the exposure read the lit stage makes is one bilinear fetch of a variance
+/// shadow map (depth and depth squared, Gaussian-blurred) rather than a set of compares -- fixed taps band
+/// across the feather, rotated ones grain. Shares the snapshot-depth unit, re-bound at every lit program
+/// bind; the OIT accumulate takes that unit back, so those draws fall back to a hard compare.</summary>
 internal static unsafe partial class Weather
 {
     /// <summary>Metres of height a receiver is forgiven -- the blur mixes neighbouring ground heights across the feather.</summary>
@@ -98,7 +92,7 @@ internal static unsafe partial class Weather
     /// <summary>The cover map is gone with its bake (area edge, flush failure): so is the filtered copy.</summary>
     internal static void EsmRelease() { _esmValid = false; ShelterRelease(); }
 
-    /// <summary>CX-102: the cover layer as PLAIN depth -- the same <c>glTextureView</c> the filter reads,
+    /// <summary>The cover layer as PLAIN depth -- the same <c>glTextureView</c> the filter reads,
     /// compare mode off -- or 0 while there is none. The splash pass reconstructs each impact's landing
     /// point from it; the compare sampler the drop stage uses cannot be read for a depth, only tested.</summary>
     internal static uint CoverDepthView => _esmValid ? _esmView : 0;

@@ -5,24 +5,19 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: the three properties the feed lives by, over a SYNTHETIC database -- no engine,
-/// no GL, so run-demo exercises them. They are the ones whose failure is silent in a live session: a build
-/// that writes records on a still frame reads as "the renderer is slow", a visible-set query that drops a
-/// record reads as "geometry is missing", and a view list that reorders reads as "the GUI draws behind the
-/// world". Each would be chased somewhere else entirely.</summary>
+/// <summary>The three properties the feed lives by, over a SYNTHETIC database -- no engine, no GL, so
+/// run-demo exercises them. Each failure is silent live and would be chased elsewhere: a build that writes
+/// records on a still frame reads as a slow renderer, a visible-set query that drops a record as missing
+/// geometry, a view list that reorders as the GUI drawing behind the world.</summary>
 public static unsafe partial class DbFeed
 {
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "DbFeed.SelfCheck");
         ResetForSelfCheck();
-        // Integration triage: this check drives the REAL draw recipes, which acquire REAL texture slots and
-        // REAL arena ranges. Left behind, its two fixtures (cx_white, cx_selfcheck_*) sat in the registry all
-        // session and reported themselves as a FAILED white stand-in on every [alloy] line -- a permanent
-        // false positive on the one line a live triage reads first. The recipes it interned are retired at
-        // the end, which releases both.
-        // R1-23: and its deliberate refusals ("NOTHING IS DRAWN", ">64 views") are PROVING those refusals
-        // fire; they are not this session's news, so they do not go to the log.
+        // This check drives the REAL draw recipes, so it acquires real texture slots and arena ranges: its
+        // fixtures (cx_white, cx_selfcheck_*) must be retired at the end or they report themselves as a
+        // FAILED white stand-in on every [alloy] line. Its deliberate refusals are kept out of the log too.
         _inSelfCheck = true;
         try
         {
@@ -122,8 +117,7 @@ public static unsafe partial class DbFeed
             int writes = TakeFrame();
             check.Expect(LastSeated == 2 && LastReleased == 0,
                          $"a created object seats one slot per drawable part (seated {LastSeated})");
-            check.Expect(writes == LastSeated + LastReleased + LastRewritten,
-                         "the write count is the sum of the three edges and nothing else");
+            check.Expect(writes == 2, "...and writes exactly one record per seated part");
             check.Expect(SceneDb.PartSlot[p0] >= 0 && SceneDb.PartSlot[p1] >= 0
                          && SceneDb.PartSlot[p0] != SceneDb.PartSlot[p1],
                          "each part holds its own ownership slot");
@@ -180,11 +174,10 @@ public static unsafe partial class DbFeed
         }
     }
 
-    /// <summary>R1-1/R1-2: a record freed and re-allocated inside ONE frame. The table's dirty list holds one
-    /// entry per slot, so both marks arrive OR'd together -- and the old tenant must be released against the
-    /// range it was seated over before the new one is seated, in both orders. Getting this wrong loses the new
-    /// object entirely (it is never seated) and leaves a stale range for a later tree change to walk across
-    /// other objects' parts, which is a slot belonging to one object released by another.</summary>
+    /// <summary>A record freed and re-allocated inside ONE frame. The table's dirty list holds one entry per
+    /// slot, so both marks arrive OR'd together, and the old tenant must be released against the range it was
+    /// seated over before the new one is seated, in both orders. Otherwise the new object is never seated and
+    /// a stale range lets a later tree change walk across another object's parts.</summary>
     private static void Recycle(Checker check)
     {
         AlloyRenderer.DbSnapshot snap = AlloyRenderer.DbTableSnapshot();
@@ -400,11 +393,11 @@ public static unsafe partial class DbFeed
         }
     }
 
-    /// <summary>A synthetic two-mesh model: a root dummy and two drawable nodes, each with a unit cube's worth
-    /// of bounds and one triangle, which is all a recipe needs.</summary>
     /// <summary>The one model every case here uses, so the teardown has exactly one thing to retire.</summary>
     private static ModelDef? _fixtureModel;
 
+    /// <summary>A synthetic two-mesh model: a root dummy and two drawable nodes, each with a unit cube's worth
+    /// of bounds and one triangle, which is all a recipe needs.</summary>
     private static ModelDef TwoPartModel()
     {
         if (_fixtureModel != null) return _fixtureModel;

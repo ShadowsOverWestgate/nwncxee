@@ -1,12 +1,12 @@
-# CX-117: textures and PLT in DB mode -- the API surface, and what CX-120 deletes
+# CX-117: textures and PLT -- the API surface, and the engine machinery it replaces
 
-Status: built on `tar/tex` (2026-10-01). The registry, the PLT decode, the master palette and the shader
-resolve are in; the engine-mode machinery they replace is still live because the DB-mode feed is not the only
-path yet. This file is the contract: what the seam calls, and the exact list the CX-120 cutover removes.
+Status: the registry, the PLT decode, the master palette and the shader resolve are in and are what a record
+draws from. The engine-side texture machinery they replace is still in the tree; section 3 is the list of it.
+This file is the contract: what the seam calls, and what is owed.
 
 ## 1. What CX owns now
 
-| Concern | Engine mode (today) | DB mode (CX-117) |
+| Concern | The engine's own machinery | CX's (CX-117) |
 |---|---|---|
 | which textures exist | `CAurTexture` / `CAurTextureBasic`, one per area, freed at the transition | `TexRegistry`, keyed on (resref, kind, cell) under a generation-checked `TexId`, refcounted, never freed by an area edge |
 | a texture's identity | `AurTextureCalculateHashID` (anagram-blind) + a `strcasecmp` | 64-bit FNV-1a over the lower-cased resref + kind, cell in the low 16 bits |
@@ -59,11 +59,10 @@ seam-feed streams install the hooks and the vtable slots.
 then TGA, then PLT, which is the order the engine's own loader and `ReplaceTexturePLT`'s
 `CExoResMan::Exists(resref, 6)` gate reach between them, and the slot takes the kind it found.
 
-## 3. Engine-mode machinery CX-120 deletes when it removes the engine-scene path
+## 3. Engine texture machinery the registry replaces
 
-Still live today, and still correct for engine mode. Each line is gated by nothing yet -- the cutover removes
-it rather than branching on it, because a mode that keeps both warm is what ADR 0018's restart-only rule
-exists to prevent.
+Still in the tree, and owed a deletion. Each line is gated by nothing -- it goes rather than being branched
+on, because a renderer that keeps both warm is what ADR 0018's restart-only rule exists to prevent.
 
 **PLT, which the shader resolve replaces outright:**
 - `OwnedTextures.KeepPltOnCpu()` and the `_pltOnGpu` / `_pltWanted` / `_pltForced` state

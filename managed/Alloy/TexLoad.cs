@@ -11,28 +11,12 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy;
 
-/// <summary>CX-54 step 1: Alloy reads and decodes a world texture's DDS or TGA on a worker thread, during the window
-/// <c>CNWCArea::LoadArea</c> @0x70e010 has already suspended texture building in.
-/// <para>The engine's own shape is what makes this possible. <c>LoadArea</c> calls
-/// <c>AurTextureSuspendUpdates</c> @0x486af0 before its tile loop and <c>AurTextureResumeUpdates</c> @0x486b00
-/// after <c>LoadBorder</c>, so across the whole loop every texture is named, alias-resolved, <c>.txi</c>-parsed
-/// and appended to <c>RefreshTextures</c> UNBUILT -- and nothing is read, decoded or uploaded until the first
-/// <c>Scene::Render</c> after <c>LoadArea</c> returns. That window is the prefetch window, and the engine hands
-/// it over for free.</para>
-/// <para><b>The seam is the decoder slot.</b> <c>Material::InitializeTextures</c> (already hooked by
-/// <see cref="TexStream.OnInitTextures"/>) tells world content from GUI; each newly queued texture is resolved
-/// to a <see cref="TexLocation"/> here, on the main thread, with one pure engine lookup
-/// (<c>CExoResMan::GetKeyEntry</c> @0x53dc90, no I/O and no side effects). The worker reads the bytes itself,
-/// parses them with <see cref="DdsReader"/> and lays out the padded mip chain; the main thread, inside the
-/// engine's own <c>LoadImage</c> call stack, hands that buffer back at <c>AurGetCompressedImage</c>. The engine
-/// then writes every <c>CAurTextureBasic</c> field, mints every GL name and does all its list bookkeeping.
-/// Alloy replicates nothing.</para>
-/// <para><b>Scope.</b> DDS and TGA. A TGA is handed back one slot later, at <c>AurGetRaster</c>
-/// (<see cref="OnRaster"/>): the engine's getter builds a <c>CAuroraTexture</c> around a demanded <c>CResTGA</c>,
-/// and answering the slot skips all of it. A PLT is left to the engine: its getter caches by name
-/// (<c>GetLayeredRaster</c> @0x11236a0), and its read is a few KiB. NWSync (kind 5) carries no offset at all and is left to the engine (<see cref="NwSyncRead"/>). An
-/// XRES/zstd-packed entry is refused and counted, because Windows name-exports no <c>ZSTD_*</c> entry point and
-/// nothing shipped uses the flag.</para></summary>
+/// <summary>
+/// Alloy reads and decodes a world texture's DDS or TGA on the <c>cx-load</c> worker, inside the window
+/// <c>CNWCArea::LoadArea</c> suspends texture building in: across its tile loop every texture is named and queued
+/// UNBUILT, and nothing is read, decoded or uploaded until the first <c>Scene::Render</c> after it returns. The
+/// seam is the decoder slot; the engine still writes every field, mints every GL name, keeps every list.
+/// </summary>
 internal static unsafe partial class TexLoad
 {
     /// <summary>Off; prefetching; prefetching with every hit checked against the engine's own read.</summary>
@@ -71,7 +55,7 @@ internal static unsafe partial class TexLoad
     /// <summary>Main-thread ticks spent in <see cref="Offer"/>, and ticks the worker has been busy (written by the
     /// worker as each job ends): what <see cref="TexStream"/>'s <c>[load]</c> line samples across <c>LoadArea</c>.</summary>
     internal static long OfferTicks, BusyTicks;
-    /// <summary>ponytail: CX-54 [diag] for the Arelith TGA gap -- offers the race found neither DDS nor TGA for, and
+    /// <summary>ponytail: [diag] for the TGA gap (a module shipping TGA-only textures) -- offers the race found neither DDS nor TGA for, and
     /// the TGAs the engine still read, named (capped); drop once the gap is closed.</summary>
     private const int DiagCap = 40;
     private static readonly HashSet<long> _neitherKeys = new();
@@ -195,11 +179,9 @@ internal static unsafe partial class TexLoad
         return *resolved != 0 ? resolved : (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref b.Name);
     }
 
-    /// <summary>The engine's own format race, run without reading anything:
-    /// <c>GetHighestPriorityTextureFormat</c> probes KTX, DDS, 4PC and TGA and then picks by CONTAINER KIND,
-    /// loose file &gt; NWSync &gt; hak &gt; base BIF, taking the formats in that same order inside each kind.
-    /// DDS is the one branch <c>GetCompressedRaster</c> @0x1125990 takes a file for,
-    /// and <c>GetRaster</c> @0x1123080 takes one for a TGA. Returns the winning restype, 0 for none.</summary>
+    /// <summary>The engine's own format race, run without reading anything: <c>GetHighestPriorityTextureFormat</c>
+    /// probes KTX, DDS, 4PC and TGA, then picks by CONTAINER KIND -- loose file &gt; NWSync &gt; hak &gt; base BIF
+    /// -- taking the formats in that same order inside each kind. Returns the winning restype, 0 for none.</summary>
     private static ushort Winner(byte* name, out IntPtr table, out IntPtr entry)
     {
         table = entry = IntPtr.Zero;
@@ -364,12 +346,10 @@ internal static unsafe partial class TexLoad
 
     // ---- the hand-back, main thread, inside the engine's LoadImage ----
 
-    /// <summary>The prepared level-0 pointer for <paramref name="name"/>, or null. Ownership passes to the
-    /// caller, which hands it to the engine; the entry is dropped either way, so a second build of the same
-    /// texture reads through the engine as it always did.
-    /// <para>Identity is re-proved, not assumed: the same lookup the engine is about to make must land on the
-    /// same key entry with the same <c>RESID</c>. That is what makes a hash collision a miss rather than a
-    /// wrong texture, and what makes a runtime resref alias a miss rather than stale bytes.</para></summary>
+    /// <summary>The prepared level-0 pointer for <paramref name="name"/>, or null; ownership passes to the caller,
+    /// which hands it to the engine, and the entry is dropped either way. Identity is re-proved against the same
+    /// lookup the engine is about to make -- same key entry, same <c>RESID</c> -- so a hash collision or a runtime
+    /// resref alias is a miss rather than the wrong texture.</summary>
     internal static byte* Take(IntPtr name, out DdsReader.Info info)
     {
         byte* data = Take(name, DdsResType, out LoadEntry e);
@@ -427,11 +407,10 @@ internal static unsafe partial class TexLoad
     /// <summary>Whether the hand-back is also checked against the engine's own read of the same resource.</summary>
     internal static bool Checking => _armed && _mode == ModeCheck;
 
-    /// <summary>The oracle: what the engine's own getter answered for a texture Alloy just served. Called with
-    /// both buffers in hand, so this is a straight comparison of the reported attributes and of level 0 --
-    /// a mismatch means the location resolution picked a different resource than the engine's race would, and
-    /// it is said loudly (CX-45) and the caller serves the engine's own read instead. The engine's answer is
-    /// released by the caller. True when the two agree.</summary>
+    /// <summary>The oracle: the engine's own getter answer for a texture Alloy just served, compared attribute by
+    /// attribute and over level 0. A mismatch means the location resolution picked a different resource than the
+    /// engine's race would; it is said loudly and the caller serves (and releases) the engine's own read instead.
+    /// True when the two agree.</summary>
     internal static bool Check(IntPtr name, in DdsReader.Info ours, byte* oursData, byte* engineData,
                                int engineContainer, int engineW, int engineH, int engineCh, int engineSize, float engineAlpha)
     {

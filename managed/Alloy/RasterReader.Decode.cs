@@ -44,10 +44,8 @@ public sealed unsafe partial class RasterReader
 
     /// <summary>What <c>OnResourceServiced</c> will make of these bytes: pixels this decoder reproduces, a refusal
     /// (it returns 0), or a decode that touches memory past the resource, which is not reproduced. Colour-mapped
-    /// files (types 1 and 9) are the exception: the engine uploads their indices as greyscale, shifted two
-    /// pixels by its R/B swap at a 1-byte stride, so these are decoded properly instead -- 8-bit indices into a
-    /// 24- or 32-bit map, out as RGB(A) -- and never compared. So is greyscale RLE (type 11), which the engine
-    /// refuses, leaving every such map unloaded: expanded to the 8-bit greyscale a type 3 file would give.</summary>
+    /// files (types 1 and 9) and greyscale RLE (type 11) are the exception -- the engine uploads the indices as
+    /// greyscale and refuses type 11 outright -- so Alloy decodes both properly and never compares them.</summary>
     internal static Verdict ParseTga(ReadOnlySpan<byte> raw, out Tga t, out string? why)
     {
         t = default; why = null;
@@ -155,9 +153,9 @@ public sealed unsafe partial class RasterReader
     }
 
     /// <summary>The engine's pixels for a <see cref="Verdict.Pixels"/> TGA into <paramref name="dst"/>
-    /// (<see cref="Tga.Bytes"/> long), which may be the file's own pixels (the engine's in-place decode). A last
-    /// RLE packet overshooting the pixels is clipped: below the end its bytes are the engine's, past it the
-    /// engine writes beyond its own buffer.</summary>
+    /// (<see cref="Tga.Bytes"/> long), which may be the file's own pixels (the engine's in-place decode), quirks
+    /// and all: the descriptor's top-origin bit is never honoured, RLE packets cross rows and are clipped at the
+    /// last pixel, and every type but 3 and 11 swaps bytes 0 and 2 at the pixel stride.</summary>
     internal static void DecodeTga(ReadOnlySpan<byte> raw, in Tga t, Span<byte> dst)
     {
         int n = t.Bytes, px = t.Px;

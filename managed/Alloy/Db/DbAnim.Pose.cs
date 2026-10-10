@@ -11,28 +11,23 @@ namespace CX.Alloy.Db;
 /// <paramref name="part"/> is an index into <see cref="SceneDb.Parts"/>.</summary>
 public delegate void DbChannelWrite(int part, int type, Vector4 value, float weight);
 
-/// <summary>The pose pass: one run applied to one object's part range.
-/// <para>This is <c>AnimateHierarchy</c> @0x499990 plus the seven <c>InternalControl</c> bodies, with the tree
-/// recursion and the per-node sibling probe deleted. The part range is pre-order and contiguous
-/// (<see cref="SceneDb.ObjPartFirst"/>), and CX-113's cached binding already says which animation node drives
-/// which model node -- so the whole pass is one linear walk over three columns with no pointer chasing, no name
-/// compare and no probing. <c>AnimHierarchy.PairProbes</c> exists to measure what this deletes.</para></summary>
+/// <summary>The pose pass: one run applied to one object's part range. This is <c>AnimateHierarchy</c> @0x499990
+/// plus the seven <c>InternalControl</c> bodies, with the tree recursion and the per-node sibling probe deleted --
+/// the part range is pre-order and contiguous (<see cref="SceneDb.ObjPartFirst"/>) and the cached binding already
+/// says which animation node drives which model node, so the pass is one linear walk over three columns.</summary>
 public static unsafe partial class DbAnim
 {
-    /// <summary>The controller types the part-pose columns carry. Verified against the engine's own binary-MDL
-    /// id remap (<c>FUN_005c01b0</c> @0x5c01b0): a file id is the ORIGINAL 32-bit <c>Part</c> field offset and
-    /// the loader adjusts it to this build's -- base nodes by +8 (8 -> 0x10 <c>Part.pos</c>, 20 -> 0x1c
-    /// <c>Part.rot</c>, 36 -> 0x2c <c>Part.scale</c>) and mesh nodes by +0x18/+0x20 (100 -> 0x7c
-    /// <c>PartTriMesh.selfIllum</c>, 128 -> 0xa0 <c>PartTriMesh.alpha</c>). CX keeps the FILE id, which is the
-    /// same number on both OSes -- the remap is where the engine's per-OS <c>Part</c> layout enters, and the DB
-    /// has no such layout.</summary>
+    /// <summary>The controller types the part-pose columns carry. A file id is the ORIGINAL 32-bit <c>Part</c>
+    /// field offset, which the engine's loader @0x5c01b0 remaps to this build's layout (base nodes +8, mesh nodes
+    /// +0x18/+0x20). CX keeps the FILE id: the same number on both OSes, since the remap is where the engine's
+    /// per-OS <c>Part</c> layout enters and the DB has no such layout.</summary>
     private const int CtlPosition = Ctl.Position, CtlOrientation = Ctl.Orientation, CtlScale = Ctl.Scale;
     /// <inheritdoc cref="CtlPosition"/>
     private const int CtlSelfIllum = Ctl.SelfIllumColor, CtlAlpha = Ctl.Alpha;
 
-    /// <summary><see cref="SceneDb.PartLitAnim"/>'s three column bits, and <see cref="LitKeyed"/>: a light
-    /// track with more than one key has driven the part, so its value never settles (mode 0's
-    /// <c>LightmapBake.Drives</c>/<c>AnimationDrives</c> test).</summary>
+    /// <summary><see cref="SceneDb.PartLitAnim"/>'s three column bits, and <see cref="LitKeyed"/>: a light track
+    /// with more than one key has driven the part, so its value never settles -- the bake's
+    /// <see cref="CX.Alloy.LightmapBake.AnimationDrives"/> test.</summary>
     internal const byte LitColour = 1, LitRadius = 2, LitMul = 4, LitKeyed = 8;
 
     private static int _litWrites;
@@ -59,13 +54,10 @@ public static unsafe partial class DbAnim
         => (uint)p < (uint)SceneDb.MaxParts && (SceneDb.PartLitAnim[p] & LitMul) != 0
             ? SceneDb.PartLitMul[p] : rest;
 
-    /// <summary>Does light part <paramref name="p"/> keep moving: a multi-key colour, radius or multiplier
-    /// track on its model node, or on an animation that has posed it. Mode 0's <c>LightmapBake.Drives</c> +
-    /// <c>AnimationDrives</c>; a single-key track settles and is not motion.
-    /// <para>CX-188: the model-node half is <see cref="NodeDef.LitKeyed"/>, memoised on the node. This is asked
-    /// once per light per <c>DbLights.Walk</c> and again per <c>Halos.EnrollDb</c> -- O(lights in the area),
-    /// every frame, still camera or not -- and the controller-array scan it used to do was 1.66% of the game
-    /// thread in the 146-light measurement, the largest O(world) term left outside the draw itself.</para></summary>
+    /// <summary>Does light part <paramref name="p"/> keep moving: a multi-key colour, radius or multiplier track
+    /// on its model node, or on an animation that has posed it. A single-key track settles and is not motion. The
+    /// model-node half is <see cref="NodeDef.LitKeyed"/>, memoised on the node, because this is asked per light per
+    /// <c>DbLights.Walk</c> and again per <c>Halos.EnrollDb</c> -- O(lights in the area), every frame.</summary>
     public static bool LitMoving(int p)
     {
         if ((uint)p >= (uint)SceneDb.MaxParts) return false;
@@ -76,12 +68,10 @@ public static unsafe partial class DbAnim
         return m.Nodes[node].LitKeyed;
     }
 
-    /// <summary>CX-116: install a colour on a light part the way <c>Gob::ControlPartLightColor</c> @0x4436d0
-    /// does -- which is NOT a poke of the colour field. The engine builds a temporary <c>MdlNode</c>, parses
-    /// the ASCII line <c>"color %f %f %f"</c> into it and applies that node's controller to the part's light,
-    /// so the value behaves as a single-key CONTROLLER: it overrides the node's rest key, and it overrides a
-    /// tile light's area-palette colour, from then on. In the DB that is exactly this column and this bit,
-    /// which is why the setter lives beside the controller that writes them rather than in the seam.</summary>
+    /// <summary>Install a colour on a light part the way <c>Gob::ControlPartLightColor</c> @0x4436d0 does, which
+    /// is NOT a poke of the colour field: the engine parses <c>"color %f %f %f"</c> into a temporary
+    /// <c>MdlNode</c> and applies that node's controller, so the value behaves as a single-key CONTROLLER and
+    /// overrides both the node's rest key and a tile light's area-palette colour from then on.</summary>
     public static void ControlLightColour(int p, Vector3 colour)
     {
         if ((uint)p >= (uint)SceneDb.MaxParts || !SceneDb.Parts.LiveAt(p)) return;
@@ -112,9 +102,9 @@ public static unsafe partial class DbAnim
 
     private static int _offChannel;
 
-    /// <summary>The inverse of CX-113's binding: model node index -> animation node index, so the pose walk can
-    /// go over PARTS (a linear column walk) instead of over animation nodes. Keyed on the binding object, so it
-    /// is collected with it when the model cache evicts the model.</summary>
+    /// <summary>The inverse of the model/animation binding: model node index -> animation node index, so the pose
+    /// walk can go over PARTS (a linear column walk) instead of over animation nodes. Keyed on the binding object,
+    /// so it is collected with it when the model cache evicts the model.</summary>
     private static readonly ConditionalWeakTable<ModelCache.AnimBinding, int[]> _inverse = new();
 
     private static int[] Inverse(ModelCache.AnimBinding b)
@@ -205,19 +195,10 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>
-    /// The same animation over the pieces <c>Gob::Append</c> grafted onto this object. The engine grew ONE
-    /// part tree, so its pose walked straight into a creature's torso, arms and cloak; CX makes each piece a
-    /// child object, so the walk stops at the base model's own range and everything appended keeps its REST
-    /// pose -- a body standing stiff at its anchor while the head, which is rigid and simply rides its node,
-    /// moves. A skinned piece is the visible half of that: with its rig nodes never posed, its palette is the
-    /// bind pose.
-    /// <para>Each piece binds the animation against its OWN model (CX-113's cache is per (model, animation)),
-    /// which is what the engine's supermodel synchronise does by name for the grafted nodes.</para>
-    /// <para>Scoped to the ANCHOR, as the engine's walk is: <c>Gob::Append</c> @0x5422a0 makes the piece root a
-    /// child of the anchor part, and <c>AnimateHierarchy</c> @0x599990 pairs a child only with its parent's
-    /// animation node's children. A piece whose root is none of them stays at rest. Bound from the animation's
-    /// root instead, a custom leg carrying its own <c>rootdummy</c> took the body's hip track: thighs above the
-    /// head.</para>
+    /// The same animation over the pieces <c>Gob::Append</c> grafted onto this object -- a creature's torso, arms
+    /// and cloak are each a child object, and without this they keep their REST pose. Each piece binds against its
+    /// OWN model, as the engine's supermodel synchronise does by name, and is scoped to the ANCHOR as
+    /// <c>AnimateHierarchy</c> @0x599990 is: from the animation root instead, a custom leg takes the hip track.
     /// </summary>
     private static void PoseComposition(ModelDef model, int[] baseInv, AnimDef anim, DbId obj, float t, float scale, float w)
     {
@@ -434,8 +415,8 @@ public static unsafe partial class DbAnim
 
     // ================= the key math =================
 
-    /// <summary>The engine's key search, reused from the mode-0 sampler (<c>AnimKeys.Key</c>, a binary search
-    /// where the engine scans; proved identical by <c>AnimRuntime.SelfCheck</c>).</summary>
+    /// <summary>The engine's key search as <see cref="CX.Alloy.AnimKeys"/> transcribes it: a binary
+    /// search where the engine scans, which its own self-check proves identical.</summary>
     private static void Key(ControllerTrack c, float t, out int idx, out float alpha)
     {
         fixed (float* times = c.Times) AnimKeys.Key(times, c.Times.Length, t, out idx, out alpha);
@@ -511,15 +492,10 @@ public static unsafe partial class DbAnim
     private static Quaternion Q4(float[] v, int k) => new(v[k], v[k + 1], v[k + 2], v[k + 3]);
 
     /// <summary>
-    /// A cubic Bezier segment between two keys, evaluated with <c>InterpolateBezier</c> @0x5b9140's own
-    /// polynomial (<c>a*u^3 + 3*c*u^2*t + 3*d*u*t^2 + b*t^3</c>, i.e. the arguments are P0, P3, P1, P2).
-    /// <para><b>A deliberate divergence, not a transcription.</b> The engine builds the two inner control
-    /// points from <c>value[k] + value[k+1]</c> rather than from the key's own tangent rows, and its
-    /// past-the-end branch passes the raw time where every other branch passes the segment alpha and reads one
-    /// key past the array -- both upstream bugs (CX-106 section 8), which is why CX-106
-    /// handed a Bezier track back to the engine instead of transcribing them. There is no engine to hand it to
-    /// in DB mode, so this evaluates the curve the file MEANS: the out-tangent of the near key and the
-    /// in-tangent of the far one, as control-point OFFSETS. Counted on the period line.</para>
+    /// A cubic Bezier segment between two keys, on <c>InterpolateBezier</c> @0x5b9140's polynomial
+    /// (<c>a*u^3 + 3*c*u^2*t + 3*d*u*t^2 + b*t^3</c>, so the arguments are P0, P3, P1, P2). A deliberate
+    /// divergence: the engine's inner control points come from <c>value[k] + value[k+1]</c> and its past-the-end
+    /// branch reads a key past the array, so this uses the near key's out-tangent and the far key's in-tangent.
     /// </summary>
     private static float Bezier(float p0, float outT, float p3, float inT, float t)
     {
@@ -528,7 +504,7 @@ public static unsafe partial class DbAnim
         return p0 * u * u * u + 3f * p1 * u * u * t + 3f * p2 * u * t * t + p3 * t * t * t;
     }
 
-    /// <summary><c>slerp</c> @0x5b6500, reused from the mode-0 sampler so the blend is bit-identical: the
+    /// <summary><c>slerp</c> @0x5b6500, transcribed so the blend is bit-identical: the
     /// shortest arc by negating the FIRST argument, the engine's two exact escapes, and no renormalisation.
     /// </summary>
     private static Quaternion Slerp(Quaternion a, Quaternion b, float w)

@@ -881,7 +881,7 @@ offset	CAurTriangleBin	centre	0x24	0x24	# BinCentre
 offset	CAurTriangleBin	radius	0x30	0x30	# BinRadius
 
 # ---- CX-107 behaviours (CX-107) ----
-# The field offsets were read off BOTH images: the Linux ones from ~/nwn-decomp/8193.37-17, the Windows
+# The field offsets were read off BOTH images: the Linux ones from $NWN_DECOMP/8193.37-17, the Windows
 # ones from nwmain.exe's own disassembly of the exported constructors (??0CAurBehavior*@@) and of
 # ?Control@CAurBehaviorCrossSceneAttach*@@ -- no Ghidra run was needed, and no value here is an inference
 # from "the class looked the same". The one divergence is CrossSceneAttachWithOffset's offset Vector:

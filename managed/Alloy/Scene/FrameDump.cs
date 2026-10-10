@@ -7,30 +7,19 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#192: a one-shot dump of what the Alloy colour pass actually submits, as a file two runs of the
-/// same area from the same camera can be diffed against. Armed by <c>/framedump</c>, consumed by the very
-/// next <c>BuildBatches</c>, written on the render thread and then disarmed.
-/// <para>It exists for the behaviour-preserving refactors (#193, #194): "the renderer draws the same thing"
-/// is not a claim an eye can settle on a tileset, and the failure mode is not a crash -- it is one texture
-/// rotation wrong on one tileset, found three weeks later.</para>
-/// <para><b>Canonical, not chronological.</b> The ticket asked for submission order; submission order is not
-/// run-stable. Enrollment walks an open-addressed table hashed on POINTERS, so ASLR reshuffles it between
-/// runs and a literal submission-order dump diffs against itself. Every row is therefore sorted on its own
-/// content, and every runtime-assigned identity (pointers, GL texture ids, bindless handles, minted group
-/// indices) is replaced by something derived from content: texture NAMES, and a VAO ordinal assigned by
-/// first appearance in the sorted order.</para>
-/// <para>Allocates and does file IO on the frame it fires. That is deliberate and bounded: it is one opt-in
-/// frame, the same licence <c>[dumpframe]</c> already takes, and the alternative is a preallocated row table
-/// sized for the part cap.</para></summary>
+/// <summary>A one-shot dump of what the Alloy colour pass submits, as a file two runs of the same area from
+/// the same camera can be diffed. Armed by <c>/framedump</c>, consumed by the very next <c>BuildBatches</c>,
+/// written on the render thread and then disarmed. CANONICAL, not chronological: enrollment hashes POINTERS,
+/// so every row is sorted on its own content and every runtime identity is replaced by a derived one.</summary>
 internal static unsafe class FrameDump
 {
     /// <summary>Set by <c>/alloy framedump</c>, cleared by the frame that serves it. Not volatile-guarded beyond
     /// this: a missed pickup costs one more frame, and the command is idempotent.</summary>
     internal static bool Armed;
 
-    /// <summary>#192: the <c>alloy.framedump</c> button -- a one-shot ACTION. The next colour pass serves it;
-    /// the log line names what the PREVIOUS one wrote, because the render thread is the only place the
-    /// answer exists, and that is what turns "run it twice and diff" into a loop a human can drive.</summary>
+    /// <summary>The <c>alloy.framedump</c> button -- a one-shot ACTION. The next colour pass serves it; the
+    /// log line names what the PREVIOUS one wrote, because the render thread is the only place the answer
+    /// exists, and that is what turns "run it twice and diff" into a loop a human can drive.</summary>
     internal static void Arm()
     {
         Armed = true;
@@ -38,9 +27,9 @@ internal static unsafe class FrameDump
         KnobGroup.Log?.Info($"[framedump] armed -- writing to {Dir} on the next Alloy pass{prev}");
     }
 
-    /// <summary>The number the batching walk cuts groups on run-length (#195): rows carry their FULL key, so
-    /// the distinct-key count falls out of the same sort that makes the dump diffable. Kept after a dump so
-    /// the command's reply can report it.</summary>
+    /// <summary>The number the batching walk cuts groups on run-length: rows carry their FULL key, so the
+    /// distinct-key count falls out of the same sort that makes the dump diffable. Kept after a dump so the
+    /// command's reply can report it.</summary>
     internal static int LastGroups, LastDistinct, LastDraws;
 
     private struct Row
@@ -49,20 +38,9 @@ internal static unsafe class FrameDump
         public string Draw;   // this draw's geometry + its SSBO record
         public int Vao;       // raw GL name; replaced by an ordinal before writing
         /// <summary>The item's byte offset and base vertex inside the VDO's SHARED pools. Held so the rows
-        /// carry their full identity in memory, and DELIBERATELY NEVER WRITTEN.
-        /// <para>They look like content and are not: they are allocation offsets, handed out in the order
-        /// geometry was packed into the pool, so they move between runs exactly as a GL texture id or a
-        /// pointer does. Printing them raw made 5458 of 5459 draw lines differ between two runs of the same
-        /// area -- measured, not reasoned; the first cut of this file asserted they were "a content
-        /// fingerprint of the VDO" and they are the opposite.</para>
-        /// <para>And unlike the VAO they cannot be ORDINALISED either, which was the obvious next idea and
-        /// is worse: a dense first-appearance counter over thousands of items shifts for every row the two
-        /// runs do not share, so any scene drift at all renumbers the tail. Measured on the same pair:
-        /// dropping them matched 4314 rows, ordinalising them matched 195.</para>
-        /// <para>What is lost: two draws that swap items of the SAME index count under the same material
-        /// read identically. <c>n=</c>, the model matrix and the material columns are the fingerprint that
-        /// remains, and short of reading the index buffer back there is nothing content-derived to put
-        /// here.</para></summary>
+        /// carry their full identity in memory, and DELIBERATELY NEVER WRITTEN: they are allocation offsets,
+        /// so they move between runs the way a pointer does, and ordinalising them is worse -- a dense counter
+        /// renumbers the whole tail on any scene drift. What is lost is telling two same-sized items apart.</summary>
         public long Off;
         public int Base;
     }
@@ -86,13 +64,9 @@ internal static unsafe class FrameDump
     internal static bool Capturing => _capturing;
 
     /// <summary>One submitted draw, called from the staging walk with everything in hand.
-    /// <para>TWO strings, not one, and the split is what makes the numbers mean anything. <b>Key</b> is the
-    /// batcher's OWN cut key, reproduced exactly -- including #153's bindless merge (a lit batch stops
-    /// splitting on its textures, so neither does the key) and the normalised blend pair (zero for a class
-    /// that does not blend). Counting distinct Keys is therefore #195's question and not a near-miss of it.
-    /// <b>Show</b> is the human column: the texture NAMES, which is where the diff surface's value is, and
-    /// which under merge belong on the draw rather than on the group precisely because the group no longer
-    /// splits on them.</para></summary>
+    /// <para>TWO strings, not one. <b>Key</b> is the batcher's OWN cut key reproduced exactly, including the
+    /// bindless merge and the normalised blend pair, so counting distinct Keys counts the groups it would
+    /// mint. <b>Show</b> is the human column: the texture NAMES, which under merge belong on the draw.</para></summary>
     internal static void Row_(int cls, bool lit, int vao, IntPtr mat, uint mode, int feat, bool dis,
                               int blend, bool noCull, int slots, bool merge, int idxCount, nint off,
                               int baseVertex, float* r)
@@ -175,14 +149,10 @@ internal static unsafe class FrameDump
         }
     }
 
-    /// <summary>Put the rows in an order derived from their content alone, fold the run-assigned VAO name
-    /// into an ordinal, and return the count of DISTINCT full keys -- which is what the run-length cut in
-    /// BuildBatches would have minted had the sort agreed with the key (#195).
-    /// <para>Two sorts, not one: the ordinal can only be assigned once an order exists, and it has to be in
-    /// the key afterwards or two groups differing only by VAO interleave.</para>
-    /// <para>ponytail: two rows identical in key AND draw but on different VDOs could swap ordinals between
-    /// runs -- indistinguishable geometry on two VAOs. Not seen; add the VDO's item count as a tiebreak if a
-    /// diff ever shows a pure vao= flip.</para></summary>
+    /// <summary>Put the rows in an order derived from their content alone, fold the run-assigned VAO name into
+    /// an ordinal, and return the count of DISTINCT full keys. Two sorts, not one: the ordinal can only be
+    /// assigned once an order exists, and it has to be in the key afterwards or two groups differing only by
+    /// VAO interleave. ponytail: add the VDO's item count as a tiebreak if a diff shows a pure vao= flip.</summary>
     private static int Canonicalize()
     {
         _rows.Sort(Compare);
@@ -242,12 +212,9 @@ internal static unsafe class FrameDump
     private static void F(StringBuilder b, float v) => b.Append(v.ToString("F4", CultureInfo.InvariantCulture));
 
     /// <summary>One slot's texture name, and ONLY for a slot the staging walk already resolved.
-    /// <para><paramref name="declared"/> is not politeness, it is the same bound
-    /// <c>AlloyRenderer.ReadMaterial</c> enforces: on a plain <c>Material</c> with no SharedMaterial,
-    /// <c>GetTexture(4..7)</c> is an unbounded read of whatever field happens to sit at that offset, and
-    /// <see cref="AlloyCensus.TexName"/> then walks two vtable slots off the result. Plain materials are the
-    /// majority of shipped content, so an ungated version segfaults on the render thread the first time
-    /// anyone types the command.</para></summary>
+    /// <para><paramref name="declared"/> is the same bound <c>AlloyRenderer.ReadMaterial</c> enforces: on a
+    /// plain <c>Material</c> with no SharedMaterial, <c>GetTexture(4..7)</c> is an unbounded read and
+    /// <see cref="AlloyCensus.TexName"/> then walks two vtable slots off the result.</para></summary>
     private static string Slot(IntPtr mat, int slot, bool declared)
     {
         if (!declared || mat == IntPtr.Zero) return "-";
@@ -256,7 +223,7 @@ internal static unsafe class FrameDump
     }
 
     /// <summary>Close the capture: canonicalise, count the distinct full keys against the groups the
-    /// run-length cut actually minted (#195's step 1), and write the file.</summary>
+    /// run-length cut actually minted, and write the file.</summary>
     internal static void Finish(int groups, ExtenderLog? log)
     {
         if (!_capturing) return;
@@ -270,7 +237,7 @@ internal static unsafe class FrameDump
             Directory.CreateDirectory(Dir);
             string path = Path.Combine(Dir, "frame.txt");
             using var w = new StreamWriter(path, false);
-            w.WriteLine("# sow-client-extender frame dump (#192) -- one G line per distinct BATCH KEY (the");
+            w.WriteLine("# NWNCX:EE frame dump (#192) -- one G line per distinct BATCH KEY (the");
             w.WriteLine("# batcher's own cut key, merge and blend normalisation included), one D line per");
             w.WriteLine("# submitted draw. Canonical order, not submission order: see FrameDump's summary.");
             w.WriteLine("# Under #153's bindless merge the texture names sit on the D lines, because that is");

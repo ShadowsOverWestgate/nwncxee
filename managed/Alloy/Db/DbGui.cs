@@ -5,17 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>a GUI scene, drawn out of the database.</b> In DB mode there is no engine GUI
-/// draw to capture -- <c>Scene::RenderOnlyGobs</c> never runs, because no engine <c>Scene</c> exists -- so this
-/// is what replaces it. A GUI panel's controls are model objects in the panel's own scene
-/// (<c>CGuiPanel::CreateSceneView</c> gives each one a scene and a camera) and its text is
-/// <see cref="ObjKind.Text"/> objects, whose glyph quads CX-119 builds once per change.
-/// <para><b>The depth convention is not re-derived here.</b> It goes through <c>GuiCapture.DepthOf</c>, which is
-/// the one implementation of the engine's scene-name table and its per-run clear latch. A second copy of that
-/// rule is how the GUI starts drawing behind the world in one build and in front in the next.</para>
-/// <para><b>Order.</b> Objects draw in the order their scene received them, which is the order
-/// <c>RenderOnlyGobs</c> walked <c>Scene.Gobs</c>: a GUI panel paints back to front by construction order and
-/// has no depth to sort by. The per-scene list below keeps it without a walk of the object table.</para></summary>
+/// <summary><b>A GUI scene, drawn out of the database.</b> A GUI panel's controls are model objects in the
+/// panel's own scene (<c>CGuiPanel::CreateSceneView</c> gives each one a scene and a camera) and its text is
+/// <see cref="ObjKind.Text"/> objects whose glyph quads are built once per change. Depth goes through
+/// <c>GuiCapture.DepthOf</c>, the ONE implementation of the engine's scene-name table and its clear latch.</summary>
 internal static unsafe class DbGui
 {
     private static readonly int[] _sceneFirst = Minus1(new int[SceneDb.MaxScenes]);
@@ -24,9 +17,9 @@ internal static unsafe class DbGui
     /// <summary>Which scene this object is listed under, plus one (0 = not listed). The per-SCENE membership
     /// test R1-13 needs: "already listed" has to mean "listed HERE".</summary>
     private static readonly int[] _listedIn = new int[SceneDb.MaxObjects];
-    /// <summary>CX-188: how many objects each scene's chain holds, so the length of the list
-    /// <see cref="Draw"/> walks is O(1) on the fallback path too (<c>SceneObjects</c> carries its own count).
-    /// Maintained by <see cref="Joined"/> and <see cref="Left"/>, the only two writers of the chain.</summary>
+    /// <summary>How many objects each scene's chain holds, so the length of the list <see cref="Draw"/> walks
+    /// is O(1) on the fallback path too (<c>SceneObjects</c> carries its own count). Maintained by
+    /// <see cref="Joined"/> and <see cref="Left"/>, the only two writers of the chain.</summary>
     private static readonly int[] _sceneN = new int[SceneDb.MaxScenes];
     private static int _listed;
     private static bool _latch;
@@ -78,12 +71,10 @@ internal static unsafe class DbGui
         _listed++; _sceneN[s]++;
     }
 
-    /// <summary>Object <paramref name="o"/> left scene <paramref name="scene"/> (it was destroyed, or moved to
+    /// <summary>Object <paramref name="o"/> left scene <paramref name="scene"/> (destroyed, or moved to
     /// another panel).
-    /// <para>ponytail: an O(n) unlink over that ONE panel's list. Only GUI scenes are listed (R1-12), and a
-    /// panel holds tens of controls, so the walk is tens of compares; the singly-linked list with a tail is
-    /// what keeps APPEND order. The upgrade, if a panel ever holds thousands, is a doubly-linked list, not a
-    /// different structure.</para></summary>
+    /// <para>ponytail: an O(n) unlink over that ONE panel's list -- tens of compares, and the singly-linked
+    /// list with a tail is what keeps APPEND order. The upgrade, for thousands, is a doubly-linked list.</para></summary>
     internal static void Left(int o, DbId scene)
     {
         int s = scene.Index;
@@ -106,11 +97,9 @@ internal static unsafe class DbGui
     }
 
     /// <summary>Draw one GUI view: open its layer with the engine's depth convention, issue every object of the
-    /// scene in order, close it. <paramref name="v"/> is the snapshot's record for this view -- its camera
-    /// matrices, its viewport rect and its view angle, which is the other half of the GUI verdict (the engine
-    /// treats ANY zero-angle camera as GUI).
-    /// <para>Returns the number of draws issued. Zero with a non-empty scene is a refusal, not an empty panel,
-    /// and the counters below are what say which.</para></summary>
+    /// scene in order, close it. <paramref name="v"/> is the snapshot's record for this view -- camera matrices,
+    /// viewport rect and view angle, the other half of the GUI verdict (the engine treats ANY zero-angle camera
+    /// as GUI). Returns draws issued; zero with a non-empty scene is a refusal, and the counters say which.</summary>
     internal static int Draw(DbId scene, in RenderSnapshot.ViewRec v, uint nowMs)
     {
         int s = scene.Index;
@@ -126,8 +115,8 @@ internal static unsafe class DbGui
         int head = _sceneFirst[s];
         LastWhy = 'e';
         if ((members == null || members.Count == 0) && head < 0) return 0;
-        // The draw path is GuiPass's. Without it there is no DB GUI at all -- and unlike mode 0 there is no
-        // engine traversal underneath to fall back on, so this is said rather than left as an empty screen.
+        // The draw path is GuiPass's. Without it there is no GUI at all -- there is no engine traversal
+        // underneath to fall back on, so this is said rather than left as an empty screen.
         LastWhy = 'p';
         if (!GuiPass.Capturing) { Refuse(); return 0; }
         // A panel whose textures are still streaming is HELD, whole, until they land: vanilla painted each
@@ -160,9 +149,9 @@ internal static unsafe class DbGui
             bubble = Prefix(np, "sceneGUI_PNL_BUBBLE"u8);
         }
         // CX's own nameplate feature holds the engine at text-bubble mode 0 so that "nothing of vanilla's
-        // ever draws" (NameplateService) and draws its own bubbles on the 2D UI. In mode 0 the engine honours
-        // that by never rendering a bubble panel's scene at all -- a whole ladder run captures eleven GUI
-        // scenes and not one of them is a bubble. In DB mode the draw is CX's, so CX has to honour its own
+        // ever draws" (NameplateService) and draws its own bubbles on the 2D UI. The engine honours that
+        // text-bubble mode by never rendering a bubble panel's scene at all -- a whole ladder run captures
+        // eleven GUI scenes and not one of them is a bubble. Here the draw is CX's, so CX has to honour its own
         // suppression here, or the panel paints gui_textbubble over the world: the dark rounded rectangle in
         // .scratch/live/ladder-db2/shots/07-area2.png, which the pixel probe named as
         // sceneGUI_PNL_BUBBLE32_300 / pnl_bubble32_300 / node "Bubble09".
@@ -263,17 +252,10 @@ internal static unsafe class DbGui
     private const int MaxHold = 30;
     private static readonly int[] _hold = new int[SceneDb.MaxScenes];
     private static readonly uint[] _holdId = new uint[SceneDb.MaxScenes];
-    /// <summary>CX-188: the <see cref="TexRegistry.LoadSerial"/> at which this scene's prescan last found
-    /// NOTHING waiting, or -1 for a scene handle that has not settled yet. While the serial stands still no
-    /// part of any scene can have gone back to streaming, so the prescan is skipped.
-    /// <para>Invalidation, all three wired: the serial itself (a texture slot entering
-    /// <c>TexState.Loading</c>), the scene's MEMBER COUNT (<see cref="_holdMembers"/>: a panel settles on the
-    /// frame it is created, while its list is still empty, and its controls arrive after that), and the scene
-    /// HANDLE changing (a recycled index is a different panel). What is left uncaught is one member leaving
-    /// and another joining between two draws of the same panel, where the count lands back on itself -- and a
-    /// joining control that needs a texture at all moves the serial, so the pair has to be a swap of
-    /// already-resident art. That part draws its stand-in for a frame or two, which is what
-    /// <see cref="MaxHold"/> concedes anyway.</para></summary>
+    /// <summary>The <see cref="TexRegistry.LoadSerial"/> at which this scene's prescan last found NOTHING
+    /// waiting, or -1 for a scene handle that has not settled yet. While the serial stands still no part can
+    /// have gone back to streaming, so the prescan is skipped. Invalidated by the serial, by the scene's MEMBER
+    /// COUNT (<see cref="_holdMembers"/>: a panel settles before its controls arrive) and by the handle.</summary>
     private static readonly int[] _holdLoad = new int[SceneDb.MaxScenes];
     /// <inheritdoc cref="_holdLoad"/>
     private static readonly int[] _holdMembers = new int[SceneDb.MaxScenes];
@@ -352,13 +334,10 @@ internal static unsafe class DbGui
     /// <summary>Per-layer skip tallies, so a panel that draws nothing says WHICH filter ate its parts.</summary>
     private static int _lKind, _lOff, _lNoRecipe, _lNoGeom, _lNoPalette, _lNoTex;
 
-    /// <summary>CX-120 (gui): one GUI control's model geometry. A control is an ordinary DB object whose parts
-    /// the feed already seated and whose recipe it already interned -- a button's states are ANIMATIONS, so the
-    /// pose the panel wants is whatever <c>PartWorld</c> holds this frame. Each drawable part becomes one
-    /// <see cref="GuiCapture.DbPart"/> record on the panel's own ortho camera.
-    /// <para>This is deliberately NOT the world pass. That chain clears the HDR target and ends by compositing
-    /// the whole display, so running it once per panel overwrote the world with the last panel's empty
-    /// composite (the black frames in <c>.scratch/live/gui2</c>).</para></summary>
+    /// <summary>One GUI control's model geometry: an ordinary object whose parts the feed seated and whose
+    /// recipe it interned -- a button's states are ANIMATIONS, so the pose is whatever <c>PartWorld</c> holds
+    /// this frame -- each drawable part becoming one <see cref="GuiCapture.DbPart"/> record on the panel's own
+    /// ortho camera. NOT the world pass, which clears the HDR target and would overwrite the world per panel.</summary>
     private static int Parts(int o, in RenderSnapshot.ViewRec v, in Matrix4x4 viewProj, bool litScene,
                              in Matrix4x4 over, bool hasOver)
     {
@@ -479,14 +458,10 @@ internal static unsafe class DbGui
         return $"uvsets={mesh.UvSetCount} uv0=({u0:F4}..{u1:F4},{v0:F4}..{v1:F4}) verts={a.Length}";
     }
 
-    /// <summary>CX-120 (gui): <b>which GUI draw lands on this pixel.</b> A shape on screen that mode 0 does not
-    /// have is otherwise unattributable: there are tens of thousands of draws a second and no counter says
-    /// where any of them is. Each probe is a SCREEN point (top-left origin, as a screenshot is read); a draw
-    /// whose projected box covers one names itself once.
-    /// <para>The list is EMPTY in a shipped session and nothing is projected while it is, so the cost on an
-    /// ordinary frame is one array-length compare per draw. <see cref="AddProbe"/> is the entry point: seed it
-    /// from <see cref="Install"/> for the length of an investigation, as the chat-bubble rectangle was found
-    /// (.scratch/live/gui-ladder1).</para></summary>
+    /// <summary><b>Which GUI draw lands on this pixel.</b> Each probe is a SCREEN point (top-left origin, as a
+    /// screenshot is read) and a draw whose projected box covers one names itself once. The list is EMPTY in a
+    /// shipped session and nothing is projected while it is, so an ordinary frame pays one array-length compare
+    /// per draw; <see cref="AddProbe"/> seeds it, from <see cref="Install"/>, for an investigation.</summary>
     private static readonly int[] _probeX = new int[MaxProbes], _probeY = new int[MaxProbes];
     private static int _probeN, _probeSaid;
     private const int MaxProbes = 8, MaxProbeLines = 48;
@@ -547,10 +522,6 @@ internal static unsafe class DbGui
         return m != null && (uint)n < (uint)m.Nodes.Length ? m.Nodes[n].Name : "?";
     }
 
-    /// <summary>This part's diffuse as a GL name: its per-instance override when it has one
-    /// (<c>Gob::ReplaceTexture</c> writes <see cref="SceneDb.PartTexId"/>), else the recipe's. 0 is the
-    /// untextured white the GUI program falls back on, and a texture that is not resident yet registers the
-    /// part as a dependent so its arrival re-dirties it.</summary>
     /// <summary>Does the texture this part actually binds resolve through the master palette? The override
     /// is asked first, exactly as <see cref="Texture"/> binds it -- an item icon arrives as a
     /// <c>Gob::ReplaceTexture</c> override, not as the model's own slot.</summary>
@@ -566,6 +537,10 @@ internal static unsafe class DbGui
     /// <summary>GUI parts whose texture resolved through the master palette this session -- an item icon.</summary>
     private static long _pltParts;
 
+    /// <summary>This part's diffuse as a GL name: its per-instance override when it has one
+    /// (<c>Gob::ReplaceTexture</c> writes <see cref="SceneDb.PartTexId"/>), else the recipe's. 0 is the
+    /// untextured white the GUI program falls back on, and a texture that is not resident yet registers the
+    /// part as a dependent so its arrival re-dirties it.</summary>
     private static uint Texture(int p, int recipe)
     {
         int ov = SceneDb.PartTexId[p * 4];

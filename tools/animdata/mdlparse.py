@@ -6,7 +6,7 @@ Conventions verified against NeverBlender's writer and the stock data:
     (a node with no key keeps its geometry rest transform)
   * orientation is axis-angle (ax ay az radians); a bare `orientation`/`position` line inside an
     animation node is a constant (one key at t=0)
-  * no `*bezierkey` controller exists anywhere in the stock or SoW humanoid chains (grepped),
+  * no `*bezierkey` controller exists anywhere in the stock or a persistent world's humanoid chains (grepped),
     so every controller here is linear / slerp
   * model units are metres
 """

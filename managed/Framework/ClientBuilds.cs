@@ -6,27 +6,11 @@ using System.IO;
 namespace CX.Framework;
 
 /// <summary>
-/// The client builds CX has been measured against, one embedded <c>Framework/Builds/*.tsv</c> each, and every
-/// version-bound number CX reads: each <see cref="EngineLayout"/> row's offset per OS and each
-/// <see cref="SymbolMap"/> <c>At()</c> symbol's Windows RVA. Code declares what is read; the running build's
-/// file says where. The rot gate is "is the running build one of these", and a client update is a new file
-/// written by <c>tools/update/</c> (docs/update-day.md), not an edit to either table.
+/// The client builds CX has been measured against, one embedded <c>Framework/Builds/*.tsv</c> each, carrying every
+/// version-bound number CX reads: each <see cref="EngineLayout"/> row's offset per OS, each <see cref="SymbolMap"/>
+/// <c>At()</c> RVA and each <see cref="SymbolMap.LinuxAnchored"/> address. A file is complete or it is refused; a
+/// row with no value for this OS reads 0 and stands its features down. A new build is a new file (docs/update-day.md).
 /// </summary>
-/// <remarks>
-/// File format, tab-separated, <c>#</c> to end of line is a comment:
-/// <code>
-/// name    8193.37-17
-/// linux   &lt;.note.gnu.build-id&gt;
-/// windows &lt;CodeView GUID + age&gt;
-/// stamp   0x68e408bc                                (PE TimeDateStamp, the RVA-path guard)
-/// offset  CNWCCreature  plated  0x468  0x448       (linux, windows; "-" = never measured there)
-/// rva     _ZN11CNWCMessage...  0x7a41a0            (Windows address of a SymbolMap At() symbol)
-/// lva     nk_scrollbar_behavior  0xdf5ba0          (Linux nm address of a static function nm has no name for)
-/// </code>
-/// A file is complete or it is refused: <see cref="SelfCheck"/> wants one <c>offset</c> line per declared
-/// row, one <c>rva</c> line per <c>At()</c> symbol and one <c>lva</c> line per <see cref="SymbolMap.LinuxAnchored"/> symbol, and a row with no value for the running OS reads 0
-/// and stands its features down (<see cref="EngineLayout.Require"/>).
-/// </remarks>
 public static class ClientBuilds
 {
     /// <summary>One measured client build.</summary>

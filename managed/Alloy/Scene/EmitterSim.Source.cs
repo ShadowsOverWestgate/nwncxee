@@ -6,11 +6,10 @@ using CX.Engine;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120: the mutable half of one emitter -- every field the simulation WRITES and reads back on the
-/// next step. In engine mode it mirrors <c>PartEmitter</c>'s own fields and is stored back to them at the end
-/// of the step; in DB mode there is no engine object to store it in, so it lives in the simulation's own slot.
-/// <para>The basis is three vectors rather than nine floats because that is what every reader of it wants: the
-/// engine's <c>basis[9]</c> is column-major X, Y, Z axes and nothing indexes it as a matrix.</para></summary>
+/// <summary>The mutable half of one emitter -- every field the simulation WRITES and reads back on the next
+/// step, in the simulation's own slot. The basis is three vectors rather than nine floats because that is what
+/// every reader wants: the engine's <c>basis[9]</c> is column-major X, Y, Z axes and nothing indexes it as a
+/// matrix.</summary>
 internal struct EmitMut
 {
     /// <summary>The emitter transform the particles are currently expressed in -- refreshed from
@@ -43,17 +42,10 @@ internal struct EmitMut
     internal Vector3 BoltLastDelta, BoltLastPos;
 }
 
-/// <summary>CX-120: <b>one emitter, as a value.</b> Every parameter <see cref="EmitterSim"/> and
-/// <see cref="Particles"/> read, snapshotted once per emitter per frame from EITHER the engine's
-/// <c>PartEmitter</c>/<c>MdlNodeEmitter</c> views (mode 0) or the scene database's
-/// <see cref="EmitterDef"/> + <see cref="DbEmitterChannels"/> + part columns (DB mode).
-/// <para><b>Why a snapshot and not a facade.</b> The movers read the emitter's position, its previous frame and
-/// its basis once PER PARTICLE; a two-source property would branch there. A snapshot pays for the branch once
-/// per emitter and leaves the inner loops reading plain fields -- which is also what makes the two sources
-/// provably interchangeable (<c>EmitterSim.SelfCheck</c> runs the same step over both).</para>
-/// <para>CX-188: there is one source left. <c>FillEngine</c>, the transcription of what the pre-CX-120 code
-/// read off the engine's <c>PartEmitter</c>/<c>MdlNodeEmitter</c>, had one caller -- the parity self-check --
-/// so no production snapshot has come from an engine emitter since the seam took the scene graph.</para></summary>
+/// <summary><b>One emitter, as a value.</b> Every parameter <see cref="EmitterSim"/> and
+/// <see cref="Particles"/> read, snapshotted once per emitter per frame out of the scene database's
+/// <see cref="EmitterDef"/> + <see cref="DbEmitterChannels"/> + part columns. A snapshot and not a facade
+/// because the movers read the position, the previous frame and the basis once PER PARTICLE.</summary>
 internal struct Emitter
 {
     /// <summary>The database part index, or -1 for an unfilled snapshot.</summary>
@@ -110,7 +102,6 @@ internal struct Emitter
     internal Quat TargetRot;
     /// <summary>The detonation REQUEST, cleared by the explosion step.</summary>
     internal bool Detonate;
-    /// <summary>Engine mode: how many particles the engine's own list holds (the chunk census).</summary>
 
     /// <summary>The simulation's own state.</summary>
     internal EmitMut M;
@@ -123,18 +114,10 @@ internal static unsafe partial class EmitterSim
     /// 1</c> -- read off the word with the other nine rather than through two more calls.</summary>
     private const int FTinted = 1 << 3, FSplat = 1 << 9;
 
-    /// <summary>Fill a snapshot from the scene DATABASE: the parsed model's <see cref="EmitterDef"/> for what
-    /// the file declares, the node's REST keys blended with whatever an animation has written
-    /// (<see cref="DbEmitterChannels"/>) for every animatable parameter, and the part's own columns for the
-    /// placement and the gates.
-    /// <para>Three engine field names mean something else in the file, and this is the only place that
-    /// translation happens: the engine's <c>coneCap</c> is the MDL's <c>deadspace</c>, its
-    /// <c>windStrength</c>/<c>windFalloff</c> are <c>blastRadius</c>/<c>blastLength</c>, and its
-    /// <c>deadSpace</c> (the p2p arrival radius) is the <c>threshold</c> CONTROLLER. Measured on
-    /// <c>MdlNodeEmitter::InternalParseField</c> @0x4ab... (node+0x9c, +0xa0, +0xa4) and on the controller
-    /// id map (<c>MdlBinary.EngineControllerId</c>: file 188 -&gt; <c>PartEmitter+0xd4</c>).</para>
-    /// <para>The mutable half is left at the fresh world transform, which is what <see cref="Particles"/>
-    /// wants; the simulation overwrites it from its own slot before it steps.</para></summary>
+    /// <summary>Fill a snapshot from the scene database -- <see cref="EmitterDef"/>, the node's rest keys
+    /// blended with <see cref="DbEmitterChannels"/>, the part's own columns -- and the only place three engine
+    /// field names are translated: <c>coneCap</c> is the MDL's <c>deadspace</c>, <c>windStrength</c> and
+    /// <c>windFalloff</c> are <c>blastRadius</c>/<c>blastLength</c>, <c>deadSpace</c> the <c>threshold</c> key.</summary>
     internal static bool FillDb(int part, ref Emitter e)
     {
         ModelDef? m = SceneDb.PartModel[part];
@@ -232,10 +215,8 @@ internal static unsafe partial class EmitterSim
 
     /// <summary>The p2p target, the engine's own rule: <c>SetEmitterTarget</c> @0x4aa7d0 walks the emitter
     /// part's CHILDREN, takes the first reference node among them and makes that node's instance
-    /// (<c>PartReference+0x68</c>, <see cref="SceneDb.PartRefObj"/>) the target. A beam's instance rides its
-    /// victim, which is what puts the far end of a bolt on the thing it was cast at.
-    /// <para>A part's subtree is contiguous in pre-order, so the walk stops at the first part whose parent is
-    /// outside it. No allocation, and an emitter has a handful of children.</para></summary>
+    /// (<c>PartReference+0x68</c>, <see cref="SceneDb.PartRefObj"/>) the target. A subtree is contiguous in
+    /// pre-order, so the walk stops at the first part whose parent is outside it; no allocation.</summary>
     internal static int DbTargets;
 
     private static void TargetOf(int part, int o, ref Emitter e)
@@ -256,15 +237,10 @@ internal static unsafe partial class EmitterSim
         }
     }
 
-    /// <summary>CX-188: <b>just enough of the fill to answer the cull</b> -- the emitter's world position and
-    /// its view radius, and the update mode the dump budget keys on. Ten channel reads against the full fill's
-    /// thirty-odd plus a target walk, an owner transform and an engine scale call.
-    /// <para>The culled emitter needs nothing else: it has always <c>continue</c>d before <c>Advance</c>, so an
-    /// off-screen emitter is not stepped today either -- filling it was waste, not caution. The verdict is bit
-    /// identical to the full fill's, because the position and the radius come from the same columns through
-    /// the same <see cref="ViewRadiusOf"/>.</para>
-    /// <para>False for the same two reasons <see cref="FillDb"/> is false -- no emitter declaration on the
-    /// node, or a dead owner -- so the walk's <c>no-def</c> count keeps its meaning.</para></summary>
+    /// <summary><b>Just enough of the fill to answer the cull</b> -- the emitter's world position, its view
+    /// radius and the update mode the dump budget keys on: ten channel reads against the full fill's thirty-odd.
+    /// The verdict is bit identical to the full fill's, same columns through the same
+    /// <see cref="ViewRadiusOf"/>. False for the same two reasons <see cref="FillDb"/> is.</summary>
     internal static bool CullDb(int part, out Vector3 pos, out float radius, out int mode)
     {
         pos = default; radius = 0f; mode = ModeSingle;
@@ -287,15 +263,9 @@ internal static unsafe partial class EmitterSim
     }
 
     /// <summary><c>PartEmitter::CalculateRadius</c> @0x4ac350, in its non-p2p arm: the distance a particle can
-    /// travel over its own lifetime under its launch speed and its gravity, plus the half-diagonal of the
-    /// largest quad the emitter can reach. The engine caches it in <c>PartEmitter+0x214</c>; DB mode has no
-    /// such field, so it is derived here from the same parameters.
-    /// <para>TWO terms of the engine's are dropped, both of which can only make the radius LARGER -- so the
-    /// owned cull is marginally tighter than vanilla's rather than looser. One is the live-particle extension
-    /// (it re-walks every particle and takes the furthest, which would make the radius a per-frame quantity);
-    /// the other is a vector read off <c>PartEmitter+0x200</c> whose field this stream could not name. A p2p
-    /// emitter's radius is the distance to its target, which DB mode has no target edge for at all.</para>
-    /// </summary>
+    /// travel over its lifetime under its launch speed and gravity, plus the half-diagonal of the largest quad
+    /// the emitter can reach. TWO of the engine's terms are dropped -- the live-particle extension and a vector
+    /// at <c>PartEmitter+0x200</c> -- and both can only make the radius LARGER, so this cull is tighter.</summary>
     private static float ViewRadiusOf(float mass, float life, float vel, float randVel,
                                       float sizeStartX, float sizeEndX, float sizeStartY, float sizeEndY,
                                       float sizeMid, float sizeMidY)
@@ -351,21 +321,10 @@ internal static unsafe partial class EmitterSim
         return t;
     }
 
-    /// <summary>CX-188: this NODE's rest keys, in <c>Ch*</c> ordinals, resolved on first sight and memoised on
-    /// the node itself (<see cref="NodeDef.EmRest"/>). Every read used to call <see cref="NodeDef.Controller"/>,
-    /// a linear search of the node's controller list, about thirty times per emitter per frame: 4,3% self of
-    /// the main thread's on-CPU samples (<c>perf-0927</c>), under a <see cref="FillDb"/> that ran for every
-    /// emitter in the area whether it was on screen or not.
-    /// <para><b>Keyed by the node, so there is no invalidation edge.</b> The keys are a pure function of
-    /// <see cref="NodeDef.Controllers"/>, which is immutable once parsed -- so a part whose model or node
-    /// changes, a part index the database re-tenants and a re-parsed model all read a DIFFERENT
-    /// <see cref="NodeDef"/> and therefore a different memo, with nothing to invalidate and no edge for a
-    /// writer to miss. The memo dies with the model the cache drops.</para>
-    /// <para><b>What an animation writes is never here.</b> <see cref="DbEmitterChannels"/>'s block is read
-    /// live on every fill (<see cref="Val"/>), asked once per emitter rather than once per channel, so an
-    /// emitter whose rate or size is keyed still ramps.</para>
-    /// <para>One array per distinct emitter NODE, at first sight -- the accepted first-sight cost, like the
-    /// model parse that produced the node. Four hundred torches of one model share one.</para></summary>
+    /// <summary>This NODE's rest keys in <c>Ch*</c> ordinals, resolved on first sight and memoised on the node
+    /// itself (<see cref="NodeDef.EmRest"/>) -- one array per distinct emitter node, so four hundred torches of
+    /// one model share one. Keyed by the node, so there is no invalidation edge: the keys are a pure function
+    /// of the immutable <see cref="NodeDef.Controllers"/>, and the memo dies with the model the cache drops.</summary>
     private static Vector4[] RestOf(NodeDef nd)
     {
         Vector4[]? r = nd.EmRest;

@@ -36,12 +36,10 @@ public sealed class TextFont
     /// <summary><c>lowerrightcoords</c> (<c>+0x30</c>): u, v and -- TTF only -- the glyph's advance in u.</summary>
     public readonly float[] LrU = new float[256], LrV = new float[256], LrZ = new float[256];
 
-    /// <summary>GUI units trimmed off the TOP and the BOTTOM of a glyph's quad because its v range runs past
-    /// the glyph's own cell in the atlas. The engine extrapolates every glyph out to the full line box so one
-    /// quad height serves all of them, and then samples whatever the packer left there; CX's quad reaches one
-    /// pixel row further at the bottom than the engine's, and that row lands on the NEXT packed glyph -- the
-    /// marks under "New"/"News"/"Exit" on the main menu. What is trimmed is the extrapolated part alone, which
-    /// holds no ink of this glyph, so every pixel that drew before still draws. Zero for a bitmap font.</summary>
+    /// <summary>GUI units trimmed off the TOP and the BOTTOM of a glyph's quad because its v range runs past the
+    /// glyph's own cell in the atlas: the engine extrapolates every glyph out to the full line box, and the
+    /// extra row lands on the NEXT packed glyph. Only the extrapolated part, which holds no ink of this glyph,
+    /// is trimmed, so every pixel that drew before still draws. Zero for a bitmap font.</summary>
     public readonly float[] TopTrim = new float[256], BotTrim = new float[256];
 
     /// <summary>The engine's atlas texture name, and the epoch it was built at: a GUI-scale change re-bakes a TTF
@@ -136,8 +134,8 @@ public struct TextCaret
     public float X;
 }
 
-/// <summary>CX-119: one CX text object -- everything <c>StringGob</c> keeps, laid out the same way, plus the quad
-/// cache the engine does not have. Mutated on the game thread by the <c>CAurString</c> slots
+/// <summary>One CX text object -- everything <c>StringGob</c> keeps, laid out the same way, plus the quad cache
+/// the engine does not have. Mutated on the game thread by the <c>CAurString</c> slots
 /// (<see cref="TextSlots"/>); read by the GUI pass.</summary>
 public sealed class TextDoc
 {
@@ -194,27 +192,18 @@ public sealed class TextDoc
     /// (<see cref="EditSelect"/>): the engine has no selection, so nothing it calls reads or clears this.</summary>
     public int SelAnchor = -1;
 
-    /// <summary>CX-120: the built list the ISSUER walks, taken in ONE reference read.
-    /// <para><c>TextQuads.Build</c> runs on the game thread when the text changes; <c>TextQuads.Issue</c> runs
-    /// in the per-view draw and walks the quads through unchecked pointer arithmetic
-    /// (<c>q + run.First * VertFloats</c>). Reading the quads, the runs and the run count as three separate
-    /// fields let a rebuild land between them -- a run index from the NEW list against the OLD array, which is
-    /// an out-of-bounds read and not a torn glyph. A list is now published by assigning this one reference,
-    /// which is atomic, so the issuer sees the whole old list or the whole new one and never a mixture.</para>
-    /// <para>Null until the first build: a document that has never been built draws nothing, which is what the
-    /// issuer's own first test says.</para></summary>
+    /// <summary>The built list the ISSUER walks, taken in ONE reference read. <c>TextQuads.Build</c> runs on the
+    /// game thread, <c>TextQuads.Issue</c> in the per-view draw with unchecked pointer arithmetic, so reading
+    /// the quads, the runs and the run count as three fields would let a rebuild land between them -- a NEW run
+    /// index into the OLD array. Publishing is the one atomic reference assignment. Null until the first build.</summary>
     public QuadList? PublishedQuads;
 
     private readonly QuadList _a = new(), _b = new();
 
     /// <summary>The list the next build fills: the one that is NOT published, so the builder never writes an
-    /// array an issuer may be walking.
-    /// <para>Two slots are enough because of the frame boundary, and only because of it. A slot is recycled
-    /// one build after it was published, and the boundary bounds builds per frame -- so the slot taken here
-    /// was published in an EARLIER frame, whose issuers finished before <c>RenderSnapshot.Publish</c> let this
-    /// frame through (it waits while the renderer still holds one). A second build of the SAME document inside
-    /// one frame is the case that argument does not cover, so it takes a fresh list instead: correct, and in
-    /// steady state it never happens.</para></summary>
+    /// array an issuer may be walking. Two slots suffice only because of the frame boundary -- a slot is
+    /// recycled one build after publication, and <c>RenderSnapshot.Publish</c> waits while the renderer still
+    /// holds a frame. A SECOND build of the same document inside one frame takes a fresh list instead.</summary>
     public QuadList NextList()
     {
         QuadList next = ReferenceEquals(PublishedQuads, _a) ? _b : _a;
@@ -284,15 +273,10 @@ public sealed class QuadList
     public long PubSeq = -1;
 }
 
-/// <summary>CX-119: CX's text objects -- <c>ObjKind.Text</c> records in <see cref="SceneDb"/> with their text state
-/// in this side table, and an exact port of <c>StringGob</c>'s layout.
-/// <para>Layout is the engine's to the pixel: the measure loop is
-/// <c>CAurFont::CalculateVisibleStringLengthAndWidth</c> @0x496700, the break is <c>StringGob::WrapLines</c>
-/// @0x494d80, the visible window is <c>ShowAsManyLinesAsYouCan_Temp</c> @0x4940a0, and the per-line placement is
-/// <c>StringGob::Render</c> @0x4933a0. CX-187 records each, including the engine
-/// behaviours that look like bugs and are reproduced on purpose.</para>
-/// <para>Unlike the engine, the glyph quads are built once per change rather than per frame: <c>TextOut</c> rebuilds
-/// every quad from the string bytes on every frame, which is the whole per-frame cost of engine text.</para></summary>
+/// <summary>CX's text objects -- <c>ObjKind.Text</c> records in <see cref="SceneDb"/> with their state in a
+/// side table, an exact port of <c>StringGob</c>'s layout, quirks included: measure
+/// <c>CAurFont::CalculateVisibleStringLengthAndWidth</c> @0x496700, break <c>WrapLines</c> @0x494d80, window
+/// <c>ShowAsManyLinesAsYouCan_Temp</c> @0x4940a0, placement <c>Render</c> @0x4933a0; quads built per change.</summary>
 public static class TextObjects
 {
     /// <summary>One physical pixel in GUI units: the engine's <c>CAurora::cm_fGUIToPixel</c>, which
@@ -427,15 +411,10 @@ public static class TextObjects
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float AlignToPixel(float v) => MathF.Floor(v / GuiToPixel + 0.5f) * GuiToPixel;
 
-    /// <summary><c>CAurFont::CalculateVisibleStringLengthAndWidth</c> @0x496700: measure
-    /// <paramref name="l"/> under <paramref name="maxWidth"/>, writing its visible length, width, height and
-    /// ascent. <paramref name="doWrap"/> is the engine's third argument: with it, an overflow that saw a space
-    /// rewinds to that space.
-    /// <para>The height and ascent GROW and are never shrunk, so a line measured by two fonts keeps the tallest.
-    /// <c>AddLine</c>, <c>InsertLine</c>, <c>SetLine</c> and <c>UnWrapLines</c> zero both before calling in;
-    /// <c>WrapLines</c> and <c>RecalcDisplayData</c> do not.</para>
-    /// <para>Returns the engine's value: 1 when the line overflowed with no space to rewind to and no newline,
-    /// else 0. No engine caller reads it; it is returned for parity.</para></summary>
+    /// <summary><c>CAurFont::CalculateVisibleStringLengthAndWidth</c> @0x496700: measure <paramref name="l"/>
+    /// under <paramref name="maxWidth"/>, writing its visible length, width, height and ascent; with
+    /// <paramref name="doWrap"/> (the engine's third argument) an overflow that saw a space rewinds to it.
+    /// Height and ascent GROW, never shrink, so a line measured by two fonts keeps the tallest.</summary>
     public static int Measure(TextFont f, TextLine l, float maxWidth, bool doWrap)
     {
         // The engine returns before touching the item when the font has no texture, and GetSymbolCoords hands
@@ -808,14 +787,10 @@ public static class TextObjects
 
     // ---- the caret ----
 
-    /// <summary><c>CAurFont::UpdateCaret</c> @0x496ad0. It walks the line's bytes and stops at the FIRST of
-    /// three things: the pen passing <paramref name="limit"/> by more than half the next glyph (so a click lands
-    /// on the nearer gap), the pen reaching the caret's current column, or -- only when
-    /// <paramref name="stopAtNewline"/> -- a newline. It ALWAYS writes both the column and the x, so passing
-    /// column -1 with a target x turns a coordinate into a column, and passing a column with a huge limit turns
-    /// a column into an x.
-    /// <para>Markup-blind, exactly like the engine: a line holding <c>&lt;c…&gt;</c> gets a caret that counts the
-    /// markup bytes as glyphs.</para></summary>
+    /// <summary><c>CAurFont::UpdateCaret</c> @0x496ad0: walk the line's bytes, stopping at the FIRST of the
+    /// pen passing <paramref name="limit"/> by more than half the next glyph (a click lands on the nearer gap),
+    /// the caret's current column, or a newline when <paramref name="stopAtNewline"/>. It ALWAYS writes both
+    /// column and x, so a target x with column -1 turns a coordinate into a column, and the reverse.</summary>
     public static void UpdateCaret(TextDoc d, int line, float limit, bool stopAtNewline)
     {
         TextFont? f = d.Font;

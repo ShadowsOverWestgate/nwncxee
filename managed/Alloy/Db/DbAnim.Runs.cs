@@ -5,10 +5,8 @@ namespace CX.Alloy.Db;
 
 /// <summary>The run queue: <c>Gob::PlayAnimation</c> @0x49a750 and the queue advance inside
 /// <c>Gob::Animate</c> @0x49d8c0, ported onto the pool in <c>DbAnim.cs</c>.
-/// <para>Index 0 is the NEWEST run and the advance walks <c>n-1</c> down to 0, so the newest writes its pose
-/// last and dominates: the blend in <see cref="DbAnim.Control"/> is <c>lerp(current, key, weight)</c> over
-/// whatever the previous run of this frame left in the column, and there is no separate pose buffer. That, and
-/// nothing else, is the crossfade and the overlay mechanism.</para></summary>
+/// <para>Index 0 is the NEWEST run and the advance walks <c>n-1</c> down to 0, so it writes its pose last and
+/// dominates: <see cref="DbAnim.Control"/> lerps into the column the previous run left, with no pose buffer.</para></summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>The engine's "no previous time" sentinel for a run that has not been stepped.</summary>
@@ -17,8 +15,8 @@ public static unsafe partial class DbAnim
     private static int Slot(int i, int k) => _block[i] * MaxRuns + k;
 
     /// <summary>Has every run on <paramref name="obj"/> finished blending in, so its light values are the
-    /// animation's own and not a point on the ramp? Mode 0's <c>LightmapBake.Settled</c>: a queued run is
-    /// skipped, a fading-out run or one below full weight is not settled.</summary>
+    /// animation's own and not a point on the ramp? A queued run is skipped; a fading-out run or one below
+    /// full weight is not settled.</summary>
     public static bool Settled(DbId obj)
     {
         if (!SceneDb.Objects.Valid(obj)) return true;
@@ -133,9 +131,9 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>The animation <paramref name="name"/> as this object resolves it: the add-in model's chain
-    /// first, then its own, through CX-113's memo (<c>ModelCache.Resolve</c>) so a <c>PlayAnimation</c> costs no
-    /// chain walk and no string compare after the first. <paramref name="root"/> is the chain that answered --
-    /// the model the pose is BOUND against -- and <paramref name="scale"/> the inherited animation scale.</summary>
+    /// first, then its own, through the <c>ModelCache.Resolve</c> memo so a <c>PlayAnimation</c> costs no chain
+    /// walk and no string compare after the first. <paramref name="root"/> is the chain that answered -- the
+    /// model the pose is BOUND against -- and <paramref name="scale"/> the inherited animation scale.</summary>
     private static AnimDef? Find(int i, string name, out ModelDef? root, out float scale)
     {
         root = null;
@@ -306,12 +304,9 @@ public static unsafe partial class DbAnim
 
     /// <summary>
     /// Is run <paramref name="k"/> still the run this iteration started on, and is its slot still addressable?
-    /// <para>Every event call below -- a loop announcement, a start, a finish -- runs GAME code, and a handler
-    /// may call <c>PlayAnimation</c> (which inserts at an index at or below this one and SHIFTS the queue),
-    /// clear the queue outright (which gives the whole run block back), or destroy the object. The run index is
-    /// POSITIONAL, so after any of those the slot number addresses a different run -- or a freed block. This is
-    /// the re-check; it is the DB equivalent of the engine's own re-read of <c>gob+0xe0</c> and its
-    /// <c>SafePointer</c> test, and <see cref="DbAnim.SelfCheck"/> drives all three cases.</para>
+    /// <para>Every event call below runs GAME code, and a handler may call <c>PlayAnimation</c> (which inserts
+    /// at or below this index and SHIFTS the queue), clear the queue (giving the run block back), or destroy
+    /// the object. The run index is POSITIONAL, so after any of those the slot addresses a different run.</para>
     /// </summary>
     private static bool Still(DbId obj, int k, AnimDef anim, out int s)
     {
@@ -445,16 +440,15 @@ public static unsafe partial class DbAnim
         return true;
     }
 
-    /// <summary>The crossfade weight remap, kept identical to mode 0's: smoothstep inside (0, 1), the weights
-    /// the runtime sets outright left alone. The knob lives with <c>CrossfadeService</c>; in DB mode the
-    /// remap is applied here, the one place the weight reaches a pose.</summary>
+    /// <summary>The crossfade weight remap: smoothstep inside (0, 1), the weights the runtime sets outright
+    /// left alone. The knob lives with <c>CrossfadeService</c>; the remap is applied here, the one place the
+    /// weight reaches a pose.</summary>
     private static float Weight(float w) => CX.Services.Anim.CrossfadeService.Weight(w);
 
     /// <summary><c>CurrentAnimation</c> @0x499ac0: the first run in queue order whose flags carry neither
     /// <see cref="RunFlags.AddIn"/> nor <see cref="RunFlags.Queued"/> (the engine's one <c>&amp; 0x28</c>
-    /// test), or -1. A fading-out run still counts -- it is the one playing.
-    /// <para><c>CNWCObject::GetCurrentAnimation</c> reads this, so an add-in overlay must not shadow the
-    /// animation the game thinks it is playing.</para></summary>
+    /// test), or -1. A fading-out run still counts -- it is the one playing, and
+    /// <c>CNWCObject::GetCurrentAnimation</c> reads this, so an add-in overlay must not shadow it.</summary>
     private static int CurrentIndex(int i)
     {
         for (int k = 0; k < _runN[i]; k++)
@@ -472,26 +466,10 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>
-    /// <c>Gob::GetAnimation(name, float* time, float* length)</c> @0x499eb0, transcribed. It answers the RUN,
-    /// not the animation: the run queue is searched for one playing <paramref name="name"/>, and only then is
-    /// the handle non-null.
-    /// <list type="bullet">
-    /// <item>playing: <paramref name="time"/> = that run's current time, <paramref name="length"/> = the
-    /// animation's length, and a non-null handle.</item>
-    /// <item>not playing: <paramref name="time"/> = <b>-1</b>, <paramref name="length"/> = the animation's
-    /// length if the chain resolves it at all and -1 if it does not, and a <b>NULL</b> handle -- null even
-    /// though the model HAS the animation.</item>
-    /// </list>
-    /// <para><b>This is load-bearing, and getting it wrong crashed the client.</b> Two game functions consume
-    /// it, both in <c>CNWCAnimBase</c>: <c>GetOverlayAnimation</c> @0xad1cf0 tests the HANDLE, and
-    /// <c>GetOverlayAnimationPlaying</c> @0xad1490 tests the TIME -- its verdict is literally
-    /// <c>0.0 &lt; time</c>. <c>CNWCObject::SetAnimation</c> @0x8e4bc0 then takes a branch that calls
-    /// <c>ShowEquippedItems(this-&gt;vtbl[0x60]())</c> <b>unguarded</b>, and that slot answers null on a
-    /// placeable. Writing the LENGTH into the time out-param (and answering non-null for an animation the
-    /// model merely owns -- which CX-113's <c>"default"</c> fallback makes nearly every name) therefore made
-    /// every placeable report an overlay playing, and turned a placeable update into
-    /// <c>ShowEquippedItems(nullptr)</c>. An animation genuinely playing at time 0 reads as "not playing"
-    /// here, which is the engine's own quirk and is inherited on purpose.</para>
+    /// <c>Gob::GetAnimation(name, time, length)</c> @0x499eb0: answers the RUN, not the animation -- non-null
+    /// only while <paramref name="name"/> is in the queue, else <paramref name="time"/> is <b>-1</b> and the handle NULL.
+    /// <para>Load-bearing: <c>GetOverlayAnimationPlaying</c> @0xad1490 tests <c>0 &lt; time</c>, so writing
+    /// LENGTH there makes <c>CNWCObject::SetAnimation</c> @0x8e4bc0 call <c>ShowEquippedItems(null)</c>.</para>
     /// </summary>
     private static nint GetAnimationCore(DbId obj, string? name, out float time, out float length)
     {

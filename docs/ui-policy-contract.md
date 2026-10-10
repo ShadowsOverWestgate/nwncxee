@@ -134,7 +134,7 @@ login).
 
 ## Server side (sketch, not built)
 
-The server end is one more `case` beside the hotkeys handler in `sow-codebase`
-(`server/src/Core/src/Services/Hotkeys/HotkeyService.cs`): write `['P'][0x36][0x47]` + the ASCII lines with
+The server end is one more `case` beside the server's hotkeys handler (in the reference server, its
+`HotkeyService`): write `['P'][0x36][0x47]` + the ASCII lines with
 `CreateWriteMessage` / `WriteCHAR`s / `SendServerToPlayerMessage`, as `LoginLoadBarService` builds its vanilla
 packet, and read `0x36/0x48` in the existing `PlayerToServerMessage` subscriber.

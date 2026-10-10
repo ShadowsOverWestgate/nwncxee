@@ -9,41 +9,10 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-54 step 3 (option A): the NWSync store, read by Alloy on its own thread. A resource that lives in a
-/// NWSync manifest is the one container kind whose <c>RESID</c> carries no location -- <c>AddManifestContents</c>
-/// @0x531870 stores an index into a manifest vector that is freed as soon as the key table is built, and
-/// <c>ServiceFromManifest</c> @0x53a640 re-queries by <c>(manifestSha1, resref, restype)</c>. So there is nothing
-/// for a worker to seek to, and this class replays the engine's own two-step query instead.
-/// <para><b>The store, verified against the live files</b> (<c>&lt;userdir&gt;/nwsync</c>):
-/// <c>nwsyncmeta.sqlite3</c> answers
-/// <c>select resref_sha1 from manifest_resrefs where manifest_sha1 = ? and resref = ? and restype = ? limit 1</c>,
-/// and the sharded <c>nwsyncdata_%u.sqlite3</c> answer <c>select size, data from resrefs where sha1 = ?</c>. The
-/// blob is <c>NSYC</c> + version 3 + provider + plain size (16 bytes), then the zstd provider's own
-/// <c>{ tag = 1, dictId }</c> pair, then a raw zstd frame -- read out of
-/// <c>CompressedBufferHandler::DecompressFromBuffer</c> @0x54eb60 and
-/// <c>ZstdCompressionProvider::DecompressBuffer</c> @0x649270, and confirmed byte for byte on three real rows.</para>
-/// <para><b>Choosing the shard.</b> The engine picks one from an in-memory hash set of every SHA-1 it holds
-/// (<c>SQLiteStorageProvider::Fetch</c> @0x561920 walks the shard map at <c>provider+0x90</c> probing
-/// <c>shard+0x48</c>). That set exists only in the engine's heap, so this reader does the honest thing instead:
-/// it queries each shard file it finds on disk, in name order, and takes the first row. A shard that does not
-/// hold the hash returns no row -- the same answer, one indexed primary-key lookup per shard.</para>
-/// <para><b>Thread model.</b> <see cref="Open"/>/<see cref="Close"/> run on the MAIN thread, driven by
-/// <c>CExoResMan::AddManifest</c>/<c>RemoveManifest</c> -- the only two places a manifest becomes (or stops
-/// being) a search source. They publish one immutable <see cref="Source"/> reference; each reading thread then
-/// builds its OWN <see cref="Reader"/> -- its own connections, its own prepared statements, its own zstd
-/// context -- and rebinds it when a call notices a new source. SQLite is compiled <c>THREADSAFE=1</c> in both
-/// binaries, so a private read-only connection per thread is sound, and no two threads ever step one statement;
-/// the engine writes these same files from its task threads, so the connections take a zero busy timeout and a
-/// locked database is a counted miss rather than a stalled worker.</para>
-/// <para><b>Why per thread and not one locked set</b> (CX-55): the cost of a read is the shard's blob fetch, not
-/// the CPU after it -- 558 model rows off the live 6.5 GiB Arelith shard measured 548 ms cold, of which 385 ms
-/// was the fetch, 99 ms the metadata lookup and 62 ms zstd. That is I/O latency, so the readers must overlap;
-/// one lock around them turned <c>cx-load</c> and <c>cx-mdl</c> into one queue and made the model read-ahead
-/// miss the engine's demand order.</para>
-/// <para><b>Not a fallback path</b> (CX-45): a miss here means the caller reads the resource the way it always
-/// did. What is NOT routine -- a store that will not open, a blob we cannot frame, a decompression that
-/// disagrees with its own header -- is logged in full on first occurrence per reason and counted on the period
-/// line thereafter. Gated by <c>alloy.nwsyncread</c>, off by default.</para>
+/// The NWSync store (<c>&lt;userdir&gt;/nwsync</c>), read by Alloy on its own thread. A manifest resource is the
+/// one container kind whose <c>RESID</c> carries no location -- the engine re-queries by
+/// <c>(manifestSha1, resref, restype)</c> -- so there is nothing for a worker to seek to, and this class replays
+/// that two-step query itself. Every miss is counted and the caller then reads the resource the ordinary way.
 /// </summary>
 internal static unsafe class NwSyncReader
 {
@@ -105,8 +74,9 @@ internal static unsafe class NwSyncReader
 
     // ---- reader-owned, one per reading thread ----
 
-    /// <summary>One thread's whole connection to the store. Nothing in it is ever touched by another thread, so
-    /// no statement is ever stepped twice over.</summary>
+    /// <summary>One thread's whole connection to the store: its own handles, prepared statements and zstd
+    /// context. Nothing in it is ever touched by another thread, so no statement is ever stepped twice over, and
+    /// SQLite is built <c>THREADSAFE=1</c> in both client binaries, which is what makes that sound.</summary>
     private sealed class Reader
     {
         /// <summary>The source these handles were built for, or null when there are none.</summary>
@@ -131,16 +101,16 @@ internal static unsafe class NwSyncReader
     // ---- counters (Note) ----
     private static int _calls, _hits, _closedMiss, _metaMiss, _dataMiss, _staleMiss, _busyMiss, _errors, _opens, _ambiguous;
     /// <summary>Ticks spent in each stage of a read, summed over every thread: what says whether the store's
-    /// cost is the lookup, the blob fetch or the decompression (CX-55).</summary>
+    /// cost is the lookup, the blob fetch or the decompression.</summary>
     private static long _metaTicks, _fetchTicks, _zstdTicks;
     /// <summary>Shards the last bind opened, for <see cref="Note"/> alone.</summary>
     private static int _noteShards;
 
     /// <summary>One counter, atomically: several reading threads share them, and a refusal that is not counted
-    /// is a silent fallback (CX-45).</summary>
+    /// is a silent fallback.</summary>
     private static void Bump(ref int counter) => Interlocked.Increment(ref counter);
 
-    /// <summary>Read the boot knob. Once, from the pass roll-call.</summary>
+    /// <summary>Read the boot knob (<c>alloy.nwsyncread</c>, off by default). Once, from the pass roll-call.</summary>
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
@@ -240,18 +210,10 @@ internal static unsafe class NwSyncReader
 
     /// <summary>
     /// The resource's bytes, decompressed, or false. Any thread: the caller's own handles are built on its first
-    /// call and rebound when the manifest changes under it.
+    /// call and rebound when the manifest changes under it. <paramref name="resref"/> is extensionless and
+    /// lowercased before binding -- binary collation, and the store holds only lowercase. On true
+    /// <paramref name="data"/> is <c>NativeMemory.Alloc</c>ed and the CALLER frees it; every miss is counted.
     /// </summary>
-    /// <param name="resref">The resref as the key table spells it, without its extension. Compared with SQLite's
-    /// default binary collation, and the store holds only lowercase (measured: 0 of 157 233 rows differ from
-    /// their own <c>lower()</c>), so this lowercases ASCII before binding.</param>
-    /// <param name="restype">The engine restype, as <c>manifest_resrefs.restype</c> stores it.</param>
-    /// <param name="data">On true: <c>NativeMemory.Alloc</c>ed bytes the CALLER frees with
-    /// <c>NativeMemory.Free</c>. On false: null.</param>
-    /// <param name="size">On true: the decompressed length, which the blob's own header declared.</param>
-    /// <returns>False for every miss -- no such resref, no such blob, a locked store, a store that will not
-    /// open, or a manifest that changed under the call. Each one is counted; the caller reads the resource the
-    /// ordinary way.</returns>
     internal static bool TryRead(ReadOnlySpan<byte> resref, ushort restype, out byte* data, out int size)
     {
         data = null;
@@ -476,8 +438,9 @@ internal static unsafe class NwSyncReader
         return got;
     }
 
-    /// <summary>The stored blob for a SHA-1, from whichever shard holds it. The pointer is the statement's, and
-    /// is live only until that statement is reset -- the caller does that.</summary>
+    /// <summary>The stored blob for a SHA-1: every shard is queried in name order and the first row wins (the
+    /// engine's own shard-to-hash set lives in its heap, so there is nothing to ask). The pointer is the
+    /// statement's and is live only until that statement is reset -- the caller does that.</summary>
     private static bool Fetch(Reader r, byte* sha, out void* blob, out int len)
     {
         long t0 = Stopwatch.GetTimestamp();
@@ -571,7 +534,7 @@ internal static unsafe class NwSyncReader
 
     private static readonly HashSet<string> _said = new();
 
-    /// <summary>CX-45: the first of each reason in full, the rest on the period line.</summary>
+    /// <summary>The first of each reason in full, the rest on the period line.</summary>
     private static void Fail(string reason, ref int counter, string why)
     {
         Interlocked.Increment(ref counter);
@@ -594,22 +557,17 @@ internal static unsafe class NwSyncReader
     private const ushort FixtureResType = 2022;
 
     /// <summary>
-    /// Builds a throw-away NWSync store -- one meta DB and one shard, through the engine's own sqlite3 -- and
-    /// reads a known resource back out of it end to end: the two queries, the NSYC framing and the zstd frame.
-    /// Then it proves the three refusals that matter: an unknown resref, an unknown restype and a closed reader
-    /// all answer false, and that two threads reading the same store at once both get the whole payload -- the
-    /// crash CX-55's per-thread state exists to make impossible.
-    /// <para>Skips LOUDLY where the engine is not there to ask (run-demo's stub host exports no sqlite3), because
-    /// a check that quietly passes on an empty host is worse than no check.</para>
+    /// Builds a throw-away store -- one meta DB and one shard, through the engine's own sqlite3 -- and reads a
+    /// known resource back out of it: the two queries, the NSYC framing, the zstd frame, the three refusals
+    /// (unknown resref, unknown restype, closed reader) and two threads reading at once. Skips LOUDLY where the
+    /// host exports no sqlite3, because a check that quietly passes on an empty host is worse than no check.
     /// </summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         _log ??= log;
+        var check = new Checker(log, "NwSyncReader.SelfCheck");
         if (EngineFn.Sqlite3OpenV2 == null || EngineFn.Sqlite3Exec == null || EngineFn.ZstdDecompressDCtx == null)
-        {
-            log.Always("NwSyncReader.SelfCheck: SKIPPED -- this host exports no sqlite3/zstd, so the store cannot be built or read");
-            return true;
-        }
+            return check.Skip("this host exports no sqlite3/zstd, so the store cannot be built or read");
         if (EngineFn.Sqlite3ThreadSafe != null && EngineFn.Sqlite3ThreadSafe() == 0)
         {
             log.Always("NwSyncReader.SelfCheck: FAILED -- sqlite3_threadsafe() is 0, so a private connection per thread is not sound");
@@ -617,6 +575,7 @@ internal static unsafe class NwSyncReader
         }
 
         string dir = Path.Combine(Path.GetTempPath(), "cx-nwsync-selfcheck-" + Environment.ProcessId.ToString());
+        string? skip = null;
         bool armed = _armed, ok;
         Source? live = _source;
         _armed = true;
@@ -674,7 +633,7 @@ internal static unsafe class NwSyncReader
         }
         catch (IOException e)
         {
-            log.Always($"NwSyncReader.SelfCheck: SKIPPED -- cannot build a fixture store under {dir}: {e.Message}");
+            skip = $"cannot build a fixture store under {dir}: {e.Message}";
             ok = true;
         }
         finally
@@ -689,6 +648,7 @@ internal static unsafe class NwSyncReader
             lock (_said) _said.Clear();
             try { Directory.Delete(dir, true); } catch (IOException) { /* a leftover fixture is harmless */ }
         }
+        if (skip != null) return check.Skip(skip);
         log.Info(ok ? "NwSyncReader.SelfCheck: passed" : "NwSyncReader.SelfCheck: FAILED");
         return ok;
     }

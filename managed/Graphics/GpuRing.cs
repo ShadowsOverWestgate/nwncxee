@@ -4,7 +4,7 @@ namespace CX.Graphics;
 
 /// <summary>
 /// Persistent-mapped ring storage: immutable buffer storage the CPU keeps a live pointer into, divided into
-/// regions the GPU is fenced out of while it reads them (#174/#173). Nothing about it is pass-specific, so
+/// regions the GPU is fenced out of while it reads them. Nothing about it is pass-specific, so
 /// it lives here rather than inside whichever pass happened to need it first.
 /// </summary>
 public static unsafe class GpuRing

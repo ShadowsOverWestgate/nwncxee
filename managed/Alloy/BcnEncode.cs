@@ -3,15 +3,10 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// #265: CPU BC1/BC3 block encoders for the transcode of the engine's uncompressed texture path.
-/// <para>Bounding-box endpoints with a 1/16 inset and nearest-palette indices -- the stb_dxt family's
-/// baseline, chosen because the inputs are game textures the artist already authored for DXT-era hardware,
-/// not because it wins a quality shootout. Runs on the cold load path only, on whatever thread the upload
-/// funnel fired on, and allocates nothing.</para>
-/// <para>Block wire format is the S3TC spec's: BC1 = two RGB565 endpoints little-endian then sixteen 2-bit
-/// indices LSB-first; BC3 prepends an eight-byte BC4 alpha block (two endpoints, sixteen 3-bit indices).
-/// Partial edge blocks clamp-sample, which matches GL_CLAMP/REPEAT closely enough that the seam is the
-/// block's own quantization, not ours.</para>
+/// CPU BC1/BC3 block encoders for the transcode of the engine's uncompressed texture path: bounding-box
+/// endpoints with a 1/16 inset and nearest-palette indices, the stb_dxt family's baseline. BC1 is two RGB565
+/// endpoints little-endian then sixteen 2-bit indices LSB-first; BC3 prepends an eight-byte BC4 alpha block, and
+/// a partial edge block clamp-samples. Cold load path, whatever thread the upload funnel fired on, no allocation.
 /// </summary>
 internal static unsafe class BcnEncode
 {
@@ -40,13 +35,10 @@ internal static unsafe class BcnEncode
         }
     }
 
-    /// <summary>Texels at or below the engine's own <c>fAlphaDiscardValue</c> (0.2, inc_common.shd:593)
-    /// do not take part in the colour-endpoint fit. Their RGB is the matte an artist left behind the alpha
-    /// -- white on most NWN foliage -- and no cutout fragment they produce is ever shaded, but a bounding
-    /// box that includes them drags an endpoint to white and every SURVIVING texel in the block decodes
-    /// along that line. That is a white rim on every alpha edge of every transcoded tree, in the colour of
-    /// nothing on screen. Stock DXT content never shows it because it was encoded once, properly, by a tool
-    /// that already knew this.</summary>
+    /// <summary>Texels at or below the engine's own <c>fAlphaDiscardValue</c> (0.2) stay out of the
+    /// colour-endpoint fit. Their RGB is the matte an artist left behind the alpha -- white on most NWN foliage --
+    /// and no cutout fragment they produce is shaded, but a bounding box that includes them drags an endpoint to
+    /// white and every SURVIVING texel decodes along that line: a white rim on every transcoded alpha edge.</summary>
     private const int MatteAlpha = 51;
 
     /// <summary>One 4x4 colour block -&gt; 8 bytes of BC1, always in 4-colour mode (c0 &gt; c1, or equal

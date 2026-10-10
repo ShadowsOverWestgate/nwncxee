@@ -27,7 +27,7 @@
 // hazard: `#if SHADER_TYPE == 2` silently reads 0 and the file's fragment half vanishes. `inc_vision`
 // is written that way (its body is FRAGMENT ONLY because it reads gl_FragCoord, with an empty
 // `ApplyRacialVision` as the #else), so without this the racial-vision hook compiled to a no-op and
-// SoW's darkness limiting simply did not happen under Alloy -- no error, no effect.
+// content darkness limiting simply did not happen under Alloy -- no error, no effect.
 #define SHADER_TYPE 2
 #define vTexCoords vUV
 #define texUnit0 uTex

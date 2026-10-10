@@ -4,17 +4,15 @@ using System.Numerics;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120: the arena read back on the HOST, for the consumers that want triangles rather than a draw
-/// -- today the acoustic scene. It reads the arena's own mirrors, so it costs no GL call and no readback (the
-/// driver would otherwise wait out the whole queued frame; see the GpuReadback rule).</summary>
+/// <summary>The arena read back on the HOST, for consumers that want triangles rather than a draw -- today the
+/// acoustic scene and the lightmap charter. It reads the arena's own mirrors, so it costs no GL call and no
+/// readback, which the driver would answer by waiting out the whole queued frame.</summary>
 public static unsafe partial class MeshArena
 {
     /// <summary>Append <paramref name="range"/>'s finest triangle list to <paramref name="verts"/> (xyz triples,
-    /// MESH space -- the instance matrix is the caller's business) and its range-local triangles to
-    /// <paramref name="tris"/>, each index already biased by where this range's vertices landed. False means
-    /// the range is gone or carries no triangles, and nothing was appended.
-    /// <para>Cold: once per area settle, off the render thread's acoustic gather, so it takes the live table
-    /// under the lock rather than the draw snapshot (which carries no vertex data).</para></summary>
+    /// MESH space -- the instance matrix is the caller's business) and its triangles to <paramref name="tris"/>,
+    /// each index biased by where this range's vertices landed. False = gone or no triangles, nothing appended.
+    /// Cold, off the render thread, so it takes the live table under the lock rather than the draw snapshot.</summary>
     internal static bool HostTriangles(int range, List<float> verts, List<int> tris)
     {
         lock (_gate)
@@ -43,7 +41,7 @@ public static unsafe partial class MeshArena
         }
     }
 
-    /// <summary>CX-120: the shape of <paramref name="range"/>'s finest run, for a consumer that must size its
+    /// <summary>The shape of <paramref name="range"/>'s finest run, for a consumer that must size its
     /// own buffers before it copies -- <see cref="CX.Alloy.MeshChart"/>'s DB offer. False = nothing to chart
     /// (gone, charted already, skinned, or under a triangle).</summary>
     internal static bool HostMeshSize(int range, out int nv, out int ni, out ulong content, out uint gen)
@@ -62,9 +60,8 @@ public static unsafe partial class MeshArena
 
     /// <summary>Copy that run's attributes out, densely: the arena's vertices are already range-local, so the
     /// indices come back as they are and the caller needs no remap. Spans must be at least the sizes
-    /// <see cref="HostMeshSize"/> gave, for the same range, with nothing freed in between -- the size call
-    /// and this one both take the lock, and a range that died between them answers false.
-    /// <para>Cold: once per mesh per session, on the enrolment path.</para></summary>
+    /// <see cref="HostMeshSize"/> gave, for the same range, nothing freed in between -- both calls take the lock,
+    /// and a range that died between them answers false. Cold: once per mesh per session.</summary>
     internal static bool HostMeshCopy(int range, Span<float> pos, Span<float> nrm, Span<float> uv, Span<ushort> idx)
     {
         lock (_gate)
@@ -94,7 +91,7 @@ public static unsafe partial class MeshArena
         }
     }
 
-    /// <summary>CX-120: a bakeable part was seated on this range; <see cref="NextOfferable"/> hands it to the charter.</summary>
+    /// <summary>A bakeable part was seated on this range; <see cref="NextOfferable"/> hands it to the charter.</summary>
     internal static void WantBake(int range)
     {
         lock (_gate) { if (Alive(range)) _ranges[range].Bake = true; }
@@ -107,17 +104,16 @@ public static unsafe partial class MeshArena
         lock (_gate) { if (Alive(range)) _ranges[range].Offered = true; }
     }
 
-    /// <summary>CX-120: one range's offer mark goes back -- its chart entry was swept, so nothing will file one.</summary>
+    /// <summary>One range's offer mark goes back -- its chart entry was swept, so nothing will file one.</summary>
     internal static void ClearOffered(int range)
     {
         lock (_gate) { if (Alive(range) && !_ranges[range].Charted) _ranges[range].Offered = false; }
     }
 
-    /// <summary>CX-120: every DB offer mark goes back. The mark means "this range is the charter's already",
-    /// and at a world edge it is not: <see cref="CX.Alloy.MeshChart.Revoke"/> drops every chart entry, so a
-    /// range that keeps its mark would never be offered again and the next area would never chart at all --
-    /// measured as a 25 s "Baking the shadows..." hold that ends in the skip, with nothing baked. A CHARTED
-    /// range keeps its mark: it is the charter's own output and is not an input to anything.</summary>
+    /// <summary>Every offer mark goes back. The mark means "this range is the charter's already", which a world
+    /// edge undoes: <see cref="CX.Alloy.MeshChart.Revoke"/> drops every chart entry, so a range that kept its mark
+    /// would never be offered again and the next area would never chart. A CHARTED range keeps its mark -- it is
+    /// the charter's own output, not an input to anything.</summary>
     internal static void ClearOfferMarks()
     {
         lock (_gate)
@@ -125,12 +121,10 @@ public static unsafe partial class MeshArena
                 if (_ranges[i].Live && !_ranges[i].Charted) _ranges[i].Offered = false;
     }
 
-    /// <summary>CX-120: the next range the charter has not been offered, from <paramref name="cursor"/>
-    /// onwards (the cursor is advanced past it, and wraps to 0 when it runs out). -1 = none left this sweep.
-    /// <para>This is what lets the offers happen on the arena's own creation edge rather than on the first
-    /// draw: an area's geometry is in the arena while the loading screen is still up, and the bake's hold is
-    /// waiting for exactly those charts -- so an offer that waits for the batch build waits for a frame the
-    /// hold is holding back.</para></summary>
+    /// <summary>The next range the charter has not been offered, from <paramref name="cursor"/> onwards (the
+    /// cursor advances past it and wraps to 0 when it runs out). -1 = none left this sweep. Offers run on the
+    /// arena's creation edge, not the first draw: an area's geometry is in the arena while the loading screen is
+    /// up, and the bake's hold is waiting for exactly those charts.</summary>
     internal static int NextOfferable(ref int cursor)
     {
         lock (_gate)

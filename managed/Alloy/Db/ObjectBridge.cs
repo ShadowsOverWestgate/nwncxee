@@ -2,15 +2,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120: the three OBJECT-side calls the scene and camera seam makes, as assignable hooks so the
-/// scene stream and the object stream do not have to share a file. <c>Seam/SeamService</c> (seam-obj) fills
-/// them at boot, before the first seam call can arrive; until it does they are honest no-ops and a scene
-/// destroy says so rather than silently leaking its members.
-/// <para>Named apart from seam-obj's own <c>CX.Alloy.Seam.SeamBridge</c>, which is the OTHER direction (the
-/// object slots reaching CX-117/CX-118). Two classes of one name in two namespaces compile and confuse.</para>
-/// <para>This is a wiring seam, not an abstraction: there is exactly one implementation, it is assigned once
-/// at boot on the game thread, and every call site is cold (an object joins or leaves a scene, a scene dies,
-/// a name lookup). The frame path goes through <see cref="SceneDb"/>'s columns and never through here.</para></summary>
+/// <summary>The three OBJECT-side calls the scene and camera seam makes, as assignable hooks so the scene
+/// stream and the object stream need not share a file. seam-obj fills them at boot on the game thread, before
+/// the first seam call can arrive; until it does they are honest no-ops and a scene destroy says so rather than
+/// silently leaking its members. Every call site is cold; the frame path goes through <see cref="SceneDb"/>.</summary>
 public static class ObjectBridge
 {
     /// <summary>Destroy an object record, its part range and its facade (the object destroy edge, ADR 0028
@@ -18,17 +13,15 @@ public static class ObjectBridge
     public static System.Action<DbId>? ObjectDestroy;
 
     /// <summary><b>The one call that goes the other way, and seam-obj must make it.</b> On the object destroy
-    /// edge, synchronously, call <c>DbScene.ObjectDied(obj)</c>: a scene's member list, highlight set, shadow
-    /// gob, blind-light object and skybox slots can each name the dying object, and the member COUNT is read
-    /// by game code (<c>GetAurSceneObjectCount</c>) without waiting for a frame boundary. A fold at the
-    /// present would be a frame too late.</summary>
+    /// edge, synchronously, call <c>DbScene.ObjectDied(obj)</c>: a scene's member list, highlight set, shadow gob,
+    /// blind-light and skybox slots can each name the dying object, and the member COUNT is read by game code
+    /// (<c>GetAurSceneObjectCount</c>) without waiting for a frame boundary.</summary>
     public const string ObjectDiedContract = "seam-obj: call DbScene.ObjectDied(obj) at the destroy edge";
 
     /// <summary>A scene was destroyed and this object was still in it. <b>Detach, do not destroy.</b>
     /// <c>Scene::~Scene</c> @0x472e40 walks its member list calling <c>Gob::SetScene(child, NULL)</c> and
-    /// nothing else -- the gobs OUTLIVE their scene and the game deletes them through their own destructors.
-    /// Destroying them here retired shells the game still held, which showed up live as
-    /// <c>AttachToScene</c>/<c>GetPosition</c>/<c>~Gob</c> arriving on retired facades. Set by seam-obj.</summary>
+    /// nothing else -- the gobs OUTLIVE their scene and the game deletes them through their own destructors, so
+    /// destroying them here would retire shells the game still holds. Set by seam-obj.</summary>
     public static System.Action<DbId>? ObjectSceneDestroyed;
 
     /// <summary>An object's name, as <c>NewCAurObject</c> was given it -- what <c>Scene::GetObject</c> matches

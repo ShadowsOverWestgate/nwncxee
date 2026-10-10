@@ -5,24 +5,17 @@ using System.Text;
 namespace CX.Framework;
 
 /// <summary>
-/// <c>/knobs</c>: print what is tunable (#183). Spec §4.1: the <c>knobs</c> group, zero knobs, whose diagnostic
-/// status line is this report; the generated <c>/knobs</c> handler prints it, gated like every command. No row and
-/// no <see cref="KnobGroup.PanelStatus"/>, so it is a chat surface only and has no submenu (ADR 0030); the panel
-/// reaches the same text through General » About's copy row.
+/// <c>/knobs</c>: print what is tunable -- the registry walk (<see cref="KnobGroup.Walk"/>, one line per declared
+/// knob) and then the Note suppliers, so a knob in neither does not exist. It is the <c>knobs</c> group's
+/// diagnostic status line, with no row and no <see cref="KnobGroup.PanelStatus"/>, so it is a chat surface only
+/// (ADR 0030); the panel reaches the same text through General's About copy row.
 /// </summary>
-/// <remarks>
-/// The registry walk (ADR 0025: <see cref="KnobGroup.Walk"/>, one line per declared knob), then the Note
-/// suppliers. A knob that is in neither does not exist, which is the property the ADR wanted and a
-/// hand-maintained catalogue would quietly lose.
-/// </remarks>
 public static class KnobSurface
 {
     /// <summary>Declare the group, whose <see cref="KnobGroup.Status"/> is <see cref="Report"/>. Once, from the
     /// host, after <see cref="Settings.Load"/> and after <see cref="General"/> has declared, so it walks third.
-    /// <para>Deliberately NOT <c>/help</c>. Registration happens before every service, so first-registration-wins
-    /// would hand <c>/help</c> to the client for good -- and a handled command never reaches the send path, so a
-    /// server's own <c>/help</c> would become unreachable with no way out. Plenty of servers use it, SoW among
-    /// them. The prefixed name is discoverable without claiming a name that is not ours.</para></summary>
+    /// Deliberately NOT <c>/help</c>: a handled command never reaches the send path, so claiming that name would
+    /// make a server's own <c>/help</c> unreachable with no way out.</summary>
     public static void Register()
     {
         KnobGroup g = KnobGroup.Declare("knobs", "General", "Debug info",
@@ -30,11 +23,9 @@ public static class KnobSurface
         g.Status = Report;
     }
 
-    /// <summary>#234: the other thing <c>/knobs</c> has to be able to say -- a knob of the CLIENT's that
-    /// this build TAKES AWAY. It is not in the registry by construction, and a hand-written line here would
-    /// be the catalogue the class exists to avoid, so the layer that removes the knob registers a supplier
-    /// instead and the framework names nothing above it (ADR 0014). Returning null means "nothing to say
-    /// this session", which is how a supplier reports live state rather than a fact.</summary>
+    /// <summary>The other thing <c>/knobs</c> has to say: a knob of the CLIENT's that this build TAKES AWAY. Such a
+    /// knob is in no registry, so the layer that removes it registers a supplier and the framework names nothing
+    /// above it (ADR 0014). A supplier returning null means "nothing to say this session".</summary>
     public static void Note(Func<string?> supplier) => _notes.Add(supplier);
 
     private static readonly List<Func<string?>> _notes = new();

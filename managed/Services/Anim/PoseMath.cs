@@ -70,10 +70,8 @@ internal static unsafe class PoseMath
 
     /// <summary>World-space rotations taking the chain hip <paramref name="h"/>, knee <paramref name="k"/>, ankle
     /// <paramref name="a"/> to reach <paramref name="t"/>: <paramref name="r1"/> about the hip, then
-    /// <paramref name="r2"/> about the new knee. The knee stays in the animation's own bend plane, blended toward
-    /// the character's forward (<paramref name="fwd"/>) as the move grows (<see cref="PoleForward"/>,
-    /// <see cref="PoleBlend"/>); reach past what the animation already stretched is softened
-    /// (<see cref="SoftReach"/>). False when degenerate.</summary>
+    /// <paramref name="r2"/> about the new knee. The knee stays in the animation's own bend plane, blended toward the
+    /// character's forward as the move grows; reach past what the animation stretched is softened. False if degenerate.</summary>
     internal static bool TwoBone(Vector3 h, Vector3 k, Vector3 a, Vector3 t, Vector3 fwd, out Quaternion r1, out Quaternion r2)
     {
         r1 = r2 = Quaternion.Identity;

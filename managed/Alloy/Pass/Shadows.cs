@@ -3,14 +3,9 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>shadow</c> group (spec §4.3 Shadows), and the storage the shadow path reads:
-/// <see cref="SceneInputs"/> (the focus), <see cref="CasterPass"/> (the bake and
-/// its cadence), <see cref="AlloyLights"/> (the receiver's softness terms, respelled from <c>/light</c>) and
-/// <see cref="AlloyRenderer"/> (the sun bias, from <c>/draw</c>). <see cref="Enabled"/> collapses the
-/// <c>shadows</c> key and the feed's own flag; the allocation-sizing rows are Restart and read through
-/// <c>Boot</c>. Touched from <see cref="RenderCommands.Register"/> so it declares on the main thread.
-/// <para><c>dyncount</c> defaults to the cube budget rather than the spec's 16: that is today's effective
-/// <c>cube_dyn_count</c> (#305 -- a 16-page pool saturated in a 32-cube street and every overflow slot fell
-/// back to the combined bake, the churn the split exists to remove).</para></summary>
+/// <see cref="SceneInputs"/> (the focus), <see cref="CasterPass"/> (the bake and its cadence),
+/// <see cref="AlloyLights"/> (the receiver's softness terms) and <see cref="AlloyRenderer"/> (the sun bias).
+/// <see cref="Enabled"/> collapses the <c>shadows</c> key and the feed's own flag; sizing rows are Restart.</summary>
 internal static class Shadows
 {
     internal static readonly KnobGroup G;

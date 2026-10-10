@@ -5,13 +5,13 @@ using System.Text;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-112: compares two <see cref="ModelDef"/> trees node for node and counts the mismatches by
+/// <summary>Compares two <see cref="ModelDef"/> trees node for node and counts the mismatches by
 /// category. The ORACLE of the parse: an ASCII source and the engine's own compiled binary of that same source
 /// must agree, so every category that is not zero is a bug in one of the two readers. Engine-free, so
 /// <c>tools/mdlcheck</c> and the <c>run-demo</c> self-check share it.</summary>
 public sealed class ModelDiff
 {
-    /// <summary>What kind of thing disagreed. One bucket per category the ticket asks to drive to zero.</summary>
+    /// <summary>What kind of thing disagreed. One bucket per category, each of which must stay zero.</summary>
     public enum Cat
     {
         NodeCount, NodeKind, NodeName, Hierarchy, PartNumber, PartNumberSuper, RestPose, ContentFlags,

@@ -3,13 +3,10 @@ using CX.Ui;
 
 namespace CX.Services.Radial;
 
-/// <summary>The <c>radial</c> group (ADR 0025): the master that hands right-click menus to CX's dropdown
-/// (CX-689). Off by default until the CRadialMenu layout has been probed live -- the row sits on every
-/// right-click, and a wrong offset there is a crash, not a glitch. Touched from <c>RadialService.Initialize</c>
-/// so the group declares whether or not the hook arms. The look rows (CX-694) are read per frame by the draw
-/// (swatches are RRGGBBAA; <see cref="Opacity"/> multiplies every alpha); the <see cref="Font"/> face resolves at open, cold.
-/// <see cref="Layout"/> is the CX-692 layout bag (<c>radial.p&lt;N&gt;.*</c>, spec §4.2): Hidden, in-file,
-/// reset-proof, read and written by <see cref="RadialPins"/>, one layout per <see cref="PlayerIdentity"/>.</summary>
+/// <summary>The <c>radial</c> group (ADR 0025): the master that hands right-click menus to CX's dropdown, off by
+/// default until the CRadialMenu layout has been probed live -- the row sits on every right-click, and a wrong offset
+/// there is a crash, not a glitch. The look rows are read per frame by the draw (swatches are RRGGBBAA;
+/// <see cref="Opacity"/> multiplies every alpha); <see cref="Layout"/> is the layout bag <see cref="RadialPins"/> owns.</summary>
 internal static class RadialKnobs
 {
     internal const string ModeCascade = "cascade", ModeDrill = "drill";

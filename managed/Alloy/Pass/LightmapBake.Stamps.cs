@@ -3,11 +3,10 @@ using System.Diagnostics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-56 step 0: the hold's stage split. Every wait between the swallowed AreaLoaded send and
+/// <summary>The hold's stage split: every wait between the swallowed AreaLoaded send and
 /// <see cref="Release"/> gets one <see cref="Stopwatch"/> stamp, printed as a delta from <c>_holdT0</c> on the
-/// release line (and compactly on <c>TexStream</c>'s <c>[load]</c> line). Measurement only: nothing here gates
-/// a release. The stamp sites sit on per-frame paths, so the state is plain <c>long</c>/<c>int</c> fields and a
-/// stamp is a compare plus a timestamp read -- the strings are built once, in <see cref="Release"/>.</summary>
+/// release line. Measurement only -- nothing here gates a release. The stamp sites sit on per-frame paths, so
+/// the state is plain fields and a stamp is a compare plus a timestamp read.</summary>
 internal static unsafe partial class LightmapBake
 {
     /// <summary>What the last <see cref="Arrived"/> was: the quiet window's clock is measured from it, so the

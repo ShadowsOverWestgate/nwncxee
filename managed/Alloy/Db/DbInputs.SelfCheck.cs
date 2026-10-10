@@ -5,10 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: the non-mesh consumers' inputs, over a synthetic database. Each property here
-/// fails SILENTLY in a live session if it is wrong -- a light that files itself under the wrong kind is an
-/// unlit area, a lightmap key that moves with a rebuilt matrix is a bake that never hits, a highlight set that
-/// keeps a destroyed object is a glow around nothing -- so each is asserted off-device instead.</summary>
+/// <summary>The non-mesh consumers' inputs, asserted over a synthetic database. Each property here fails
+/// SILENTLY in a live session if it is wrong -- a light filed under the wrong kind is an unlit area, a
+/// lightmap key that moves with a rebuilt matrix is a bake that never hits, a highlight set that keeps a
+/// destroyed object is a glow around nothing.</summary>
 internal static partial class DbInputs
 {
     internal static bool SelfCheck(ExtenderLog log)
@@ -135,9 +135,14 @@ internal static partial class DbInputs
         var a = DbId.Make(101, 1);
         var b = DbId.Make(102, 1);
         var c = DbId.Make(103, 1);
-        SceneDb.SceneSky0[s] = a; SceneDb.SceneSky1[s] = b; SceneDb.SceneSky2[s] = c;
+        // Written through the slot switch and read back off the columns the passes read: that switch is where
+        // a draw order can actually be transposed, and either half alone would only be an array round trip.
+        SceneDb.SetSceneSky(scene, 0, a); SceneDb.SetSceneSky(scene, 1, b); SceneDb.SetSceneSky(scene, 2, c);
         check.Expect(SceneDb.SceneSky0[s].Value == a.Value && SceneDb.SceneSky1[s].Value == b.Value
-                     && SceneDb.SceneSky2[s].Value == c.Value, "the three sky slots keep their draw order");
+                     && SceneDb.SceneSky2[s].Value == c.Value && SceneDb.SceneSky3[s].IsNull,
+                     "each sky slot is filed under its own column, so the three keep their draw order");
+        check.Expect(SceneDb.SceneSky(scene, 2).Value == c.Value && SceneDb.SceneSky(scene, 4).IsNull,
+                     "...and the reader answers that same column, with no slot past the fourth");
 
         check.Expect(SceneDb.Highlight(scene, a), "an object joins the highlight set");
         check.Expect(!SceneDb.Highlight(scene, a), "...and does not join it twice");

@@ -9,8 +9,7 @@ namespace CX.Alloy.Seam;
 public static unsafe partial class Facade
 {
     /// <summary>A 16-byte all-float return, which SysV classifies into xmm0:xmm1 with no hidden buffer -- the
-    /// shape every by-value <c>Vector</c>, <c>Quaternion</c> and <c>Plane</c> return takes on Linux
-    /// (CX-183 section 4).</summary>
+    /// shape every by-value <c>Vector</c>, <c>Quaternion</c> and <c>Plane</c> return takes on Linux.</summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct Quad { public float X, Y, Z, W; }
 
@@ -48,8 +47,8 @@ public static unsafe partial class Facade
     /// <summary>True once <see cref="Build"/> has run; nothing may be minted before.</summary>
     public static bool Built => _built;
 
-    /// <summary>Lay out every table in this OS's slot order from the registered implementations
-    /// (CX-120). One contiguous block holds them all, which is also what makes <see cref="Shell"/>'s
+    /// <summary>Lay out every table in this OS's slot order from the registered implementations.
+    /// One contiguous block holds them all, which is also what makes <see cref="Shell"/>'s
     /// "is this vptr one of ours" a single range test. Returns the number of slots left unimplemented, each
     /// named in the log: an unimplemented slot is a loud refusal at boot, not a surprise at the first call.</summary>
     internal static int Build(SeamRegistry reg, ExtenderLog log, bool census = true)

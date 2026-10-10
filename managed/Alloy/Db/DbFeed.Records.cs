@@ -5,13 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>the change-driven record build.</b> One fold of the two dirty lists per
-/// frame, and the visible-set query per view. Nothing here scans a table: the only walks are over the dirty
-/// records and over the objects a frustum query yielded, which is ADR 0028 section 4 spelled as code.
-/// <para>Order matters. Objects fold FIRST, because an object's edge is what marks its parts (a destroy
-/// releases their slots, a transform moves their matrices, a tree change reseats them); parts fold second and
-/// see every mark the object fold just made, because <c>DbTable.Mark</c> appends to the list the fold is
-/// walking.</para></summary>
+/// <summary><b>The change-driven record build:</b> one fold of the two dirty lists per frame, and the
+/// visible-set query per view. Nothing here scans a table (ADR 0028 section 4). Order matters -- objects fold
+/// FIRST, because an object's edge is what marks its parts; parts fold second and see every mark the object fold
+/// just made, because <c>DbTable.Mark</c> appends to the list the fold is walking.</summary>
 public static unsafe partial class DbFeed
 {
     /// <summary>The ownership slots a view's query yielded, and the objects it yielded them from. Sized for
@@ -115,9 +112,9 @@ public static unsafe partial class DbFeed
         CloseStaticFolds();
     }
 
-    /// <summary>CX-116: static objects folded since boot, the bits they carried, and the count in the LAST
-    /// frame. A settled area restages no static record, so <see cref="StaticFoldsLastFrame"/> is 0 there and
-    /// the bits name the cause when it is not.</summary>
+    /// <summary>Static objects folded since boot, the bits they carried, and the count in the LAST frame. A
+    /// settled area restages no static record, so <see cref="StaticFoldsLastFrame"/> is 0 there and the bits name
+    /// the cause when it is not.</summary>
     internal static long StaticFolds { get; private set; }
     /// <inheritdoc cref="StaticFolds"/>
     internal static Dirty StaticFoldBits { get; private set; }
@@ -139,8 +136,8 @@ public static unsafe partial class DbFeed
     /// <summary>Close the frame's static-PART tally (after the part pass).</summary>
     private static void CloseStaticParts() { StaticPartsLastFrame = _staticPartFrame; _staticPartFrame = 0; }
 
-    /// <summary>CX-116's check, for the self-check and the period line: how many records of static objects
-    /// the last frame rewrote. A settled area answers 0.</summary>
+    /// <summary>For the self-check and the period line: how many records of static objects the last frame
+    /// rewrote. A settled area answers 0.</summary>
     internal static int SettledStaticRestages => StaticPartsLastFrame;
 
     private static void FoldParts()
@@ -336,28 +333,10 @@ public static unsafe partial class DbFeed
         _filed[o] = s.W > 0f;
     }
 
-    /// <summary><b>R1-17, the thread contract this file depends on.</b> The DB branches in the route and
-    /// staging walks (<c>ChaseModel</c>, <c>EyeDist2</c>, <c>LiveAlpha</c>, <c>CreaturePart</c>,
-    /// <c>BlendKey</c>, <c>StageDbPart</c>) read <see cref="SceneDb.PartWorld"/>, <see cref="SceneDb.ObjTint"/>
-    /// and friends, and <c>StagePool</c> runs the staging half on WORKERS. A 64-byte <c>Matrix4x4</c> is not
-    /// written atomically, so if the game thread could write a column while a worker read it, a part would
-    /// draw through half of one frame's matrix and half of the next -- which looks like a mesh exploding for
-    /// one frame and is unreproducible.
-    /// <para>What makes it safe is the FRAME BOUNDARY, not a lock: <c>SeamDraw</c> folds and publishes on the
-    /// game thread and only then draws, and with a render thread the game thread is in
-    /// <c>RenderSnapshot.Publish</c> (which waits while a frame is still held) for the whole of the draw. So
-    /// the columns are immutable for the span in which any worker reads them.</para>
-    /// <para>The one thing that would break it is a seam setter called from inside the draw -- a vtable slot
-    /// the renderer itself invokes. seam-obj's slots are game-thread only by the same contract. If that ever
-    /// stops being true, the fix is to copy the columns the walks read into the snapshot, not to lock.</para>
-    /// <para>R1-38: <see cref="FrameZones.Add"/> from <see cref="Visible"/> is a non-atomic accumulator. It is
-    /// called from the per-view draw, which is ONE thread (the render thread or the game thread, never both),
-    /// so it is sound for the same reason -- but it is sound by that argument and not by construction.</para>
-    /// </summary>
-    /// <summary>The visible set for one view: every ownership slot of every object the index yields for
-    /// <paramref name="planes"/> whose part is enabled and whose object is visible and in
-    /// <paramref name="scene"/>. Returns the count; the slots themselves are
-    /// <see cref="VisibleSlot"/>(0..count). Allocation-free, O(visible).</summary>
+    /// <summary>The visible set for one view: every ownership slot the index yields for <paramref name="planes"/>
+    /// with an enabled part and a visible object in <paramref name="scene"/>. <see cref="VisibleSlot"/>(0..count);
+    /// allocation-free, O(visible).</summary><remarks>Workers stage from these columns unlocked, sound only because
+    /// the frame boundary freezes them: fold and publish precede the draw, and no seam setter runs inside it.</remarks>
     internal static int Visible(DbId scene, float* planes, float slack)
     {
         long t0 = FrameZones.Now;

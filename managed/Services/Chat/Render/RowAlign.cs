@@ -8,9 +8,8 @@ namespace CX.Services.Chat.Render;
 
 /// <summary>Row alignment for wrapped text: given one laid-out row, returns how far to shift it
 /// (<paramref name="xOff"/>) and how much to pad each interior space (<paramref name="spaceExtra"/>).
-/// The single home for left/right/center/capped-justify policy -- callers keep their own glyph-emit loop
-/// and just consume the two offsets. Shared by the chat window (<see cref="WindowRenderer"/>) and the dialog
-/// panel (<c>DialogService</c>); either service laying out text uses this instead of re-rolling justify math.</summary>
+/// The single home for left/right/center/capped-justify policy -- callers keep their own glyph-emit loop and
+/// just consume the two offsets. Shared by the chat window and the dialog panel (<c>DialogService</c>).</summary>
 public static class RowAlign
 {
     /// <summary>A justified space may grow to at most this multiple of its natural width. Lines that would need

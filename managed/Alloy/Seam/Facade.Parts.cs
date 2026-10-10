@@ -4,8 +4,7 @@ using CX.Alloy.Db;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>The facade services the scene and camera seam reaches for beyond <see cref="Facade"/> itself
-/// (CX-120; seam-scene stated the contract in <c>Seam/Facade.Stub2.cs</c>, which this replaces).</summary>
+/// <summary>The facade services the scene and camera seam reaches for beyond <see cref="Facade"/> itself.</summary>
 public static unsafe class FacadeParts
 {
     /// <summary>Where a camera shell's <c>CAurObject</c> sub-object sits, measured on both images: a

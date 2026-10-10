@@ -29,8 +29,8 @@ public sealed unsafe partial class ObjectSlots
 
     /// <summary>A gate the game set and CX did not. The engine disables about two dozen subtrees per
     /// humanoid -- the cloak rig, the tail and belt fans, the VFX anchors, the head and hand attach points --
-    /// and a parity dump of the same inn found 192 disabled parts in mode 0 and NOT ONE in DB mode. A refusal
-    /// here is how that happens, so it is named and counted rather than returning 0 in silence.</summary>
+    /// and a parity dump of the same inn found 192 parts the engine disables and NOT ONE here. A refusal in
+    /// this gate is how that happens, so it is named and counted rather than returning 0 in silence.</summary>
     private static void GateRefused(string? name, int on)
     {
         _gatesRefused++;
@@ -43,15 +43,9 @@ public sealed unsafe partial class ObjectSlots
     private static long _gatesOn, _gatesOff, _gatesRefused;
 
     /// <summary><c>Gob::Append(char const* model, char const* parentPart)</c> @0x4422a0: load a second model
-    /// and graft its tree under the named part. This is the composite BODY-PART loader --
-    /// <c>CNWCAnimBaseParts::LoadModel</c> @0xadb550 calls it for a creature's head, torso, arms, legs and
-    /// robe -- so a refusal here is a world of headless NPCs. Returns 1, or 0 when either the part name or
-    /// the model misses, which is the engine's contract.
-    /// <para>DIFFERENCE: the engine grew ONE part range; CX's ranges are contiguous and built once, so an
-    /// append is a CHILD OBJECT attached to that part. Every part the game then addresses by name still
-    /// resolves (<see cref="PartByName"/> searches the composition), the draw is the same geometry at the
-    /// same place, and each piece gains its own lifetime -- which is what makes <c>Amputate</c> exact
-    /// instead of a tree edit. What it costs is one record per body part.</para></summary>
+    /// and graft its tree under the named part -- the composite BODY-PART loader
+    /// (<c>CNWCAnimBaseParts::LoadModel</c> @0xadb550, per head/torso/arms/legs/robe). Returns 1, or 0 when the
+    /// name or model misses. CX grafts a CHILD OBJECT, so <see cref="PartByName"/> searches the composition.</summary>
     [UnmanagedCallersOnly]
     private static int Append(nint self, nint model, nint parentPart)
     {
@@ -138,11 +132,9 @@ public sealed unsafe partial class ObjectSlots
     private static readonly System.Collections.Generic.HashSet<string> _saidAppendRefusal = new();
 
     /// <summary><c>Gob::Amputate(char const*)</c> @0x443fa0: delete the named subtree and release the model
-    /// the matching <c>Append</c> took. Returns 1, or 0 when the name does not resolve.
-    /// <para>In CX the subtree IS a child object, so an amputation destroys exactly what the append created
-    /// -- no walk, no partial release. A name that belongs to the BASE model's own tree is the one case the
-    /// engine handled and CX cannot: there is no appended record to drop, so the subtree is disabled instead
-    /// (which is what the draw does with it either way) and the refusal is counted.</para></summary>
+    /// the matching <c>Append</c> took. Returns 1, or 0 when the name does not resolve. The subtree IS a child
+    /// object, so this destroys exactly what the append created; a name inside the BASE model's own tree has
+    /// no appended record to drop, so that subtree is disabled instead and the refusal is counted.</summary>
     [UnmanagedCallersOnly]
     private static int Amputate(nint self, nint part)
     {
@@ -212,12 +204,9 @@ public sealed unsafe partial class ObjectSlots
     }
 
     /// <summary>Which appended piece an amputation takes for <paramref name="name"/>: the one ROOTED at that
-    /// name, and only if none is, the first that merely holds a part of it.
-    /// <para>The engine resolves the name to ONE part and drops the grafts rooted in its subtree
-    /// (<c>Gob::Amputate</c> @0x543fa0: <c>FindPart</c>, then the subtree walk against the graft list). Every
-    /// body-part model of a creature carries the SAME rig node names, so "holds a part of that name" matches
-    /// nearly every piece -- a re-equip amputated whichever came first in the list and left the one it meant,
-    /// which is a chest that stays naked under new armour.</para></summary>
+    /// name, and only if none is, the first that merely holds a part of it. Every body-part model of a creature
+    /// carries the SAME rig node names, so "holds a part of that name" matches nearly every piece, and rooted-
+    /// first is what keeps a re-equip from dropping some other piece and leaving the one it meant.</summary>
     internal static DbId AmputateTarget(DbId id, string name, out bool byContainment)
     {
         byContainment = false;
@@ -265,13 +254,10 @@ public sealed unsafe partial class ObjectSlots
     /// <summary>Recompute the object's bounds after a composition change.</summary>
     private static void Bounds(DbId id, nint shell) => RecomputeBounds(id, shell);
 
-    /// <summary>Recompute the object's cached bounds, which is what the two void bounding slots do and what
-    /// <c>NewCAurObject</c> calls at construction. The cache lives IN THE SHELL at the engine's own offsets
-    /// (+0x160 min, +0x16c max, +0x178 radius, +0x17c centre), so a getter and any engine code that reads them
-    /// raw see one value.
-    /// <para>The engine seeds the box to (+1e4, +1e4, +1e4)..(-1e4, -1e4, -1e4) and lets the root part grow it,
-    /// scaled by the adjusted scale; an object with no geometry therefore answers that inverted box, and the
-    /// seam keeps it rather than zeros, because a zero box is a point at the origin and tests as a hit.</para></summary>
+    /// <summary>Recompute the object's cached bounds, as the two void bounding slots and <c>NewCAurObject</c>
+    /// do. The cache lives IN THE SHELL at the engine's own offsets (+0x160 min, +0x16c max, +0x178 radius,
+    /// +0x17c centre), so a getter and raw engine reads see one value. The engine seeds an INVERTED
+    /// &#177;1e4 box; an object with no geometry keeps that, because a zero box tests as a hit.</summary>
     internal static void RecomputeBounds(DbId id, nint shell)
     {
         if (shell == 0) return;
@@ -300,7 +286,7 @@ public sealed unsafe partial class ObjectSlots
         *(float*)(shell + SeamLayout.GobSphereRadius) = 0f;
     }
 
-    /// <summary>The object's bounds from its part range (CX-114's per-part boxes), in OBJECT space: a part's
+    /// <summary>The object's bounds from its part range (the per-part boxes), in OBJECT space: a part's
     /// box is already its own, so the union is the object's. Parts with no geometry and disabled subtrees are
     /// left out, which is what makes it the MINIMUM box the engine's own version computed.</summary>
     internal static bool PartRangeBounds(DbId obj, bool minimumOnly, out Vector3 min, out Vector3 max)
@@ -320,14 +306,10 @@ public sealed unsafe partial class ObjectSlots
         return any;
     }
 
-    /// <summary>Is the measured box one the GAME can divide by? It asks for an object's extent and then
-    /// divides the screen by it -- <c>CMainMenuBackgroundPanel::Reposition</c> @0x9205b0 does
-    /// <c>screenW / |max.x - min.x|</c> and <c>screenH / |max.y - min.y|</c>, then scales and positions the
-    /// backdrop by the result. A zero or non-finite extent there is an infinite scale and a NaN position.
-    /// <para>The engine's own answer for an object it could not measure is the INVERTED &#177;10000 seed that
-    /// <c>Gob::GetMinimumBoundingBox()</c> @0x436f60 writes and never grows, which divides to a large finite
-    /// number and leaves the caller sane. So a degenerate measurement answers that, and says so once per
-    /// object -- a refusal with a name, not a zero that propagates into the frame.</para></summary>
+    /// <summary>Is the measured box one the GAME can divide by? It divides the screen by an object's extent --
+    /// <c>CMainMenuBackgroundPanel::Reposition</c> @0x9205b0 does <c>screenW / |max.x - min.x|</c> -- so a zero
+    /// or non-finite extent is an infinite scale and a NaN position. A degenerate measurement answers the
+    /// inverted &#177;10000 seed <c>Gob::GetMinimumBoundingBox()</c> @0x436f60 writes, and says so once.</summary>
     private static bool Usable(DbId id, nint shell, ref Vector3 min, ref Vector3 max)
     {
         Vector3 d = max - min;

@@ -8,18 +8,16 @@ namespace CX.Services.Inventory;
 
 internal sealed partial class InventoryWindow
 {
-    // ---- the game-art skin (native-gui-skinning §4; inventory-screen.md §2.4) ----
+    // ---- the game-art skin ----
 
     /// <summary>Skin part indices, in draw order.</summary>
     internal const int KFrame = 0, KHeader = 1, KCell = 2, KSlot = 3, KButton = 4, KButtonHot = 5, KButtonOn = 6, KClose = 7,
                        KEdit = 8, KTrough = 9, KThumb = 10, KGold = 11, KGoldHot = 12, KGoldCursor = 13, KLootCell = 14, KSil = 15;
 
     /// <summary>The inventory's skin: NUI's nine-sliced window, header, button, edit and scrollbar art as <c>nui.toml</c>
-    /// assigns it (header and edit are <c>nui_windowh</c>, the trough <c>nui_windowv</c>, the thumb <c>nui_scrollv</c>;
-    /// insets 3 -- the engine's compiled-in value for those elements, §3.2), the inventory's own 32x32 cell tile (twice: the
-    /// backpack's and the loot pane's cells are scissored apart), and the 14 empty-slot silhouettes. ponytail: the cell
-    /// tile's 4-texel frame for slot boxes is read off the art by eye, not from the MDL; a server re-points any part with
-    /// <c>inventory.skin.&lt;part&gt;</c>.</summary>
+    /// assigns it (insets 3, the engine's compiled-in value for those elements), the inventory's own 32x32 cell tile
+    /// (twice: backpack and loot cells are scissored apart) and the 14 silhouettes; a server re-points any part with
+    /// <c>inventory.skin.&lt;part&gt;</c>. ponytail: the cell tile's 4-texel slot frame is read off the art, not the MDL.</summary>
     internal static Skin NewSkin()
     {
         var parts = new SkinPart[KSil + InventoryModel.Slots.Length];
@@ -89,11 +87,9 @@ internal sealed partial class InventoryWindow
     }
 
     /// <summary>Emit one frame. <paramref name="skin"/> is null for the flat look (or a refused skin): fills go into
-    /// <paramref name="under"/> instead. <paramref name="under"/> is drawn after the skin and before the icons, <paramref name="over"/>
-    /// after them; the grid's own geometry goes into <paramref name="gridUnder"/> / <paramref name="gridOver"/> (and the skin's
-    /// <see cref="KCell"/> part), which the owner draws clipped to <see cref="GridClip"/> -- the scrolled view shows part rows --
-    /// and the loot pane's into <paramref name="lootUnder"/> / <paramref name="lootOver"/> (and <see cref="KLootCell"/>), clipped
-    /// to <see cref="LootClip"/>. Returns the number of icons written to <paramref name="icons"/>. Allocates nothing once warm.</summary>
+    /// <paramref name="under"/> instead, drawn after the skin and before the icons, <paramref name="over"/> after them;
+    /// the grid's geometry goes into <paramref name="gridUnder"/>/<paramref name="gridOver"/> (clipped to
+    /// <see cref="GridClip"/>), the loot pane's into <paramref name="lootUnder"/>/<paramref name="lootOver"/> (<see cref="LootClip"/>). Returns the icon count; allocates nothing once warm.</summary>
     public int Emit(VertexBatch under, VertexBatch over, VertexBatch gridUnder, VertexBatch gridOver, VertexBatch lootUnder, VertexBatch lootOver,
                     Skin? skin, GlyphAtlas text, GlyphAtlas small, InvIcon[] icons)
     {

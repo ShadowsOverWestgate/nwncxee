@@ -9,15 +9,15 @@ using CX.Graphics;
 namespace CX.Alloy.Db;
 
 /// <summary>
-/// CX-114's off-device suite: the part-tree builder and the mesh arena driven over hand-built
+/// The off-device suite: the part-tree builder and the mesh arena driven over hand-built
 /// <see cref="ModelDef"/> fixtures, with no engine and no GL. Every expected value below comes from the
 /// decompilation named on its check, not from running the code.
 /// </summary>
 internal static class DbSelfCheck
 {
-    /// <summary>CX-120: the recipe's blend constants are table INDICES, and <see cref="Issue.BlendGl"/> is the
-    /// one translation. They read 4/5/1 once -- three valid indices naming the wrong factors, so nothing threw
-    /// and only the picture was wrong. This pins both ends of that seam to the GL enums.</summary>
+    /// <summary>The recipe's blend constants are table INDICES and <see cref="Issue.BlendGl"/> is the one
+    /// translation, so a wrong index is three valid indices naming the wrong factors: nothing throws and only
+    /// the picture is wrong. This pins both ends of that seam to the GL enums.</summary>
     private static bool BlendIndices()
         => Issue.BlendGl(DrawRecipe.BlendSrcAlpha) == Gl.SRC_ALPHA
         && Issue.BlendGl(DrawRecipe.BlendInvSrcAlpha) == Gl.ONE_MINUS_SRC_ALPHA
@@ -187,11 +187,10 @@ internal static class DbSelfCheck
         return true;
     }
 
-    /// <summary><c>Gob::ReplaceTexture</c> @0x43eb30 in two steps: a part whose material ALREADY shows the
-    /// texture being asked for is put back to <c>MdlNodeTriMesh::GetMaterialName</c>'s own name first
-    /// (<c>Material::Refresh</c>), and only then is <paramref name="from"/> matched. That is what lets the
-    /// same pair be issued twice and mean something -- <c>CPanelLoadSave::HandleSelectSaveGame</c> @0x7fd500
-    /// issues <c>ReplaceTexture("gui_replace02", "Screen")</c> for every save the player picks.</summary>
+    /// <summary><c>Gob::ReplaceTexture</c> @0x43eb30 in two steps: a part already showing the texture asked for
+    /// goes back to <c>MdlNodeTriMesh::GetMaterialName</c>'s own name first, and only then is the <c>from</c>
+    /// matched -- which is what lets <c>CPanelLoadSave::HandleSelectSaveGame</c> @0x7fd500 issue
+    /// <c>ReplaceTexture("gui_replace02", "Screen")</c> once per save and mean something each time.</summary>
     private static bool TexReplace()
     {
         Reset();
@@ -520,11 +519,9 @@ internal static class DbSelfCheck
         return true;
     }
 
-    /// <summary>The DB-mode blocker seam-obj hit: <c>PartTree: REFUSED -- the part table already holds
-    /// 8884..8885</c> at the first GUI build. Every other stream's fixture takes single part slots through
-    /// <see cref="DbTable.Alloc"/> during the boot self-check walk, and the range allocator used to keep a
-    /// CURSOR OF ITS OWN -- so it eventually handed out a chunk containing slots Alloc had already made
-    /// live, and the claim failed. This drives that order: fixtures first, trees after, interleaved.</summary>
+    /// <summary>Single part slots and part RANGES come from one allocator: a range allocator with a cursor of
+    /// its own eventually hands out a chunk holding slots <see cref="DbTable.Alloc"/> has already made live, and
+    /// the claim fails. Drives that order -- fixtures first, trees after, interleaved.</summary>
     private static bool OneAllocator()
     {
         Reset();
@@ -641,7 +638,7 @@ internal static class DbSelfCheck
         return m;
     }
 
-    /// <summary>CX-113's meshes-vs-placements census, fed from this builder.</summary>
+    /// <summary>The meshes-vs-placements census, fed from this builder.</summary>
     private static bool Census()
     {
         Reset();
@@ -662,11 +659,10 @@ internal static class DbSelfCheck
         return CX.Alloy.Mdl.ModelCache.Placements == p0;
     }
 
-    /// <summary>The latent DB-path bug the vanilla-differences audit found: <c>DbStage</c> writes a range's
-    /// base vertex and index offset into the slot ONCE, so a compaction that slides the range down leaves the
-    /// record drawing out of whatever took its place. A,B,C; free B; compact; C must have MOVED, must be
-    /// reported as moved, and the arena's answer for it must be the new placement -- which is what the draw
-    /// side refreshes from.</summary>
+    /// <summary><c>DbStage</c> writes a range's base vertex and index offset into the slot ONCE, so a compaction
+    /// that slides the range down would leave the record drawing out of whatever took its place. A,B,C; free B;
+    /// compact; C must have MOVED, be reported as moved, and the arena's answer for it must be the new
+    /// placement -- which is what the draw side refreshes from.</summary>
     private static bool CompactRestage()
     {
         Reset();

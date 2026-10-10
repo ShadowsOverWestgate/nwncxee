@@ -104,6 +104,10 @@ fi
 # checked in because the Windows builds compile it without running python.
 python3 tools/engine/views.py
 
+# CX-192: every rule in CLAUDE.md that a script can check is a gate under tools/gates/ (after views.py: the
+# engine-views gate reads the generated members). CI and the Claude Code hook run the same runner.
+bash tools/gates/run.sh
+
 echo ">> building managed lib (C# NativeAOT -> cx_managed.so)..."
 CX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # Quiet on success, but NEVER swallow a failure: discarding stderr here once hid a compile error behind a

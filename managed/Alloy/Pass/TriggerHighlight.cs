@@ -6,25 +6,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-83: the area-transition highlight, owned. Vanilla is
-/// <c>Scene::DoHighlightTriggers(bool)</c> @0x462310, called twice by RSP: per highlighted
-/// <c>PartTrigger</c> it stencils the trigger's extruded outline as a shadow volume
-/// (<c>SetShadowStencilBuffer</c> + front-face incr / back-face decr) and then alpha-blends a camera-sized
-/// frustum hull through <c>SetStencilFunc(3, 0x80, ~0)</c>. That needs a STENCIL buffer on the framebuffer it
-/// draws into, and a missing one does not lose the effect -- it paints the whole screen, which is what
-/// <c>PostChain.DefaultStencilOk</c> existed to prevent.
-/// <para>This asks the same question directly, in one fullscreen pass with no stencil anywhere: reconstruct
-/// the world point under each pixel from the frame's own depth and test it against the trigger's prism
-/// (crossing number in XY, a z range from the ground-snapped outline plus its extrusion half-height). Exact
-/// for a concave outline, which the shadow-volume trick is too, and it composites in DISPLAY space over the
-/// finished frame -- the space the engine's replay blended in.</para>
-/// <para>Two engine facts shrink the job. The bucket filter is <c>+0xd8 != 0 &amp;&amp; half == +0xe0</c>, and
-/// <c>CNWCTrigger::UpdateTriggerColor</c> @0x80eff0 ends every branch at
-/// <c>AurPartTriggerSetHighlight(t, true, h, true)</c>, so both bytes are always set and only RSP's second
-/// call ever matched: what actually varies is the ALPHA, which that function writes as 0.0 for a trigger
-/// nobody is pointing at and 0.25/0.35 for one that is. And the pulse branch is dead -- every
-/// <c>AurPartTriggerSetHighlightParams</c> call site passes <c>pulse = false, rate = 0</c> -- so
-/// <c>PartTrigger+0xf4</c>/<c>+0xf8</c> and the <c>Scene+0x19c</c> phase are not read at all.</para></summary>
+/// <summary>The area-transition highlight, owned. Vanilla (<c>Scene::DoHighlightTriggers</c> @0x462310)
+/// stencils the trigger's extruded outline as a shadow volume and alpha-blends a frustum hull through it,
+/// which needs a STENCIL buffer -- and a missing one paints the whole screen. This asks the same question in
+/// one fullscreen pass with no stencil: the world point under each pixel against the prism, in DISPLAY space.</summary>
 internal static unsafe class TriggerHighlight
 {
     /// <summary>Highlighted triggers per frame, and outline points across all of them. In play the count is
@@ -53,12 +38,9 @@ internal static unsafe class TriggerHighlight
     internal static void Attach(ExtenderLog log) => _log = log;
 
     /// <summary>Once per world frame, in ENGINE context and BEFORE the frame anchor: snapshot the highlighted
-    /// triggers. The population is the AREA's triggers (<see cref="Db.DbTriggers.Live"/>) and not the
-    /// frame's <c>triggerbucket</c>, with NO in-view test of its own -- deliberately. This pass is a
-    /// depth-reconstructed fullscreen decal, so a trigger whose prism covers no visible pixel contributes
-    /// nothing and culling it saves one header in an SSBO; and the alpha filter below already narrows the
-    /// population to the one trigger under the cursor
-    /// (<c>AurPartTriggerSetHighlight</c> writes 0.0 for every other). Allocation-free.</summary>
+    /// triggers. The population is the AREA's triggers (<see cref="Db.DbTriggers.Live"/>) with no in-view test
+    /// of its own -- a prism covering no visible pixel contributes nothing -- and the filter is the ALPHA,
+    /// which <c>AurPartTriggerSetHighlight</c> writes as 0.0 for every trigger nobody points at.</summary>
     internal static void Enroll()
     {
         _count = 0; _points = 0;

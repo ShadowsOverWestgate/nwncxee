@@ -4,12 +4,10 @@ using CX.Framework;
 
 namespace CX.Services.Sound;
 
-/// <summary>CX-57 step 5: music and ambience crossfade. The engine has one stream per channel and starts the next
-/// track only once the last has faded out, so a change is fade-out, silence, fade-in. At the fade-out
-/// (<c>FadeAndStop</c>) the playing Internal is swapped into a spare handle CX owns, where it finishes its fade;
-/// the engine's handle gets the spare's idle Internal, so its own retry starts the new track at once, fading in.
-/// Every stream list the engine keeps is keyed by the Internal, so the swap is two pointer writes. Main thread.</summary>
-/// <remarks>Also reports the area music's level for the ambience duck.</remarks>
+/// <summary>Music and ambience crossfade. The engine has one stream per channel and starts the next track only once
+/// the last has faded out, so a change is fade-out, silence, fade-in; at the fade-out (<c>FadeAndStop</c>) the playing
+/// Internal is swapped into a spare handle CX owns to finish its fade and the engine's handle gets the spare's idle
+/// one, so its retry starts the new track at once. Every stream list is keyed by the Internal. Main thread.</summary>
 internal static unsafe class SoundStreams
 {
     private const int Music = 0, Bed = 1;

@@ -8,28 +8,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// The Alloy colour pass's HDR target and the post chain that resolves it -- bloom, tonemap, encode (#139).
-/// The Alloy passes render into an RGBA16F attachment holding LINEAR values, unclamped, so a carried torch
-/// keeps its overbright range instead of flattening to 8-bit white, and one full-screen pass at the end of
-/// the colour bracket spends it: as bloom (what makes a bright light read as BRIGHT rather than clipped) and
-/// as a tonemap shoulder.
-/// <para>The target owns its depth attachment too -- the engine only builds a world framebuffer from inside
-/// <c>RenderSinglePass</c>, so under the cutover there is nothing to borrow. The owned texture is allocated
-/// to the internal format the engine's attachment reports (probed off the OBJECT, never off bit widths),
-/// which is what lets <see cref="ResolveDepth"/> blit our depth back into the engine's attachment at the
-/// resolve, so the engine's own draws after the bracket still depth-test against the world the Alloy pass
-/// wrote. Colour and depth are both ours, and both are composited back (#214).</para>
-/// <para>Every Alloy stage writes linear and this resolve does the one encode for the whole frame -- one
-/// conversion per screen pixel, and the only order in which blended compositing is correct. The encode is
-/// gated on the engine's OWN gamma parameter (<c>GetGlobalShaderParami(0)</c>, the <c>GAMMA_CORRECTION</c>
-/// the shader preamble is built from). Fog is applied in linear, across the encode, unlike the engine's
-/// (keyhole linear, encode, fog display) order -- a deliberate look change (#124, #132).</para>
-/// <para>Refusal is the whole Alloy frame's business: a linear Alloy frame with no resolve is wrong by a
-/// gamma, and there is no display-space variant of the Alloy stages to fall back to. <see cref="Begin"/> is
-/// therefore asked BEFORE anything is staged, and a false answer stands the pass down to vanilla outright. It
-/// refuses when the engine target cannot be shared: a default framebuffer (its depth cannot be attached to an
-/// FBO at all), an offset viewport, or -- only once the driver has said so -- an attachment the owned depth
-/// cannot be handed back to.</para>
+/// The Alloy colour pass's HDR target and the post chain that resolves it -- bloom, tonemap, encode. The
+/// passes render into an RGBA16F attachment holding LINEAR values, unclamped, so a carried torch keeps its
+/// overbright range instead of flattening to 8-bit white, and one full-screen pass spends it. The target owns
+/// its depth too, and a refusal is the whole frame's business: <see cref="Begin"/> is asked before staging.
 /// </summary>
 internal static unsafe class PostChain
 {
@@ -43,32 +25,30 @@ internal static unsafe class PostChain
 
     /// <summary>Tonemap operators, <c>post.tonemap</c>'s stored value; the cfg and chat form is the name
     /// (<c>post.tonemap=aces</c>). There is no off: the shoulder is the identity below its knee and differs
-    /// from a clip only on highlights (a stale <c>post.tonemap=off</c> fails to parse and loads the default); ACES (the default since the #375 follow-ups, at <c>post.acesmix</c> against the shoulder) moves
-    /// the midtones, which is Alloy's own look decision -- under the M4 cutover nothing the engine draws
-    /// shares the resolved world any more, so there is no engine-drawn geometry left to disagree with.
-    /// Neutral (CX-47) is Khronos PBR Neutral, fixed: a 0.04 offset whose toe darkens 0.01 linear 16x.</summary>
+    /// from a clip only on highlights. ACES is the default, mixed against that shoulder by
+    /// <c>post.acesmix</c>; Neutral is Khronos PBR Neutral, fixed, whose toe darkens 0.01 linear 16x.</summary>
     internal const int TonemapShoulder = 1, TonemapAces = 2, TonemapNeutral = 3;
 
-    /// <summary>The Alloy colour passes of THIS pass are drawing into the HDR target. Since #132 the owned
-    /// frame does not run at all when this is false -- there is no un-resolved variant of it.</summary>
+    /// <summary>The Alloy colour passes of THIS pass are drawing into the HDR target. The owned frame does
+    /// not run at all when this is false -- there is no un-resolved variant of it.</summary>
     internal static bool Armed { get; private set; }
 
     /// <summary>Resolves this session -- the [alloy] period line prints it. A number that stays 0 while the
     /// world renders is the "HDR never engaged, you are seeing the fallback" case, and the arm-time log line
     /// says which target refused.</summary>
     internal static int Resolves { get; private set; }
-    /// <summary>CX-101: resolves since boot, never reset -- "did a world frame cover the screen this frame" is a
+    /// <summary>Resolves since boot, never reset -- "did a world frame cover the screen this frame" is a
     /// compare against the value at the last present.</summary>
     internal static int ResolveSeq { get; private set; }
 
     private static bool _on = true;
-    /// <summary>#215: the <c>hdr</c> boot decision, published because it is a REFUSAL the cutover has to know
-    /// about at arm time. <c>hdr=0</c> makes <see cref="Precheck"/> refuse every pass forever, and under the
-    /// shim there is no engine frame behind that refusal -- the world would be bare clear colour for the
-    /// session. Off means the shim must not take the frame.</summary>
+    /// <summary>The <c>hdr</c> boot decision, published because it is a REFUSAL the cutover has to know
+    /// about at arm time. <c>hdr=0</c> makes <see cref="Precheck"/> refuse every pass forever, and there is
+    /// no engine frame behind that refusal -- the world would be bare clear colour for the session. Off
+    /// means the shim must not take the frame.</summary>
     internal static bool On => _on && !_down.Failed;
 
-    /// <summary>#216: the two halves of <see cref="On"/>, split because the frame verdict has to report them
+    /// <summary>The two halves of <see cref="On"/>, split because the frame verdict reports them
     /// differently -- <c>hdr=0</c> is a CHOICE and a latched stand-down is an INCAPACITY (ADR 0010).</summary>
     internal static bool Configured => _on;
 
@@ -76,56 +56,74 @@ internal static unsafe class PostChain
     internal static bool Failed => _down.Failed;
     private static readonly StandDown _down = new("PostChain");
     private static ExtenderLog? _log;
-    private static uint _fbo, _hdrTex, _bloomTex, _depthTex;
-    /// <summary>#391: a 1x depth at DISPLAY size for the hand-back into a multisampled target. GL 4.6 18.3.2
-    /// makes a blit whose rectangles differ INVALID_OPERATION when either framebuffer is multisampled, so
-    /// under a render scale the resolve into an MSAA engine target goes in two: scale into this, then 1:1.</summary>
-    private static uint _scratchFbo, _scratchTex;
-    private static int _scratchW, _scratchH;
-    private static uint _scratchFormat;
-    private static uint _depFormat;
-    /// <summary>The owned depth format whose hand-back the driver refused -- keyed rather than a global
-    /// latch, so a device reset that changes the default framebuffer's depth format gets a fresh attempt.</summary>
-    private static uint _handbackBad;
-    private static int _depW, _depH;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name, probed
+    /// format or uniform location from the dead context survives as a field nobody remembered to zero. The
+    /// locations ride with the programs on purpose -- a location without its program is the one thing a
+    /// partial reset here leaves behind.</summary>
+    private sealed class PostChainState
+    {
+        public uint Fbo, HdrTex, BloomTex, DepthTex;
+        /// <summary>A 1x depth at DISPLAY size for the hand-back into a multisampled target. GL 4.6 18.3.2
+        /// makes a blit whose rectangles differ INVALID_OPERATION when either framebuffer is multisampled,
+        /// so under a render scale the resolve into an MSAA engine target goes in two: scale into this,
+        /// then 1:1.</summary>
+        public uint ScratchFbo, ScratchTex;
+        public int ScratchW, ScratchH;
+        public uint ScratchFormat;
+        public uint DepFormat;
+        /// <summary>The owned depth format whose hand-back the driver refused -- keyed rather than a global
+        /// latch, so a device reset that changes the default framebuffer's depth format gets a fresh
+        /// attempt.</summary>
+        public uint HandbackBad;
+        public int DepW, DepH;
+        public int W, H, Levels;
+        public uint ProgDown, ProgUp, ProgComposite;
+        /// <summary>The empty VAO the full-screen triangle draws under.</summary>
+        public uint Vao;
+        public bool ProgFailed;
+        /// <summary>The bloom chain built this frame, rewritten every frame by the downsample.</summary>
+        public bool BloomOk;
+        /// <summary>The default framebuffer's depth format as its bit widths and component type describe it;
+        /// 0 = no depth. The owned depth attachment is ALLOCATED to this, which is what keeps
+        /// <see cref="ResolveDepth"/>'s blit into a real engine attachment legal (GL 4.6 18.3.1: a depth
+        /// blit cannot convert). Asked once per context -- the window's depth buffer is fixed with it.</summary>
+        public uint DefaultFmt;
+        public bool DefaultProbed;
+        public int DSrc, DLod, DTexel, DFirst, DThresh, DExposure;
+        public int USrc, ULod, UTexel;
+        public int CHdr, CBloom, CDepth, CStrength, CMode, CKnee, CDither, CViz, CExposure, CAcesMix, CSkyRaw,
+                   CSkyBand, CInvVp, CEye;
+    }
+
+    private static PostChainState _gl = new();
     /// <summary>The framebuffer the Alloy colour passes draw into, for the one pass that has to leave it and
-    /// come back: #222's sky scratch. Read-only on purpose -- binding it is <see cref="Begin"/>'s job.</summary>
-    internal static uint Fbo => _fbo;
-    /// <summary>#214: the depth attachment the Alloy colour passes write, owned rather than the engine's.
+    /// come back: the sky scratch. Read-only on purpose -- binding it is <see cref="Begin"/>'s job.</summary>
+    internal static uint Fbo => _gl.Fbo;
+    /// <summary>The depth attachment the Alloy colour passes write, owned rather than the engine's.
     /// Published as <see cref="DepthResource"/> by the prepass; sampling it while it is attached is the
     /// feedback loop <see cref="SceneDepth"/> exists to avoid, so consumers take a copy.</summary>
-    internal static uint DepthTex => _depthTex;
+    internal static uint DepthTex => _gl.DepthTex;
     /// <summary>The HDR colour target, for the sky decode that reads it back through a texture barrier.</summary>
-    internal static uint HdrTex => _hdrTex;
+    internal static uint HdrTex => _gl.HdrTex;
     /// <summary>The empty VAO the full-screen triangle draws under.</summary>
-    internal static uint FullscreenVao => _vao;
-    private static int _w, _h, _levels;
+    internal static uint FullscreenVao => _gl.Vao;
     /// <summary>The colour the HDR buffer was last cleared to -- the void, for the period line.</summary>
     private static Vector3 _lastClear;
-    private static uint _progDown, _progUp, _progComposite;
-    private static uint _vao;
-    private static bool _progFailed;
-    private static bool _bloomOk;
 
-    /// <summary>#132: the engine's own gamma gate, <c>GetGlobalShaderParami(0)</c> -- the value that becomes
-    /// <c>#define GAMMA_CORRECTION</c> in every engine shader and makes <c>ApplyColorSpace</c> /
-    /// <c>RevertColorSpace</c> the identity when it is 0. Asked once per pass in <see cref="Precheck"/>: it
-    /// is a settings-driven global and reading it is one call. Unresolved means "on", which is what this
-    /// client measures (#102) and what every shipped .shd is written against.</summary>
+    /// <summary>The engine's own gamma gate, <c>GetGlobalShaderParami(0)</c> -- the value that becomes
+    /// <c>#define GAMMA_CORRECTION</c> in every engine shader and makes <c>ApplyColorSpace</c> the identity
+    /// when it is 0. Asked once per pass in <see cref="Precheck"/>: it is a settings-driven global and
+    /// reading it is one call. Unresolved means "on", which is what this client measures.</summary>
     private static RiGetGlobalShaderParamiFn _gammaParam;
     private const uint GammaParam = 0;
 
-    /// <summary>#391: the RENDER scale -- the owned 3D frame's size as a fraction of the display target's,
+    /// <summary>The RENDER scale -- the owned 3D frame's size as a fraction of the display target's,
     /// per axis. Below 1 the world renders at fewer pixels and the resolve upscales it (bilinear); above 1 it
     /// is supersampling. The engine's 2D UI never sees it. <c>alloy.scale</c>, live; the knob's range is
     /// <see cref="MinScale"/>..<see cref="MaxScale"/> because a 0x0 target is a refusal, not a look.</summary>
     private static float _scale => Renderer.Scale.V;
     internal const float MinScale = 0.25f, MaxScale = 2f;
 
-    private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh, _dExposure;
-    private static int _uSrc, _uLod, _uTexel;
-    private static int _cHdr, _cBloom, _cDepth, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix, _cSkyRaw,
-                       _cSkyBand, _cInvVp, _cEye;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -145,29 +143,29 @@ internal static unsafe class PostChain
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {Post.Bloom.V:F3}{(StockConfig.HdrBloom ? "" : " (OFF: stock HDR/Bloom option)")}  threshold {Post.Threshold.V:F2}  knee {Post.Knee.V:F2}  " +
         $"exposure {Post.Exposure.V:F2}  tonemap {Post.Tonemap.Format()}  acesmix {Post.AcesMix.V:F2}  tmknee {Post.TmKnee.V:F2}  " +
-        $"dither {Post.Dither.V:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(Post.Motion.V ? "on" : "off")}  taa {(Post.Taa.V ? "on" : "off")} (taablend {Post.TaaBlend.V:F2}, taasharp {Post.TaaSharp.V:F2}, taau {(Post.Taau.V ? 1 : 0)}, ao temporal {Ao.Temporal.V:F2})  halfres {(Post.HalfRes.V ? "on" : "off")}"
+        $"dither {Post.Dither.V:F2}  scale {_scale:F2} ({(_gl.W > 0 ? $"{_gl.W}x{_gl.H} render, " : "")}lod bias {LodBias:F2})  motion {(Post.Motion.V ? "on" : "off")}  taa {(Post.Taa.V ? "on" : "off")} (taablend {Post.TaaBlend.V:F2}, taasharp {Post.TaaSharp.V:F2}, taau {(Post.Taau.V ? 1 : 0)}, ao temporal {Ao.Temporal.V:F2})  halfres {(Post.HalfRes.V ? "on" : "off")}"
         + (Post.Viz.V > 0 ? $"  VIZ {Post.Viz.V}" : "")
         + (Post.ClearViz.V ? "  CLEARVIZ (target cleared magenta)" : "")
         + " | " + PostStack.Describe();
 
     /// <summary>The resolve's dither in the unit the shader takes: one LSB of the 8-bit target, or 0.
-    /// #375: whichever stage WRITES that target applies it -- the resolve when the stack is empty, the
-    /// stack's last stage otherwise -- so the frame is quantised exactly once.</summary>
+    /// Whichever stage WRITES that target applies it -- the resolve when the stack is empty, the stack's
+    /// last stage otherwise -- so the frame is quantised exactly once.</summary>
     internal static float DitherLsb => Post.Dither.V / 255f;
 
-    /// <summary>#391: a display extent at the render scale, never below one pixel.</summary>
+    /// <summary>A display extent at the render scale, never below one pixel.</summary>
     internal static int RenderSize(int display) => Math.Max((int)MathF.Round(display * _scale), 1);
 
-    /// <summary>#391: the texture LOD bias every owned material sample takes: <c>log2(scale)</c>, so a frame
+    /// <summary>The texture LOD bias every owned material sample takes: <c>log2(scale)</c>, so a frame
     /// rendered at fewer pixels picks the mips the DISPLAY footprint would have and the upscale does not
     /// go soft on top of them. Clamped at 0: above 1.0 the point is the extra texture detail the resolve
     /// then averages, and a coarser mip would throw it away. 0 at 1.0, so the default is pixel-identical.</summary>
     internal static float LodBias => MathF.Min(MathF.Log2(_scale), 0f);
 
-    /// <summary>#388: whether the motion-vector pass runs this frame -- armed, the viz that paints it, or a
-    /// consumer (TAA #389, temporal GTAO #390) that reprojects through it.</summary>
+    /// <summary>Whether the motion-vector pass runs this frame -- armed, the viz that paints it, or a
+    /// consumer (TAA, temporal GTAO) that reprojects through it.</summary>
     internal static bool MotionWanted => Post.Motion.V || Post.Viz.V == VizMotion || TaaOn || SsaoPass.TemporalWanted;
-    /// <summary>#389: TAA is on and its stage can build -- the gate the jitter and the accumulator share, so
+    /// <summary>TAA is on and its stage can build -- the gate the jitter and the accumulator share, so
     /// a stage that failed to build never leaves the jitter running with nothing to average it.</summary>
     internal static bool TaaOn => Post.Taa.V && !TaaStage.Failed && !MotionVectors.Failed;
     internal static float TaaBlend => Post.TaaBlend.V;
@@ -178,9 +176,9 @@ internal static unsafe class PostChain
     /// <summary>This pass's projection jitter in NDC, as <see cref="Jitter"/> handed it out (0 with TAA off);
     /// the accumulator reads it to place the current frame's samples on the display grid.</summary>
     internal static float JitterX, JitterY;
-    /// <summary>#389: the jitter sequence length -- Halton(2,3), eight points, then it repeats.</summary>
+    /// <summary>The jitter sequence length -- Halton(2,3), eight points, then it repeats.</summary>
     internal const int JitterCount = 8;
-    /// <summary>#389: this frame's sub-pixel jitter in NDC for a render target of <paramref name="w"/> x
+    /// <summary>This frame's sub-pixel jitter in NDC for a render target of <paramref name="w"/> x
     /// <paramref name="h"/>: Halton(2,3) over <see cref="JitterCount"/> frames, centred on zero, one render
     /// pixel of spread. Pure, so the self-check can walk the sequence.</summary>
     internal static void Jitter(int frameSeq, int w, int h, out float jx, out float jy)
@@ -202,34 +200,19 @@ internal static unsafe class PostChain
     /// gone, so this only forgets them -- it never deletes.</summary>
     internal static void Forget()
     {
-        _fbo = 0; _hdrTex = 0; _bloomTex = 0; _depthTex = 0; _w = 0; _h = 0; _levels = 0;
-        _scratchFbo = 0; _scratchTex = 0; _scratchW = 0; _scratchH = 0; _scratchFormat = 0;
-        _depFormat = 0; _depW = 0; _depH = 0;
-        _handbackBad = 0;
-        _defaultProbed = false; _defaultFormat = 0;
-        _progDown = 0; _progUp = 0; _progComposite = 0; _vao = 0;
-        _progFailed = false; Armed = false; _down.Forget();
+        _gl = new PostChainState();
+        Armed = false; _down.Forget();
     }
 
-    /// <summary>#132: the refusals that are decidable WITHOUT the 4.6 bracket, asked in ENGINE context
-    /// before the Alloy pass pays for its preamble. False stands the whole pass down to vanilla.
-    /// <para>Split out of <see cref="Begin"/> for two reasons and both are load-bearing. It saves the
-    /// preamble -- <c>AlloyLights.Upload</c>/<c>Build</c> and <c>PoseSkinned</c>, which solves every Alloy
-    /// skinmesh's pose -- on a pass that was never going to arm; on a client that renders
-    /// to the default framebuffer that is EVERY frame, forever, to produce a vanilla one. And the gamma
-    /// question can only be answered here: it gates the Alloy DECODES too, which live in the stages and
-    /// cannot be switched per pass.</para>
-    /// <para><b>The gamma gate is a refusal, not a switch.</b> Every Alloy stage linearises its texels
-    /// unconditionally -- that is what makes the frame linear -- so a client whose <c>GAMMA_CORRECTION</c>
-    /// is 0 (the engine passes texels through raw, <c>ApplyColorSpace</c> is the identity) has no
-    /// self-consistent Alloy variant: encoding at the resolve would disagree with the engine, and not
-    /// encoding would leave every Alloy surface a gamma dark beside it. Standing down is the honest
-    /// answer, and it is re-asked per pass, so flipping the setting back recovers.</para></summary>
-    /// <summary>#456: the framebuffer the last composite wrote into -- 0 is the default framebuffer, which
-    /// is the case the Windows black frames are about. Published so the probe line can say whether a black
-    /// frame is a frame that went somewhere else or a frame that was lost.</summary>
+    /// <summary>The framebuffer the last composite wrote into -- 0 is the default framebuffer. Published so
+    /// the probe line can say whether a black frame is a frame that went somewhere else or one that was
+    /// lost.</summary>
     internal static uint LastInto;
 
+    /// <summary>The refusals decidable WITHOUT the 4.6 bracket, asked in ENGINE context before the Alloy
+    /// pass pays for its preamble; false stands the whole pass down to vanilla. The gamma question can only
+    /// be answered here, because it gates the Alloy DECODES too: they live in the stages and cannot be
+    /// switched per pass, so a client with <c>GAMMA_CORRECTION</c> 0 has no self-consistent Alloy variant.</summary>
     internal static bool Precheck(int* viewport)
     {
         // config hdr=0 is a deliberate setting and Attach already said so; it is not a refusal to report.
@@ -246,17 +229,13 @@ internal static unsafe class PostChain
 
     /// <summary>The gamma refusal's predicate, published so <see cref="AlloyGate"/> can ask it at frame start
     /// -- where it is a decision about the whole frame rather than about one pass. Unresolved reads as "on",
-    /// which is what this client measures (#102).</summary>
+    /// which is what this client measures.</summary>
     internal static bool GammaOff() => _gammaParam != null && _gammaParam(GammaParam) == 0;
 
-    /// <summary>Point the Alloy colour passes at the HDR target for this pass. #132: a false answer stands
-    /// the whole Alloy frame down to vanilla, so this is asked BEFORE anything is staged -- there is no
-    /// display-space variant of the Alloy stages left to draw with.
-    /// <para>The target's own starting content comes from the engine's clear COLOUR rather than from a blit
-    /// of its clear. At the #132 anchor the engine's colour buffer holds nothing but that clear
-    /// (Camera::InitializeFrameBufferResources has just run Clear(7) and no draw has followed), and a blit
-    /// would copy a display-space value into a linear target -- wrong by a gamma on every area that clears
-    /// to something other than black.</para></summary>
+    /// <summary>Point the Alloy colour passes at the HDR target for this pass; a false answer stands the whole
+    /// Alloy frame down to vanilla, so this is asked BEFORE anything is staged. The target's starting content
+    /// comes from the engine's clear COLOUR rather than a blit of its buffer: a blit would copy a
+    /// display-space value into a linear target, wrong by a gamma wherever an area clears to non-black.</summary>
     internal static bool Begin(int* viewport, float* clearRgba, double clearDepth)
     {
         Armed = false;
@@ -275,14 +254,14 @@ internal static unsafe class PostChain
         // device reset that changes it gets a fresh attempt.
         uint fb0 = DefaultFormat();
         uint depthFmt = fb0 != 0 ? fb0 : Gl.DEPTH_COMPONENT24;
-        if (_handbackBad != 0 && _handbackBad == depthFmt) return false;
+        if (_gl.HandbackBad != 0 && _gl.HandbackBad == depthFmt) return false;
         if (!EnsureDepth(depthFmt, viewport[2], viewport[3])) return false;
 
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _hdrTex, 0);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.HdrTex, 0);
         // DEPTH_ATTACHMENT alone even for a packed format: nothing owned touches stencil, and every Alloy
         // funnel attaches depth here (see FrameSnapshot's probe, which relies on exactly that).
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _depthTex, 0);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _gl.DepthTex, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
@@ -317,34 +296,25 @@ internal static unsafe class PostChain
         return true;
     }
 
-    /// <summary>#214: hand the depth Alloy just wrote back to the engine's attachment. Alloy owns the
-    /// buffer now, but the engine's own draws after the bracket -- the residual bucket walk, the GUI 3D
-    /// panels -- still depth-test against the world this pass rendered, so a frame that skipped this would
-    /// show them punching through walls. Legal because <see cref="EnsureDepth"/> matched the format;
-    /// NEAREST because a depth blit may not filter.
-    /// <para>The caller has the frame target bound as the draw target, which is the whole point of doing
-    /// it here rather than in the caller.</para>
-    /// <para>Whether the blit is legal for the target in front of us is asked of the DRIVER rather than
-    /// pre-refused: it is attempted and the error checked.</para></summary>
     /// <summary>The blit both hand-backs are: drain the error queue so what comes back is ours, copy the
     /// owned depth into <paramref name="dst"/>, restore the draw binding. Returns the GL error, 0 for
     /// success. The two callers differ only in what a failure costs them.</summary>
     private static uint BlitDepthInto(uint dst, int dstW, int dstH)
     {
         Gl.DrainErrors(4);
-        uint src = _fbo;
+        uint src = _gl.Fbo;
         // #391: a SCALING blit under a render scale -- legal for depth as long as the filter is NEAREST and
         // neither side is multisampled; into an MSAA target it goes through the 1x scratch first.
-        if ((dstW != _depW || dstH != _depH) && Multisampled(dst) && EnsureScratch(dstW, dstH))
+        if ((dstW != _gl.DepW || dstH != _gl.DepH) && Multisampled(dst) && EnsureScratch(dstW, dstH))
         {
-            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
-            Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _scratchFbo);
-            Gl.BlitFramebuffer(0, 0, _depW, _depH, 0, 0, dstW, dstH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
+            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _gl.Fbo);
+            Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _gl.ScratchFbo);
+            Gl.BlitFramebuffer(0, 0, _gl.DepW, _gl.DepH, 0, 0, dstW, dstH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
             Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, dst);
-            src = _scratchFbo;
+            src = _gl.ScratchFbo;
         }
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
-        int sw = src == _fbo ? _depW : dstW, sh = src == _fbo ? _depH : dstH;
+        int sw = src == _gl.Fbo ? _gl.DepW : dstW, sh = src == _gl.Fbo ? _gl.DepH : dstH;
         Gl.BlitFramebuffer(0, 0, sw, sh, 0, 0, dstW, dstH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, dst);
         return Gl.GetError == null ? 0 : Gl.GetError();
@@ -362,22 +332,26 @@ internal static unsafe class PostChain
 
     private static bool EnsureScratch(int w, int h)
     {
-        if (_scratchTex != 0 && w == _scratchW && h == _scratchH && _scratchFormat == _depFormat) return true;
+        if (_gl.ScratchTex != 0 && w == _gl.ScratchW && h == _gl.ScratchH && _gl.ScratchFormat == _gl.DepFormat) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_scratchFbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _scratchFbo = f; }
-        RenderTarget.AllocDepth(ref _scratchTex, _depFormat, w, h);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _scratchFbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _scratchTex, 0);
+        if (_gl.ScratchFbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.ScratchFbo = f; }
+        RenderTarget.AllocDepth(ref _gl.ScratchTex, _gl.DepFormat, w, h);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.ScratchFbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _gl.ScratchTex, 0);
         bool ok = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) == Gl.FRAMEBUFFER_COMPLETE;
-        _scratchW = w; _scratchH = h; _scratchFormat = _depFormat;
+        _gl.ScratchW = w; _gl.ScratchH = h; _gl.ScratchFormat = _gl.DepFormat;
         _log?.Info(ok ? $"PostChain: depth hand-back scratch {w}x{h} (multisampled engine target under a render scale)"
                       : "PostChain: the depth hand-back scratch is incomplete -- the scaling blit goes direct and may be refused");
         return ok;
     }
 
+    /// <summary>Hand the depth Alloy just wrote back to the engine's attachment: the engine's own draws
+    /// after the bracket -- the residual bucket walk, the GUI 3D panels -- still depth-test against the world
+    /// this pass rendered, so a frame that skipped this would show them punching through walls. Legal because
+    /// <see cref="EnsureDepth"/> matched the format, and whether it is legal here is asked of the DRIVER.</summary>
     private static void ResolveDepth(int dstW, int dstH)
     {
-        if (Gl.BlitFramebuffer == null || _depthTex == 0) return;
+        if (Gl.BlitFramebuffer == null || _gl.DepthTex == 0) return;
         int dst; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &dst);
         // CX-84: nothing engine-side draws after the bracket any more (the two highlight overlays are Alloy
         // passes), so the DEFAULT framebuffer needs no owned depth and no stencil -- there is nothing left to
@@ -387,25 +361,16 @@ internal static unsafe class PostChain
         if (err == 0) return;
         // Stand THIS format down: the frame already drew with depth the engine never received, and a
         // second one would be a choice. A device reset that changes the format is tried on its own merits.
-        _handbackBad = _depFormat;
-        _ = Refuse($"the depth resolve blit raised 0x{err:x} (owned depth format 0x{_depFormat:x}) -- the "
+        _gl.HandbackBad = _gl.DepFormat;
+        _ = Refuse($"the depth resolve blit raised 0x{err:x} (owned depth format 0x{_gl.DepFormat:x}) -- the "
                  + "owned depth cannot be handed back to the frame target, so the Alloy frame stands down.");
     }
 
-    /// <summary>The default framebuffer's depth format as its bit widths and component type describe it;
-    /// 0 = no depth. The owned depth attachment is ALLOCATED to this, which is what keeps
-    /// <see cref="ResolveDepth"/>'s blit into a real engine attachment legal (GL 4.6 18.3.1: a depth blit
-    /// cannot convert) and, failing that, is simply the format this driver's window was given. Asked once per
-    /// session -- the window's depth buffer is fixed at context creation. CX-84 removed its second reader:
-    /// there is no hand-back to the default framebuffer any more, because nothing engine-side draws after the
-    /// bracket that would depth-test there.</summary>
-    private static uint _defaultFormat;
-    private static bool _defaultProbed;
 
     private static uint DefaultFormat()
     {
-        if (_defaultProbed) return _defaultFormat;
-        _defaultProbed = true;
+        if (_gl.DefaultProbed) return _gl.DefaultFmt;
+        _gl.DefaultProbed = true;
         int bits = 0, sbits = 0, comp = 0;
         if (Gl.GetFramebufferAttachmentParameteriv != null)
         {
@@ -416,16 +381,16 @@ internal static unsafe class PostChain
             comp = RenderTarget.AttachmentParam(Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE);
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
         }
-        _defaultFormat = bits <= 0 ? 0
+        _gl.DefaultFmt = bits <= 0 ? 0
             : sbits > 0 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH32F_STENCIL8 : Gl.DEPTH24_STENCIL8)
             : bits >= 32 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH_COMPONENT32F : Gl.DEPTH_COMPONENT32)
             : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16;
         _log?.Info(bits > 0
             ? $"PostChain: default framebuffer carries {bits}-bit depth and {sbits}-bit stencil "
-            + $"(0x{_defaultFormat:x}) -- the owned depth attachment is allocated to match it"
+            + $"(0x{_gl.DefaultFmt:x}) -- the owned depth attachment is allocated to match it"
             : "PostChain: the default framebuffer has NO depth buffer -- the owned depth attachment falls "
             + "back to DEPTH_COMPONENT24");
-        return _defaultFormat;
+        return _gl.DefaultFmt;
     }
 
     /// <summary>Alloy's own depth attachment, sized to the target and format-matched to the engine's.
@@ -433,24 +398,21 @@ internal static unsafe class PostChain
     /// attachment at the same resolution -- and the format is what makes <see cref="ResolveDepth"/> legal.</summary>
     private static bool EnsureDepth(uint fmt, int w, int h)
     {
-        if (_depthTex != 0 && fmt == _depFormat && w == _depW && h == _depH) return true;
+        if (_gl.DepthTex != 0 && fmt == _gl.DepFormat && w == _gl.DepW && h == _gl.DepH) return true;
         if (w <= 0 || h <= 0) return false;
-        uint tex = _depthTex;
+        uint tex = _gl.DepthTex;
         RenderTarget.AllocDepth(ref tex, fmt, w, h);
-        if (tex == 0) { _depthTex = 0; return Refuse("the owned depth texture could not be created"); }
-        _depthTex = tex; _depFormat = fmt; _depW = w; _depH = h;
+        if (tex == 0) { _gl.DepthTex = 0; return Refuse("the owned depth texture could not be created"); }
+        _gl.DepthTex = tex; _gl.DepFormat = fmt; _gl.DepW = w; _gl.DepH = h;
         _log?.Info($"PostChain: owned depth attachment {w}x{h}, internal format 0x{fmt:x} "
                  + "(matched to the engine's, which the resolve blits back into)");
         return true;
     }
 
-    /// <summary>Say why the HDR target is not arming, once per distinct reason, and go on checking. #216: a
-    /// refusal taken inside the shim window ALSO latches the frame verdict -- the engine's frame is already
-    /// gone by then, so the next frame goes vanilla with this reason rather than the world staying empty.
-    /// <para>NOT latched otherwise: the engine's target is a per-pass fact -- a reflection subframe or a GUI 3D panel can render
-    /// to a different one than the world pass does -- so a session that refused once must still arm on the
-    /// passes it can. The whole point of the line is that the fallback is otherwise silent: the frame
-    /// renders, just without any of #139 in it.</para></summary>
+    /// <summary>Say why the HDR target is not arming, once per distinct reason, and go on checking. A refusal
+    /// taken inside the shim window ALSO latches the frame verdict -- the engine's frame is already gone by
+    /// then, so the next frame goes vanilla with this reason rather than the world staying empty. NOT latched
+    /// otherwise: the engine's target is a per-pass fact, so a session that refused once must still arm.</summary>
     private static bool Refuse(string why)
     {
         AlloyGate.Fail(why);   // #263: nothing to hand this pass back to, and no restart-free way to get it
@@ -473,67 +435,67 @@ internal static unsafe class PostChain
     /// target, so the caller must rebind the engine target before <see cref="Composite"/>.</summary>
     internal static void Bloom()
     {
-        _bloomOk = false;
+        var g = _gl;
+        g.BloomOk = false;
         // #571: the stock "HDR / Bloom" option is a hard gate over /post bloom -- off means no bloom
         // contribution, and the composite then reads strength 0. The HDR target itself stays: the Alloy
         // stages have no display-space variant (AlloyGate's hdr=0 refusal says the same).
-        if (!Armed || Post.Bloom.V <= 0f || _levels <= 0 || !StockConfig.HdrBloom) return;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        if (!Armed || Post.Bloom.V <= 0f || g.Levels <= 0 || !StockConfig.HdrBloom) return;
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, g.Fbo);
         new PassState(depth: false, depthWrite: false).Apply();
-        Gl.BindVertexArray(_vao);
+        Gl.BindVertexArray(g.Vao);
         Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
 
         // Downsample. Level 0 reads the HDR colour (and is the only pass that thresholds);
         // every level after it reads the level above out of the same texture it is writing into -- legal
         // only while BASE/MAX_LEVEL exclude the attached level, which is what the clamp below is for. Skip
         // it and the chain samples its own attachment: undefined, and black on the drivers that enforce it.
-        Gl.UseProgram(_progDown);
-        Gl.Uniform1i(_dSrc, (int)BloomUnit);
+        Gl.UseProgram(g.ProgDown);
+        Gl.Uniform1i(g.DSrc, (int)BloomUnit);
         // the threshold is on the EXPOSED brightness, so what blooms tracks what the resolve will show
-        Gl.Uniform1f(_dExposure, Post.Exposure.V);
-        for (int i = 0; i < _levels; i++)
+        Gl.Uniform1f(g.DExposure, Post.Exposure.V);
+        for (int i = 0; i < g.Levels; i++)
         {
-            int sw = i == 0 ? _w : LevelW(i - 1), sh = i == 0 ? _h : LevelH(i - 1);
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _bloomTex, i);
+            int sw = i == 0 ? g.W : LevelW(i - 1), sh = i == 0 ? g.H : LevelH(i - 1);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, g.BloomTex, i);
             Gl.Viewport(0, 0, LevelW(i), LevelH(i));
-            if (i == 0) { Gl.BindTexture(Gl.TEXTURE_2D, _hdrTex); Gl.Uniform1i(_dLod, 0); }
-            else { Gl.BindTexture(Gl.TEXTURE_2D, _bloomTex); Clamp(i - 1); Gl.Uniform1i(_dLod, i - 1); }
-            Gl.Uniform1i(_dFirst, i == 0 ? 1 : 0);
-            Gl.Uniform2f(_dTexel, 1f / sw, 1f / sh);
-            Gl.Uniform2f(_dThresh, Post.Threshold.V, MathF.Max(Post.Knee.V, 1e-4f));
+            if (i == 0) { Gl.BindTexture(Gl.TEXTURE_2D, g.HdrTex); Gl.Uniform1i(g.DLod, 0); }
+            else { Gl.BindTexture(Gl.TEXTURE_2D, g.BloomTex); Clamp(i - 1); Gl.Uniform1i(g.DLod, i - 1); }
+            Gl.Uniform1i(g.DFirst, i == 0 ? 1 : 0);
+            Gl.Uniform2f(g.DTexel, 1f / sw, 1f / sh);
+            Gl.Uniform2f(g.DThresh, Post.Threshold.V, MathF.Max(Post.Knee.V, 1e-4f));
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         }
 
         // ...and back up, adding each level into the one below it. ONE/ONE rather than a second texture:
         // the tent filter's whole job is to be added, and a ping-pong pair would double the allocation to
         // save nothing.
-        Gl.UseProgram(_progUp);
-        Gl.Uniform1i(_uSrc, (int)BloomUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _bloomTex);
+        Gl.UseProgram(g.ProgUp);
+        Gl.Uniform1i(g.USrc, (int)BloomUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D, g.BloomTex);
         Gl.Enable(Gl.BLEND);
         Gl.BlendFunc(Gl.ONE, Gl.ONE);
-        for (int i = _levels - 1; i > 0; i--)
+        for (int i = g.Levels - 1; i > 0; i--)
         {
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _bloomTex, i - 1);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, g.BloomTex, i - 1);
             Gl.Viewport(0, 0, LevelW(i - 1), LevelH(i - 1));
             Clamp(i);
-            Gl.Uniform1i(_uLod, i);
-            Gl.Uniform2f(_uTexel, 1f / LevelW(i), 1f / LevelH(i));
+            Gl.Uniform1i(g.ULod, i);
+            Gl.Uniform2f(g.UTexel, 1f / LevelW(i), 1f / LevelH(i));
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         }
         Gl.Disable(Gl.BLEND);
         Clamp(0);
         // The HDR colour goes back on the attachment: anything binding this framebuffer afterwards (nothing
         // does today, but the pass list is a list) must not find a bloom mip there.
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _hdrTex, 0);
-        _bloomOk = true;
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, g.HdrTex, 0);
+        g.BloomOk = true;
     }
 
     /// <summary>Resolve the HDR target: add the bloom, tonemap, encode. The caller has already rebound the
-    /// engine target and its viewport, which is where the depth hand-back goes. #375: the COLOUR goes to
+    /// engine target and its viewport, which is where the depth hand-back goes. The COLOUR goes to
     /// <paramref name="into"/> when it is non-zero -- <see cref="PostStack.Begin"/>'s framebuffer, when a
-    /// display-space stage is live this frame -- and the dither goes with the 8-bit write, so it is the
-    /// stack's last stage's when the stack takes the frame.</summary>
+    /// display-space stage is live -- and the dither goes with the 8-bit write, so it is that stage's.</summary>
     internal static void Composite(int* viewport, uint into) => Composite(viewport, into, viewport);
 
     /// <summary>...with the colour draw at <paramref name="rect"/>: the render viewport when the accumulator
@@ -541,39 +503,40 @@ internal static unsafe class PostChain
     /// is always at the display viewport.</summary>
     internal static void Composite(int* viewport, uint into, int* rect)
     {
+        var g = _gl;
         if (!Armed) return;
         ResolveDepth(viewport[2], viewport[3]);
         if (into != 0) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, into); Gl.Disable(Gl.FRAMEBUFFER_SRGB); }
-        Gl.UseProgram(_progComposite);
-        Gl.BindVertexArray(_vao);
+        Gl.UseProgram(g.ProgComposite);
+        Gl.BindVertexArray(g.Vao);
         new PassState(depth: false, depthWrite: false).Apply();
         Gl.ActiveTexture(Gl.TEXTURE0 + HdrUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _hdrTex);
+        Gl.BindTexture(Gl.TEXTURE_2D, g.HdrTex);
         Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
         // #388: the velocity viz rides the bloom unit -- nothing else the resolve samples is free, and the
         // two views are exclusive by construction.
-        Gl.BindTexture(Gl.TEXTURE_2D, Post.Viz.V == VizMotion ? MotionVectors.Tex : _bloomOk ? _bloomTex : 0);
+        Gl.BindTexture(Gl.TEXTURE_2D, Post.Viz.V == VizMotion ? MotionVectors.Tex : g.BloomOk ? g.BloomTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + DepthUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _depthTex);
+        Gl.BindTexture(Gl.TEXTURE_2D, g.DepthTex);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.Uniform1i(_cHdr, (int)HdrUnit);
-        Gl.Uniform1i(_cBloom, (int)BloomUnit);
-        Gl.Uniform1i(_cDepth, (int)DepthUnit);
-        Gl.Uniform1i(_cSkyRaw, Post.SkyRaw.V ? 1 : 0);
+        Gl.Uniform1i(g.CHdr, (int)HdrUnit);
+        Gl.Uniform1i(g.CBloom, (int)BloomUnit);
+        Gl.Uniform1i(g.CDepth, (int)DepthUnit);
+        Gl.Uniform1i(g.CSkyRaw, Post.SkyRaw.V ? 1 : 0);
         Matrix4x4 invVp = AlloyRenderer.SkyInvVp;
         Vector3 eye = AlloyRenderer.EyePos;
-        Gl.Uniform1f(_cSkyBand, FrameInputs.FogOn && invVp != default ? SceneFog.SkyBand : 0f);
-        Gl.UniformMatrix4fv(_cInvVp, 1, 0, (float*)&invVp);
-        Gl.Uniform3f(_cEye, eye.X, eye.Y, eye.Z);
-        Gl.Uniform1f(_cStrength, _bloomOk ? Post.Bloom.V : 0f);
-        Gl.Uniform1i(_cMode, Post.Tonemap.V);
-        Gl.Uniform1f(_cKnee, Post.TmKnee.V);
-        Gl.Uniform1f(_cExposure, Post.Exposure.V);
-        Gl.Uniform1f(_cAcesMix, Post.AcesMix.V);
+        Gl.Uniform1f(g.CSkyBand, FrameInputs.FogOn && invVp != default ? SceneFog.SkyBand : 0f);
+        Gl.UniformMatrix4fv(g.CInvVp, 1, 0, (float*)&invVp);
+        Gl.Uniform3f(g.CEye, eye.X, eye.Y, eye.Z);
+        Gl.Uniform1f(g.CStrength, g.BloomOk ? Post.Bloom.V : 0f);
+        Gl.Uniform1i(g.CMode, Post.Tonemap.V);
+        Gl.Uniform1f(g.CKnee, Post.TmKnee.V);
+        Gl.Uniform1f(g.CExposure, Post.Exposure.V);
+        Gl.Uniform1f(g.CAcesMix, Post.AcesMix.V);
         // ...in LSBs of the 8-bit target this writes into, converted here rather than in the shader so the
         // dial reads as "how many quantisation steps of noise", which is the only unit it makes sense in.
-        Gl.Uniform1f(_cDither, into != 0 ? 0f : DitherLsb);
-        Gl.Uniform1i(_cViz, Post.Viz.V);
+        Gl.Uniform1f(g.CDither, into != 0 ? 0f : DitherLsb);
+        Gl.Uniform1i(g.CViz, Post.Viz.V);
         Gl.Viewport(rect[0], rect[1], rect[2], rect[3]);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         // Hand the depth state back the way the colour passes left it -- the probe capture may still be
@@ -597,60 +560,60 @@ internal static unsafe class PostChain
         // of this buffer's clear, in both modes, and no other period line reports it.
         string clear = $", clear=({_lastClear.X:F3},{_lastClear.Y:F3},{_lastClear.Z:F3})";
         return n == 0 ? $"NOT RESOLVING ({(_down.Reason.Length == 0 ? "never reached the pass" : _down.Reason)}){clear}"
-                      : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_w}x{_h} (scale {_scale:F2}), {_levels}-level bloom{clear}";
+                      : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_gl.W}x{_gl.H} (scale {_scale:F2}), {_gl.Levels}-level bloom{clear}";
     }
 
-    private static int LevelW(int i) => Math.Max(_w >> (i + 1), 1);
-    private static int LevelH(int i) => Math.Max(_h >> (i + 1), 1);
+    private static int LevelW(int i) => Math.Max(_gl.W >> (i + 1), 1);
+    private static int LevelH(int i) => Math.Max(_gl.H >> (i + 1), 1);
 
     /// <summary>Pin the bloom texture to exactly one level, so the level currently attached as the
     /// draw buffer is outside the sampleable range.</summary>
     private static void Clamp(int level)
     {
-        Gl.TextureParameteri(_bloomTex, Gl.TEXTURE_BASE_LEVEL, level);
-        Gl.TextureParameteri(_bloomTex, Gl.TEXTURE_MAX_LEVEL, level);
+        Gl.TextureParameteri(_gl.BloomTex, Gl.TEXTURE_BASE_LEVEL, level);
+        Gl.TextureParameteri(_gl.BloomTex, Gl.TEXTURE_MAX_LEVEL, level);
     }
 
     private static bool EnsureTargets(int w, int h)
     {
-        if (_hdrTex != 0 && w == _w && h == _h) return true;
+        if (_gl.HdrTex != 0 && w == _gl.W && h == _gl.H) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_hdrTex != 0 && Gl.DeleteTextures != null)
+        if (_gl.HdrTex != 0 && Gl.DeleteTextures != null)
         {
-            uint* old = stackalloc uint[2] { _hdrTex, _bloomTex };
+            uint* old = stackalloc uint[2] { _gl.HdrTex, _gl.BloomTex };
             Gl.DeleteTextures(2, old);
-            _hdrTex = 0; _bloomTex = 0;
+            _gl.HdrTex = 0; _gl.BloomTex = 0;
         }
-        _w = w; _h = h;
-        _levels = 0;
-        while (_levels < MaxLevels && Math.Min(LevelW(_levels), LevelH(_levels)) >= 8) _levels++;
+        _gl.W = w; _gl.H = h;
+        _gl.Levels = 0;
+        while (_gl.Levels < MaxLevels && Math.Min(LevelW(_gl.Levels), LevelH(_gl.Levels)) >= 8) _gl.Levels++;
         // ...but never zero: a texture with no levels is incomplete, and one bound to a declared sampler is
         // worth avoiding even where nothing samples it. A 1-level chain on a tiny target is a no-op bloom.
-        if (_levels < 1) _levels = 1;
+        if (_gl.Levels < 1) _gl.Levels = 1;
 
         uint tex = 0;
         // LINEAR: the resolve and the bloom downsample both read it at an offset, not at texel centres.
         RenderTarget.AllocColor(ref tex, true, w, h, Gl.LINEAR);
-        _hdrTex = tex;
+        _gl.HdrTex = tex;
 
         // Level 0 of the chain is half the target, so its storage is sized from LevelW(0)/LevelH(0) and the
         // mip sizes the immutable allocation derives match LevelW(i)/LevelH(i) exactly.
         Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
-        Gl.TextureStorage2D(tex, _levels, Gl.RGBA16F, LevelW(0), LevelH(0));
+        Gl.TextureStorage2D(tex, _gl.Levels, Gl.RGBA16F, LevelW(0), LevelH(0));
         // LINEAR within a level, never across levels: every read is an explicit textureLod and a mip-filtered
         // minification here would blend in a level the chain has not written yet. Hence MAX_LEVEL rather than
         // a plain shared allocation -- the chain is levelled, so only the clamp half is shared.
         RenderTarget.Clamp(tex, Gl.LINEAR);
-        Gl.TextureParameteri(tex, Gl.TEXTURE_MAX_LEVEL, _levels - 1);
-        _bloomTex = tex;
+        Gl.TextureParameteri(tex, Gl.TEXTURE_MAX_LEVEL, _gl.Levels - 1);
+        _gl.BloomTex = tex;
 
-        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        _log?.Info($"PostChain: HDR target {w}x{h} RGBA16F, {_levels}-level bloom chain, with its own " +
+        if (_gl.Fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f; }
+        _log?.Info($"PostChain: HDR target {w}x{h} RGBA16F, {_gl.Levels}-level bloom chain, with its own " +
                    "depth attachment (#214)");
         return true;
     }
 
-    /// <summary>#161: throw away a post program built from an override that breaks the colour-space contract
+    /// <summary>Throw away a post program built from an override that breaks the colour-space contract
     /// and rebuild it from the embedded pair -- the same refuse-and-say-so shape as
     /// <c>Programs.RebuildEmbedded</c>. Both stages come from the embedded text, never a content
     /// vertex stage over an embedded fragment one: the fall back is to a KNOWN pair.</summary>
@@ -664,55 +627,55 @@ internal static unsafe class PostChain
 
     private static bool EnsurePrograms()
     {
-        if (_progComposite != 0) return true;
-        if (_progFailed) return false;
+        if (_gl.ProgComposite != 0) return true;
+        if (_gl.ProgFailed) return false;
         string post = ShaderStages.Source(ShdPostVs);
-        _progDown = GlProgram.Graphics(ShdPostVs, post, ShdBloomDownFs, ShaderStages.Source(ShdBloomDownFs),
+        _gl.ProgDown = GlProgram.Graphics(ShdPostVs, post, ShdBloomDownFs, ShaderStages.Source(ShdBloomDownFs),
                                        _log, "PostChain bloom downsample", out _, out string downSrc);
-        if (_progDown != 0 && !ShaderContract.LinearSafe(downSrc))
-            _progDown = Rebuild(_progDown, BloomDownFs, "bloom downsample",
+        if (_gl.ProgDown != 0 && !ShaderContract.LinearSafe(downSrc))
+            _gl.ProgDown = Rebuild(_gl.ProgDown, BloomDownFs, "bloom downsample",
                                 "it still encodes to display space (pre-#132), and the chain it feeds is linear");
-        _progUp = GlProgram.Graphics(ShdPostVs, post, ShdBloomUpFs, ShaderStages.Source(ShdBloomUpFs),
+        _gl.ProgUp = GlProgram.Graphics(ShdPostVs, post, ShdBloomUpFs, ShaderStages.Source(ShdBloomUpFs),
                                      _log, "PostChain bloom upsample", out _, out string upSrc);
-        if (_progUp != 0 && !ShaderContract.LinearSafe(upSrc))
-            _progUp = Rebuild(_progUp, BloomUpFs, "bloom upsample",
+        if (_gl.ProgUp != 0 && !ShaderContract.LinearSafe(upSrc))
+            _gl.ProgUp = Rebuild(_gl.ProgUp, BloomUpFs, "bloom upsample",
                               "it still encodes to display space (pre-#132), and the chain it feeds is linear");
-        _progComposite = GlProgram.Graphics(ShdPostVs, post, ShdResolveFs, ShaderStages.Source(ShdResolveFs),
+        _gl.ProgComposite = GlProgram.Graphics(ShdPostVs, post, ShdResolveFs, ShaderStages.Source(ShdResolveFs),
                                             _log, "PostChain resolve", out _, out string resolveSrc);
         // #208: the resolve's two units come with it -- an override that renamed either samples unit 0.
-        if (_progComposite != 0 && !(ShaderContract.ResolveSafe(resolveSrc)
+        if (_gl.ProgComposite != 0 && !(ShaderContract.ResolveSafe(resolveSrc)
                                      && ShaderContract.SlotSafe(resolveSrc, "uHdr", "uBloom", "uDepth")))
-            _progComposite = Rebuild(_progComposite, ResolveFs, "resolve",
+            _gl.ProgComposite = Rebuild(_gl.ProgComposite, ResolveFs, "resolve",
                                      "it decodes its input (pre-#132) or performs no encode at all, and this "
                                      + "is the frame's one encode");
-        if (_progDown == 0 || _progUp == 0 || _progComposite == 0)
+        if (_gl.ProgDown == 0 || _gl.ProgUp == 0 || _gl.ProgComposite == 0)
         {
-            _progFailed = true;
+            _gl.ProgFailed = true;
             StandDown("a post program did not build");
             return false;
         }
-        _dSrc = GlProgram.Loc(_progDown, "uSrc"); _dLod = GlProgram.Loc(_progDown, "uLod");
-        _dTexel = GlProgram.Loc(_progDown, "uTexel"); _dFirst = GlProgram.Loc(_progDown, "uFirst");
-        _dThresh = GlProgram.Loc(_progDown, "uThresh");
-        _dExposure = GlProgram.Loc(_progDown, "uExposure");
-        _uSrc = GlProgram.Loc(_progUp, "uSrc"); _uLod = GlProgram.Loc(_progUp, "uLod");
-        _uTexel = GlProgram.Loc(_progUp, "uTexel");
-        _cHdr = GlProgram.Loc(_progComposite, "uHdr"); _cBloom = GlProgram.Loc(_progComposite, "uBloom");
-        _cDepth = GlProgram.Loc(_progComposite, "uDepth"); _cSkyRaw = GlProgram.Loc(_progComposite, "uSkyRaw");
-        _cSkyBand = GlProgram.Loc(_progComposite, "uSkyBand"); _cInvVp = GlProgram.Loc(_progComposite, "uInvVP");
-        _cEye = GlProgram.Loc(_progComposite, "uEyePos");
-        _cStrength = GlProgram.Loc(_progComposite, "uStrength"); _cMode = GlProgram.Loc(_progComposite, "uMode");
-        _cKnee = GlProgram.Loc(_progComposite, "uKnee");
-        _cExposure = GlProgram.Loc(_progComposite, "uExposure");
-        _cAcesMix = GlProgram.Loc(_progComposite, "uAcesMix");
-        _cDither = GlProgram.Loc(_progComposite, "uDither");
-        _cViz = GlProgram.Loc(_progComposite, "uViz");
+        _gl.DSrc = GlProgram.Loc(_gl.ProgDown, "uSrc"); _gl.DLod = GlProgram.Loc(_gl.ProgDown, "uLod");
+        _gl.DTexel = GlProgram.Loc(_gl.ProgDown, "uTexel"); _gl.DFirst = GlProgram.Loc(_gl.ProgDown, "uFirst");
+        _gl.DThresh = GlProgram.Loc(_gl.ProgDown, "uThresh");
+        _gl.DExposure = GlProgram.Loc(_gl.ProgDown, "uExposure");
+        _gl.USrc = GlProgram.Loc(_gl.ProgUp, "uSrc"); _gl.ULod = GlProgram.Loc(_gl.ProgUp, "uLod");
+        _gl.UTexel = GlProgram.Loc(_gl.ProgUp, "uTexel");
+        _gl.CHdr = GlProgram.Loc(_gl.ProgComposite, "uHdr"); _gl.CBloom = GlProgram.Loc(_gl.ProgComposite, "uBloom");
+        _gl.CDepth = GlProgram.Loc(_gl.ProgComposite, "uDepth"); _gl.CSkyRaw = GlProgram.Loc(_gl.ProgComposite, "uSkyRaw");
+        _gl.CSkyBand = GlProgram.Loc(_gl.ProgComposite, "uSkyBand"); _gl.CInvVp = GlProgram.Loc(_gl.ProgComposite, "uInvVP");
+        _gl.CEye = GlProgram.Loc(_gl.ProgComposite, "uEyePos");
+        _gl.CStrength = GlProgram.Loc(_gl.ProgComposite, "uStrength"); _gl.CMode = GlProgram.Loc(_gl.ProgComposite, "uMode");
+        _gl.CKnee = GlProgram.Loc(_gl.ProgComposite, "uKnee");
+        _gl.CExposure = GlProgram.Loc(_gl.ProgComposite, "uExposure");
+        _gl.CAcesMix = GlProgram.Loc(_gl.ProgComposite, "uAcesMix");
+        _gl.CDither = GlProgram.Loc(_gl.ProgComposite, "uDither");
+        _gl.CViz = GlProgram.Loc(_gl.ProgComposite, "uViz");
         // Core profile draws nothing with VAO 0 bound, even from a vertex stage that reads no attributes.
-        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
+        if (_gl.Vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _gl.Vao = v; }
         return true;
     }
 
-    /// <summary>Resrefs a content author overrides the post stages at (#92), same rules as every other owned
+    /// <summary>Resrefs a content author overrides the post stages at, same rules as every other owned
     /// program. All three share <see cref="FullscreenVs"/>, so overriding <c>cx_post_vs</c> replaces the
     /// vertex stage of all three at once.</summary>
     internal const string ShdPostVs = "cx_post_vs", ShdBloomDownFs = "cx_bloomdn_fs";
@@ -723,32 +686,22 @@ internal static unsafe class PostChain
     /// rasterisation of every pixel along it and buys nothing.</summary>
     internal static string FullscreenVs => ShaderSource.Get("cx_fullscreen_v.glsl");
 
-    /// <summary>#132: the frame's one encode, and the only colour-space conversion left anywhere in the
-    /// Alloy pipeline. Its own text rather than a share of <see cref="AlloyLights.FragmentLib"/> because
-    /// that lib declares the light SSBOs and the cluster grid, none of which a full-screen pass has or
-    /// wants -- and because the exponent comes from the same <c>$SRGB$</c> token either way.
-    /// <para>Unconditional, and that is not the pre-#132 sin coming back: the engine's gamma parameter is
-    /// asked in <see cref="Precheck"/>, which stands the whole Alloy pass down when it is off. This stage
-    /// only ever runs on a frame whose stages linearised, so it always has an encode to undo.</para></summary>
+    /// <summary>The frame's one encode, and the only colour-space conversion left anywhere in the Alloy
+    /// pipeline. Its own text rather than a share of <see cref="AlloyLights.FragmentLib"/>, which declares
+    /// the light SSBOs and the cluster grid a full-screen pass has no use for. Unconditional: the engine's
+    /// gamma parameter is asked in <see cref="Precheck"/>, which stands the whole pass down when it is off.</summary>
     private static string PostColorLib => ShaderSource.Get("cx_postcolor.glsl");
 
     /// <summary>The frame's one dither, shared by the resolve and every <see cref="PostStack"/> stage: the
-    /// whole Alloy frame is computed in RGBA16F and written ONCE into an 8-bit target, so every gradient in
-    /// it quantises there, and a smooth shallow one -- a bloom halo -- lands its steps as contour bands.
-    /// TRIANGULAR PDF, two independent samples summed, not uniform: a uniform dither leaves the noise floor
-    /// modulated by where the signal sits inside its step, so bands survive faintly; the triangular sum
-    /// decorrelates the error outright. <c>lsb</c> is one LSB of the target, or 0 for an intermediate.</summary>
+    /// whole frame is computed in RGBA16F and written ONCE into an 8-bit target, so a smooth shallow gradient
+    /// -- a bloom halo -- lands its steps as contour bands. TRIANGULAR PDF, two independent samples summed:
+    /// a uniform dither leaves bands faintly standing, the triangular sum decorrelates the error outright.</summary>
     internal static string PostDitherLib => ShaderSource.Get("cx_postdither.glsl");
 
     /// <summary>Progressive downsample, the 13-tap filter with the four-group Karis average (Jimenez'
     /// "Next Generation Post Processing"). The Karis weighting is not decoration: a plain box filter over a
     /// single very bright texel makes the bloom flicker as that texel crosses a pixel boundary, which on a
-    /// carried torch is every frame.
-    /// <para>Level 0 is also the only pass that applies the threshold, because it is the only one reading
-    /// the HDR colour rather than the chain. #132: nothing to decode any more -- the colour is linear, so
-    /// the threshold is linear-referred. Its default does not move with it: the threshold is 1.0 and
-    /// pow(1, 2.2) is 1, so the boundary is the same number in either space. Only the soft KNEE's width
-    /// changes shape below it.</para></summary>
+    /// carried torch is every frame. Level 0 is also the only pass that applies the threshold.</summary>
     internal static string BloomDownFs => ShaderSource.Get("cx_bloomdown_f.glsl");
 
     /// <summary>The 3x3 tent back up the chain, added into the level below with ONE/ONE. Tent rather than
@@ -756,10 +709,10 @@ internal static unsafe class PostChain
     /// bilinear read leaves each level's own resolution visible as a ring.</summary>
     internal static string BloomUpFs => ShaderSource.Get("cx_bloomup_f.glsl");
 
-    /// <summary>The resolve: add the bloom, tonemap, and do the frame's ONE encode -- #132's exit step.
-    /// <para><c>uMode</c> 1 is a shoulder: identity below the knee, asymptotic to 1 above it. 2 (the
-    /// default) is ACES (Narkowicz' fit) mixed against that shoulder. 3 is Khronos PBR Neutral: a 0.04 offset
-    /// (quadratic toe below 0.08) up to 0.76, then a hue-preserving roll-off; it reads neither <c>uKnee</c> nor <c>uAcesMix</c>.</para></summary>
+    /// <summary>The resolve: add the bloom, tonemap, and do the frame's ONE encode. <c>uMode</c> 1 is a
+    /// shoulder (identity below the knee, asymptotic to 1 above it), 2 is ACES (Narkowicz' fit) mixed against
+    /// that shoulder, and 3 is Khronos PBR Neutral -- a 0.04 offset up to 0.76, then a hue-preserving
+    /// roll-off, reading neither <c>uKnee</c> nor <c>uAcesMix</c>.</summary>
     internal static string ResolveFs => ShaderSource.Get("cx_resolve_f.glsl");
 
     /// <summary>Off-device (run-demo.sh): the knob table has the shape the frame relies on and the shoulder

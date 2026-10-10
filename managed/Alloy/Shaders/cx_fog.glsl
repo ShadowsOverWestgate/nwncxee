@@ -19,8 +19,8 @@ vec3 CxFog(vec3 lin, vec3 world, float depth) { return CxFogMix(lin, world, CxFo
 /// faded out -- vanilla's own treatment (RenderDrawBucket @0x46d060 scales the fog colour by f^2 and
 /// the fog end by f), which is why this is a fog term and the tile's alpha is left alone.
 /// The lane carries HIDDEN (1 - reveal), not reveal, and that polarity is load-bearing: the record's
-/// spare lane is zero in every record nobody writes -- every record in engine mode, and every DB record
-/// before its first fog-of-war write -- and zero has to mean EXPLORED. Carrying reveal instead fogged the
+/// spare lane is zero in every record nobody writes -- every record before its first fog-of-war write --
+/// and zero has to mean EXPLORED. Carrying reveal instead fogged the
 /// entire world to black the moment this shipped, because an unwritten 0 read as "never seen".
 ///   hidden 0   = explored: exactly CxFogFactor, and the area author's colour.
 ///   hidden > 0 = the ramp is pulled in to (reveal*start, reveal*end + 0.1) and the target darkens by

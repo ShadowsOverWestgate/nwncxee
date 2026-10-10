@@ -8,22 +8,16 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-112 finding 21: the live source of a <c>.mtr</c>'s render hint. A mesh with no
-/// <c>renderhint</c> of its own still gets a tangent frame when the material it names carries one -- the
-/// engine asks <c>SharedMaterial::GetSharedMaterial</c>, which is a resource lookup, so an engine-free parser
-/// cannot. This is the host half that answers it, with CX's own reader rather than an engine call.
-/// <para><b>Why it warms rather than blocks.</b> The hint is wanted ON THE PARSE WORKER, and a resource
-/// lookup is game-thread-only (<c>ResLocate</c> is the engine's own <c>GetKeyEntry</c>). So a name the cache
-/// does not have yet answers 0 and is queued; the game thread drains the queue at the next model load, which
-/// is exactly when the next model will want it. Within an area a tileset names a handful of materials over
-/// and over, so the queue warms in the first few models and every miss is counted and reported -- never a
-/// quiet hole.</para>
-/// <para>Restype <b>2072</b>: measured, not assumed. Scanning <c>nwn_base.key</c> for a resource whose bytes
-/// are <c>.mtr</c> text (<c>renderhint</c>, <c>customshadervs</c>) lands on 2072 and nothing else; 2069 is
-/// the neighbouring <c>.shd</c>.</para></summary>
+/// <summary>
+/// The live source of a <c>.mtr</c>'s render hint: a mesh with no <c>renderhint</c> of its own still gets a
+/// tangent frame when the material it names carries one, and only a resource lookup can say so. The hint is
+/// wanted on the PARSE WORKER while a lookup is game-thread-only, so a name the cache does not hold yet answers
+/// 0 and is queued; the game thread drains the queue at the next model load, and every miss is counted.
+/// </summary>
 internal static unsafe class MtrFeed
 {
-    /// <summary>The <c>.mtr</c> restype.</summary>
+    /// <summary>The <c>.mtr</c> restype, measured: scanning <c>nwn_base.key</c> for a resource whose bytes are
+    /// <c>.mtr</c> text lands on 2072 and nothing else; 2069 is the neighbouring <c>.shd</c>.</summary>
     private const ushort MtrResType = 2072;   // not-an-offset: a resource type id
     /// <summary>Materials resolved per pump: the game thread is doing a model read anyway, and a
     /// <c>.mtr</c> is a few hundred bytes.</summary>
@@ -42,8 +36,8 @@ internal static unsafe class MtrFeed
     private static ExtenderLog? _log;
     private static bool _armed;
     private static int _misses, _loaded, _absent, _dropped;
-    /// <summary>Materials that exist but could not be read (2026-10-09: every NWSync .mtr, because the file-path
-    /// reader was handed an NWSync location -- 0 read, 697 absent, and an .mtr-textured tent drew white).</summary>
+    /// <summary>Materials that exist but could not be read: their meshes draw the bitmap as a texture, so this
+    /// is said loudly rather than counted alone.</summary>
     private static int _unreadable;
 
     /// <summary>Wire both halves. A client where the lookup cannot answer keeps the parser's hint unwired,

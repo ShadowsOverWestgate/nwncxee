@@ -5,29 +5,16 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 / ADR 0028 section 5: ONE frame as it crosses from the game thread to the renderer.
-/// <para>The game thread owns the database. At the present boundary it PUBLISHES a snapshot: the frame's view
-/// list in the order the game issued it, and the dirty sets folded into the renderer's own copies. The render
-/// thread then draws that snapshot while the game thread simulates the next frame.</para>
-/// <para><b>What crosses and what does not.</b> A snapshot carries the VIEWS by value -- camera matrices,
-/// viewport, depth range, the scene handle -- because they are small, per-frame and the renderer needs them
-/// before it touches anything else. It does NOT copy the record tables: the renderer reads
-/// <see cref="SceneDb"/>'s columns directly, and the contract that makes that safe is the dirty FOLD: a
-/// column the renderer reads for frame N is only written again by the game thread for frame N+1 after the
-/// publish, and the publish waits until the renderer has released N-1. So at most one frame of column writes
-/// is in flight, and the renderer-side copies the fold builds (<c>_drawBuf</c> and friends, seam-feed's) are
-/// what a pass actually reads mid-draw.</para>
-/// <para><b>Allocation.</b> Two snapshots, both grown once to their high-water mark and then reused forever:
-/// a publish copies into the spare one's arrays and swaps. Nothing here allocates per frame, which is the
-/// NativeAOT rule for a hook -- the GC runs on whatever thread allocates, and a collection on the game thread
-/// at the publish is a stutter.</para></summary>
+/// <summary>ONE frame as it crosses from the game thread to the renderer (ADR 0028 section 5): the view list
+/// by value, plus the dirty sets folded into the renderer's copies. Two snapshots ping-pong, so nothing
+/// allocates per frame. Record tables are NOT copied -- the renderer reads <see cref="SceneDb"/> directly,
+/// and the publish waits until the renderer releases N-1, so one frame of column writes is in flight at most.</summary>
 public static class RenderSnapshot
 {
     /// <summary>Views one frame may carry -- <see cref="DbFeed.MaxViews"/> exactly, spelled once so the
-    /// recording side and the crossing side cannot disagree about which views exist. A main-menu frame issues
-    /// ~6 panel views; an in-game frame is the world view plus the open panels plus the two post-NUI overlay
-    /// views. Over the cap the view is DROPPED with a loud line -- a silently missing panel is exactly the
-    /// hole no-silent-fallbacks forbids.</summary>
+    /// recording and crossing sides cannot disagree. A main-menu frame issues ~6 panel views; an in-game frame
+    /// is the world view plus the open panels plus the two post-NUI overlays. Over the cap the view is DROPPED
+    /// with a loud line.</summary>
     public const int MaxViews = DbFeed.MaxViews;
 
     /// <summary>One recorded view: everything the renderer needs to draw one <c>RenderScene</c>.</summary>
@@ -43,8 +30,8 @@ public static class RenderSnapshot
         /// engine forks <c>Scene::Render</c> on, and the one that decides which pass chain runs.</summary>
         public bool World;
         public bool Perspective;
-        /// <summary>CX-188: this view's fog, resolved on the GAME thread at the fold. Per view and not per
-        /// frame because the area's fog answers for the area's scene and a GUI panel's scene is not it; see
+        /// <summary>This view's fog, resolved on the GAME thread at the fold. Per view and not per frame
+        /// because the area's fog answers for the area's scene and a GUI panel's scene is not it; see
         /// <see cref="FrameHoist.FoldFog"/>.</summary>
         public FrameHoist.ViewFog Fog;
     }
@@ -59,8 +46,8 @@ public static class RenderSnapshot
         public long Index;
         /// <summary>Dirty object/part/scene/camera counts this frame folded, for the period line.</summary>
         public int DirtyObjects, DirtyParts, DirtyScenes, DirtyCameras;
-        /// <summary>CX-188: every ENGINE read the draw used to do, done once on the game thread at the fold
-        /// and carried across by value. See <see cref="FrameHoist"/>.</summary>
+        /// <summary>Every ENGINE read the draw would do, done once on the game thread at the fold and carried
+        /// across by value. See <see cref="FrameHoist"/>.</summary>
         public FrameHoist Hoist;
 
         public void Reset(long index)
@@ -145,14 +132,9 @@ public static class RenderSnapshot
     }
 
     /// <summary>Fold this frame's dirty sets into the renderer's side and publish. Game thread, at the present
-    /// boundary.
-    /// <para>The fold is a COUNT plus <see cref="DbTable.TakeDirty"/> here; the per-record work it drives
-    /// (rewriting the renderer's persistent draw records for dirty parts) is seam-feed's, called through
-    /// <see cref="Fold"/> so the order -- fold, then publish, then the game thread is free -- is this file's to
-    /// state and not a convention each stream remembers.</para>
-    /// <para>Blocks only if the renderer still holds frame N-1, which bounds latency at one frame. The wait is
-    /// counted and reported: a frame that waits is the renderer being the bottleneck, which is the number the
-    /// render-thread decision is judged on.</para></summary>
+    /// boundary. The fold is a COUNT plus <see cref="DbTable.TakeDirty"/> here; the per-record work it drives
+    /// is seam-feed's, called through <see cref="Fold"/> so the order -- fold, publish, game thread free -- is
+    /// stated here. Blocks only if the renderer still holds frame N-1; the wait is counted and reported.</summary>
     public static Frame Publish()
     {
         Frame f = _building;
@@ -254,17 +236,10 @@ public static class RenderSnapshot
         }
     }
 
-    /// <summary>CX-188: <b>THE FENCE.</b> Block until the renderer holds no frame -- it has finished the one
-    /// it was handed and released it. Game thread, once per frame, at the top of the frame boundary.
-    /// <para>This is the whole of the two threads' mutual exclusion, and it is why the game thread may touch
-    /// framebuffer 0, the engine's GL state and the engine's own context at all with a render thread live:
-    /// from the moment this returns until the next <see cref="Publish"/>, the render thread is parked inside
-    /// <see cref="Take"/> with nothing to draw. The present and the 2D UI go in that gap.</para>
-    /// <para>It is not a new wait. <see cref="Publish"/> already waited for exactly this, at exactly this
-    /// point in the frame, because latency is bounded at one frame either way; hoisting it out of the publish
-    /// only makes the gap it opens NAMED, so the UI and the present can be ordered inside it rather than
-    /// racing it. On the single-threaded path nothing is ever published-but-unreleased here, so it returns
-    /// without touching the monitor and the frame is byte-identical.</para></summary>
+    /// <summary><b>THE FENCE.</b> Block until the renderer holds no frame; game thread, once per frame at the
+    /// top of the frame boundary. This is the two threads' whole mutual exclusion, and why the game thread may
+    /// touch framebuffer 0 and the engine's GL state at all: from here until the next <see cref="Publish"/> the
+    /// render thread is parked in <see cref="Take"/>, and the present and 2D UI go in that gap.</summary>
     internal static void AwaitDrained()
     {
         lock (_gate)

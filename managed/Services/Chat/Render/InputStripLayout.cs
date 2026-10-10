@@ -7,12 +7,9 @@ namespace CX.Services.Chat.Render;
 
 /// <summary>
 /// The one geometry of the chat input strip's edit text: where it starts, how wide it wraps, which wrapped row
-/// a caret sits on, and which UTF-16 index a pointer or an Up/Down key lands on.
-/// <see cref="WindowRenderer.EmitInputStrip"/> draws from it and the input thread hit-tests against it, so a
-/// click can never disagree with the caret that was drawn.
-/// <para>Every entry point takes the atlas the strip DRAWS with -- the UI face (<c>chrome</c> in
-/// <see cref="WindowRenderer.Build"/>), NOT the window's own body face. Passing the body face measures a
-/// different wrap and the caret lands in the wrong place.</para>
+/// a caret sits on, and which UTF-16 index a pointer or an Up/Down key lands on -- the renderer draws from it
+/// and the input thread hit-tests against it, so a click can never disagree with the drawn caret. Every entry
+/// point takes the atlas the strip DRAWS with (the UI face, NOT the body face, which measures a different wrap).
 /// </summary>
 public static class InputStripLayout
 {

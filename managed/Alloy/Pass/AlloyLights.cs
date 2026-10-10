@@ -8,43 +8,27 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #83 (map #68, spec #77 M1, frame graph #75): the clustered forward+ light rig for the Alloy world pass.
-/// The Alloy light walk's whole snapshot goes into an SSBO -- no 32-light UBO, no uniform-array ceiling --
-/// and a GPU compute pass bins it into a froxel grid that the Alloy lit shader indexes per fragment. Lights
-/// past the engine's 32-light budget therefore light Alloy geometry with nothing to pop in or out of.
-/// <para>Everything here runs inside <see cref="GlContextService"/>'s 4.6 bracket, driven by
-/// <see cref="AlloyRenderer"/>: <see cref="Upload"/> once per frame (the snapshot is per-frame), then
-/// <see cref="Build"/> once per pass (main view and each reflection subframe have their own projection, so
-/// the froxel bounds differ). Hot and alloc-free -- the staging array is static and the only per-frame CPU
-/// work is a memcpy-shaped fill.</para>
-/// <para>Costs that are bounded rather than unbounded are COUNTED, never silently truncated: a cluster past
-/// <see cref="ClusterCap"/> lights bumps a GPU-side counter that the period log reports, and the build's GPU
-/// time comes from a two-deep timer query read a frame late (never a blocking readback).</para>
+/// The world pass's point-light rig: the snapshot goes into an SSBO -- no 32-light UBO, no uniform-array
+/// ceiling -- and a compute pass bins it into a froxel grid. <see cref="DeferredLights"/>' tiled pass walks it
+/// for the opaque and cutout set (its own per-group list, or the froxel lists under
+/// <c>light.deferredtiles</c>); the forward consumers -- water, grass, particles, weather, probe -- take the rest.
 /// </summary>
 internal static unsafe class AlloyLights
 {
-    /// <summary>Froxel grid. #151: 32x18 tiles (~80px at 1440p), 24 exponential depth slices. The shipped
-    /// 16x9 put a 159px tile over a torch-lit plaza with 254 lights, and the per-fragment cost of clustered
-    /// shading is the LIGHT LIST LENGTH of the fragment's tile -- the GPU timer read the colour passes at
-    /// 12-14ms there. Quartering the tile area roughly quarters how many torches share one list. The build
-    /// stays O(clusters * lights) on compute (measured 0,061ms at 3456 clusters; 13824 is still nothing) and
-    /// the index SSBO grows 884KB -> 3,5MB, sized once. More clusters = SHORTER per-fragment loops; this
-    /// knob, not <see cref="ClusterCap"/>, is the one dense lighting wants.</summary>
+    /// <summary>Froxel grid: 32x18 tiles (~80px at 1440p), 24 exponential depth slices. The per-fragment cost
+    /// of clustered shading is the LIGHT LIST LENGTH of the fragment's tile, so quartering the tile area
+    /// roughly quarters how many torches share one list, while the build stays O(clusters * lights) on
+    /// compute. More clusters = SHORTER per-fragment loops: this knob, not <see cref="ClusterCap"/>.</summary>
     private const int GridX = 32, GridY = 18, GridZ = 24;
     private const int ClusterCount = GridX * GridY * GridZ;
-    /// <summary>Lights binned per cluster. A froxel is ~1/144th of the screen over one depth slice; 64 fired
-    /// (242 overflows/period in a torch-dense Arelith area, 2026-08-31), so 128. NOT free: the fragment
-    /// loop reads the cluster's COUNT, and the count was clamped BY the old cap -- restoring the dropped
-    /// lights is the point, and in a formerly-overflowing froxel it costs up to 2x the per-fragment loop,
-    /// plus SSBO bytes (3,5MB -> 7MB). <para>ponytail: fixed capacity, no per-cluster compaction pass. Overflow is counted and
-    /// logged; if 128 ever fires, the upgrade is a two-pass count-then-fill build with a compacted offset
-    /// table.</para></summary>
-    /// <summary>Boot-tunable (<c>alloy.clustercap</c>, #402/#404): it sizes the cluster build's per-lane sort
-    /// array, the scratch candidate for the radeonsi fault; 128 is the shipped value.</summary>
+    /// <summary>Lights binned per cluster, boot-tunable (<c>alloy.clustercap</c>); 128 is the shipped value.
+    /// NOT free: the fragment loop reads the cluster's COUNT, so a formerly-overflowing froxel pays up to
+    /// twice the per-fragment loop, plus SSBO bytes. ponytail: fixed capacity, no per-cluster compaction --
+    /// overflow is counted and logged, and a two-pass count-then-fill build is the upgrade.</summary>
     internal static readonly int ClusterCap = Renderer.ClusterCap.Boot;
-    /// <summary>#410: the cluster build's per-lane sort array size, deliberately NOT <see cref="ClusterCap"/>.
+    /// <summary>The cluster build's per-lane sort array size, deliberately NOT <see cref="ClusterCap"/>.
     /// A dynamically-indexed private array past ~64 entries spills to scratch (32 KB/wave at 128), and on
-    /// radeonsi that scratch read faulted on area entry (#401). <c>bincap</c> never indexes past 16; 32 is
+    /// radeonsi that scratch read faulted on area entry. <c>bincap</c> never indexes past 16; 32 is
     /// clear of the spill threshold. Compile-time shape, not a knob.</summary>
     internal const int SortCap = 32;
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
@@ -59,60 +43,25 @@ internal static unsafe class AlloyLights
     private const int TallyEvery = 16;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
     private const uint BindLights = 0, BindCounts = 1, BindIndices = 2, BindStats = 3, BindMovers = 25;
-    /// <summary>Point-light attenuation, as the ENGINE computes it (#140). Verified against
-    /// <c>inc_lighting.shd</c>'s <c>ComputePointLightSource</c> at <c>GAMMA_CORRECTION == 1</c> and against
-    /// the two constants <c>GLRender::SetUniforms</c> @0x4cd341 feeds it:
-    /// <code>
-    ///     f2  = d^2 / R^2                        (R = GetLightAdjustedRadius, which IS what we upload)
-    ///     att = (1 - f2) / (mi + ff * f2)
-    /// </code>
-    /// <para>The curve is range-NORMALISED, so the authored range is the shape: a dim decorative light stays
-    /// dim because its colour is dim and its R is small; a torch reaches because its R is large. That is the
-    /// behaviour the content was authored against, and why nothing here needs a global gain to compensate --
-    /// an absolute <c>1/d^n</c> model is range-blind and serves neither the 2m cave glow nor the torch.</para>
-    /// <para><see cref="_gain"/> scales the whole curve (1 = the engine's own peak, <c>1/mi</c>);
-    /// <see cref="_falloffPow"/> is an exponent on the <c>(1 - f2)</c> rim fade, 1.0 = vanilla exactly.
-    /// <see cref="_srcRadius"/> is not part of this curve: it is the sphere-light wrap radius and the base of
-    /// the self-shadow near-field skip (#139).</para>
-    /// </summary>
+    /// <summary>Point-light attenuation, as the ENGINE computes it: <c>f2 = d^2 / R^2</c> (R is
+    /// <c>GetLightAdjustedRadius</c>, which is what we upload) and <c>att = (1 - f2) / (mi + ff * f2)</c>,
+    /// verified against <c>inc_lighting.shd</c> at <c>GAMMA_CORRECTION == 1</c>. Range-NORMALISED, so the
+    /// authored range is the shape and nothing here needs a global gain to compensate.</summary>
     private static float _gain => Lighting.Gain.V;
     private static float _srcRadius => Lighting.Radius.V;
     private static float _falloffPow => Lighting.Falloff.V;
 
-    /// <summary>#142: the near-field core, and the answer to "no light ever gets intense close up".
-    /// <para>The engine's curve is a NEEDLE. With the live constants (mi 0.410, ff 136.334) the denominator
-    /// is dominated by <c>ff * f2</c> past <c>f2 = mi/ff</c> -- three thousandths of the range squared, so
-    /// about 5% of the range -- and everything beyond that sits on the 1/d^2 tail. A gain low enough to put
-    /// the body of that curve at vanilla's level therefore scales the core away with it, and every light
-    /// reads flat. <c>x</c> adds the core back without touching the body.</para>
-    /// <para>Shape: a COMPACT-SUPPORT bump, <c>(1 - f2/y^2)^2</c>, peaking at <c>x / mi</c> and exactly zero
-    /// past <c>y</c> of the light's range. Deliberately not a second hyperbola -- two 1/d^2 terms stay in
-    /// fixed proportion at every distance, so widening the core would lift the far field with it, and the
-    /// far field is the half the live A/B against vanilla actually calibrated. Compact support makes "the
-    /// tail is untouched" a property of the formula rather than a thing to re-check.</para>
-    /// <para><c>gain + hot = 1</c> puts the very centre at the engine's own peak while <see cref="_gain"/>
-    /// alone owns everything past the core. The shipped pair is gain 1 / hot 0 -- the engine's curve, no
-    /// core term at all. The old 0.10/0.90 pair came from a live A/B whose "vanilla" side was the SoW
-    /// server's veil shader, which deliberately darkens around the player to fake missing darkvision; it was
-    /// calibrating against a darkened frame, not against vanilla, and every placed light paid for it.</para>
-    /// <para>0 disables it, which is #140's curve and is also what a content override (#92) that never
-    /// declares <c>uHot</c> reads.</para></summary>
+    /// <summary>The near-field core: a COMPACT-SUPPORT bump, <c>(1 - f2/y^2)^2</c>, peaking at <c>x / mi</c>
+    /// and exactly zero past <c>y</c> of the light's range, so it adds intensity close up without lifting the
+    /// far field. Ships at 0 -- the engine's curve, no core term at all -- which is also what a content
+    /// override that never declares <c>uHot</c> reads.</summary>
     private static float _hot => Lighting.Hot.V;
     private static float _hotSize => Lighting.HotSize.V;
 
     /// <summary>The engine's own two attenuation constants, latched per capture from
-    /// <c>GLRender::m_globalShaderConstantsf</c> through <c>RenderInterface::GetGlobalShaderParamf</c> --
-    /// read rather than hardcoded, so a graphics-settings change moves the owned curve with the engine's.
-    /// <list type="bullet">
-    /// <item><c>x = lightMaxIntensityInv = param(0x14)^-2.2</c>. Its reciprocal is the peak: the
-    /// attenuation every light reaches at its own centre.</item>
-    /// <item><c>y = lightFalloffFactor = param(0x12)^2 * (param(0x13)^-2.2 - param(0x14)^-2.2)</c>, where
-    /// 0x12 is the light-radius multiplier and 0x13/0x14 are the min/max intensity settings. Without the
-    /// rim fade the hyperbola runs from <c>param(0x14)^2.2</c> at the centre to <c>param(0x13)^2.2</c> at
-    /// the range; the fade then takes it to exactly 0 there.</item>
-    /// </list>
-    /// The fallback is a peak of 1 falling to 0 at the range -- sane, not a guess at the engine's numbers,
-    /// and only ever seen before the render interface is up.</summary>
+    /// <c>GLRender::m_globalShaderConstantsf</c> -- read rather than hardcoded, so a graphics-settings change
+    /// moves the owned curve with the engine's. <c>x = lightMaxIntensityInv</c>, whose reciprocal is the peak
+    /// every light reaches at its centre; <c>y = lightFalloffFactor</c>. The fallback is a peak of 1.</summary>
     private static Vector2 _atten = new(1f, 1f);
     /// <summary>A real pair has been latched: the lightmap's area key refuses to fold the fallback (the login
     /// load ran before the first light walk and keyed every area apart from its later visits).</summary>
@@ -135,32 +84,20 @@ internal static unsafe class AlloyLights
 
     /// <summary>What the shader is running, for the period log and the /light echo.</summary>
     internal static Vector2 Atten => _atten;
-    /// <summary>#139 sphere-light wrap: the light is treated as a SPHERE of radius <see cref="_srcRadius"/>
-    /// times this, and the diffuse terminator is softened by the half-angle that sphere subtends at the
-    /// fragment. 0 disables it and restores the punctual <c>N.L</c>.
-    /// <para>This is the fix for the second half of the torch complaint: at arm's length a punctual light
-    /// swings N.L across a whole low-poly facet in one polygon, which reads as the model being cut in half.
-    /// The wrap converges to plain N.L with distance, so placed lights are untouched.</para></summary>
+    /// <summary>Sphere-light wrap: the light is treated as a SPHERE of radius <see cref="_srcRadius"/> times
+    /// this, and the diffuse terminator is softened by the half-angle that sphere subtends at the fragment; 0
+    /// restores the punctual <c>N.L</c>. At arm's length a punctual light swings N.L across a whole low-poly
+    /// facet, which reads as the model cut in half; the wrap converges to plain N.L with distance.</summary>
     private static float _wrap => Lighting.Wrap.V;
-    /// <summary>#143 wrapped diffuse: the distance-INDEPENDENT terminator softening, applied to the sun and
-    /// as a floor under <see cref="_wrap"/> on every point light. 0 restores the punctual N.L everywhere.
-    /// <para>This is what the community's GL 3.3 "light wrapping" shaders do, and the reason they exist:
-    /// NWN's meshes are low-poly with smoothed vertex normals, so the terminator crosses a whole facet as
-    /// one straight hard crease. Unlike <see cref="_wrap"/> it does NOT fall off with distance -- the
-    /// facets are the same size however far away the light is. Ships at 1 (was 0.25, imperceptible live);
-    /// it widens the terminator band only -- a per-face normal jump is <see cref="NormalWeld"/>'s.</para></summary>
+    /// <summary>Wrapped diffuse: the distance-INDEPENDENT terminator softening, applied to the sun and as a
+    /// floor under <see cref="_wrap"/> on every point light; 0 restores the punctual N.L everywhere. NWN's
+    /// meshes are low-poly with smoothed vertex normals, so the terminator crosses a whole facet as one hard
+    /// crease -- and the facets are the same size however far away the light is.</summary>
     private static float _wrapN => Lighting.WrapNdl.V;
-    /// <summary>#375 follow-up: the stock SUBSURFACE term's wrap. sow-topdata's inc_lighting.shd at
-    /// SHADER_QUALITY_MODE &gt; 1 adds, per light and on top of the Lambert term,
-    /// <c>L * att * max(0, dot(Nvertex, L) + w) * 2/(2 + PI*w)</c> (LIGHT_SUBSURFACE_SCATTERING_WRAP 0.38,
-    /// fEnergyPreservation / (1 + w)): +86% at normal incidence, more at grazing angles -- the "Alloy is
-    /// 2x darker than vanilla at gamma 2.2" gap, which no gamma stage could close. Ships at 0.25, not the
-    /// content's 0.38: at the stock wrap the term lights faces past the terminator brightly enough that a
-    /// character reads as glossy in the dark (measured live, gone at 0.25). Alloy puts the wrap on the MAPPED
-    /// normal, not stock's vertex normal: on the vertex normal it is a wash independent of the normal map,
-    /// which halves the map's diffuse contrast ("PBR is gone", live). 0 is Lambert alone. Gated live
-    /// on global int param 7, the client's shader-quality option, exactly where the stock preamble gates
-    /// it.</summary>
+    /// <summary>The stock SUBSURFACE term's wrap: content's inc_lighting.shd adds, per light,
+    /// <c>L * att * max(0, dot(N, L) + w) * 2/(2 + PI*w)</c>, which is most of the "Alloy is darker than
+    /// vanilla" gap. Ships at 0.25 rather than the content's 0.38 (brighter past the terminator reads as
+    /// glossy), and on the MAPPED normal, not stock's vertex normal, which washes the map's contrast out.</summary>
     private static float _sss => Lighting.Sss.V;
     /// <summary><c>GetGlobalShaderParami(7)</c> = the preamble's <c>SHADER_QUALITY_MODE</c>
     /// (LoadAndCompileSingleShader @0x4d34b0); the subsurface term compiles in above 1.</summary>
@@ -177,18 +114,18 @@ internal static unsafe class AlloyLights
     /// fEnergyPreservation / (1 + w) = 2 / (2 + PI * w).</summary>
     internal static float SssK(float w) => 2f / (2f + MathF.PI * w);
     private static bool SssOn => _sss > 0f && (_gspI == null || _gspI(QualityParam) > 1);
-    /// <summary>#139: local-cube PCF radius, in cube texels at the sample distance. 0 = the single hardware
+    /// <summary>Local-cube PCF radius, in cube texels at the sample distance. 0 = the single hardware
     /// PCF tap this shipped with; anything above widens the filter with four more taps on a disc
     /// perpendicular to the sample ray. Costs 4 extra cube fetches per shadowing light per fragment.</summary>
     private static float _shadowSoft => Shadows.Soft.V;
-    /// <summary>#326: the PCF disc's radius on SCREEN, in pixels, below which it stands down to the single
-    /// hardware tap. #325 measured the cube taps as the colour pass's one big term and the disc is four of
-    /// every five; its width scales with distance to the LIGHT, so the test is per fragment, not a view-depth
-    /// line. 0 = the disc everywhere. ponytail: a hard threshold, no fade band across it.</summary>
+    /// <summary>The PCF disc's radius on SCREEN, in pixels, below which it stands down to the single hardware
+    /// tap -- the disc is four of every five cube taps, and its width scales with distance to the LIGHT, so
+    /// the test is per fragment rather than a view-depth line. 0 = the disc everywhere. ponytail: a hard
+    /// threshold, no fade band across it.</summary>
     private static float _discPx => Shadows.DiscPx.V;
-    /// <summary>#139: self-shadow near-field skip, as a multiple of <see cref="_srcRadius"/>. A world point
-    /// closer to the light than this is reported lit outright, on creature (mover) fragments only -- a carried torch sits INSIDE the hand and
-    /// forearm holding it, and a punctual shadow test there shadows the carrier from its own light.</summary>
+    /// <summary>Self-shadow near-field skip, as a multiple of <see cref="_srcRadius"/>. A world point
+    /// closer to the light than this is reported lit outright, on creature (mover) fragments only -- a carried
+    /// torch sits INSIDE the hand holding it, and a punctual test there shadows the carrier from its own light.</summary>
     private static float _shadowNear => Shadows.Near.V;
     /// <summary>Scales on the captured area terms, so daylight and interior fill can be dialled apart from
     /// the point lights. 1.0 = the engine's own captured value, untouched.</summary>
@@ -222,22 +159,10 @@ internal static unsafe class AlloyLights
             return 1f / (1f + (Lighting.Daylight.V - 1f) * t * t * (3f - 2f * t));
         }
     }
-    /// <summary>How much of an OVERBRIGHT light's surplus is kept as CENTRE INTENSITY, on top of the reach
-    /// the engine already spent it on. Applied by the feed as <c>1 + (maxChannel - 1) * this</c>.
-    /// <para>Overbright IS the carried-light discriminator and needs no other: module-placed lights are
-    /// authored at max channel &lt;= 1 and have no surplus at all, while a torch ships at
-    /// rgb=(1.75, 1.50, 1.00). That matters because seeing is a mechanical advantage -- a torch or a Light
-    /// spell has to be worth carrying -- and placed lights are mostly decor.</para>
-    /// <para>0 = the engine's own behaviour exactly, and what ships: <c>GetLightAdjustedColor</c> normalises
-    /// the hue and <c>GetLightAdjustedRadius</c> spends the whole surplus on radius, so an overbright light
-    /// is WIDER and no brighter. 1 = the authored surplus in full at the centre as well. It shipped nonzero
-    /// only to lift carried lights out of a scene the 0.10 gain had flattened; with the gain back at the
-    /// engine's peak there is nothing to lift them out of, so a carried light is vanilla too. <c>/light
-    /// overbright 0.5</c> brings the taste value back.</para>
-    /// <para>#140 brought this down from 120. That number was not a lighting decision -- it was propping up
-    /// a range-blind <c>1/d^4</c> curve under which no honest value reached anything, and it is what made a
-    /// torch-bearer 210x brighter than any placed light at the same distance. The curve is fixed; the cope
-    /// goes with it.</para></summary>
+    /// <summary>How much of an OVERBRIGHT light's surplus is kept as CENTRE INTENSITY, on top of the reach the
+    /// engine already spent it on; applied by the feed as <c>1 + (maxChannel - 1) * this</c>. Overbright IS
+    /// the carried-light discriminator: a module-placed light is authored at max channel &lt;= 1 and has no
+    /// surplus at all. 0, which ships, is the engine's own behaviour -- an overbright light is wider.</summary>
     internal static float OverbrightScale => Lighting.Overbright.V;
 
     /// <summary>The scale an overbright colour (max channel past 1) takes: <c>GetLightAdjustedColor</c> @0x4c0b60
@@ -280,10 +205,9 @@ internal static unsafe class AlloyLights
         return fade / (0.41f + 136.33f * f2) * luma;
     }
 
-    /// <summary>R5: <c>cx_lightfrag</c>'s sphere-light normalisation (Karis 2013), transcribed for
+    /// <summary><c>cx_lightfrag</c>'s sphere-light normalisation (Karis 2013), transcribed for
     /// <see cref="SelfCheck"/> -- the alpha a specular lobe widens to at <paramref name="dist"/> from a
-    /// source sphere of <paramref name="radius"/>, the same sphere #139 already wraps the diffuse
-    /// terminator with.</summary>
+    /// source sphere of <paramref name="radius"/>, the same sphere that wraps the diffuse terminator.</summary>
     internal static float SphereAlpha(float alpha, float radius, float dist)
         => MathF.Min(alpha + (radius <= 0f ? 0f : radius * 0.5f / MathF.Max(dist, 1e-3f)), 1f);
 
@@ -554,8 +478,8 @@ internal static unsafe class AlloyLights
     /// arm time (the engine's globals are still zero then, which is how a live-looking log line reported a
     /// value the frame never saw).</summary>
     internal static Vector3 LastFalloff;
-    /// <summary>The curve, for the [alloy] period line. Names the engine's constants and the two dials that
-    /// shape what is drawn from them -- the pre-#140 text described a 1/d^n plateau that no longer exists.</summary>
+    /// <summary>The curve, for the [alloy] period line: the engine's constants and the two dials that shape
+    /// what is drawn from them.</summary>
     internal static string DescribeCurve() =>
         $"atten (1-f2)/({_atten.X:F3}+{_atten.Y:F3}*f2) body x{LastFalloff.X:F2} " +
         $"core +x{_hot:F2} over {_hotSize:P0} of range";
@@ -590,8 +514,8 @@ internal static unsafe class AlloyLights
     private static int _queryAt;
 
     /// <summary>Light staging: two vec4 per light (pos+range, colour+pad), filled straight from the walk
-    /// snapshot. #257: grown to whatever the snapshot holds and kept, so the per-frame upload allocates
-    /// nothing in the steady state without a worst-case array standing behind it.</summary>
+    /// snapshot. Grown to whatever the snapshot holds and kept, so the per-frame upload allocates nothing in
+    /// the steady state without a worst-case array standing behind it.</summary>
     private static float[] _stage = new float[InitialLights * 8];
     /// <summary>Starting light capacity of the staging buffer and the SSBO. Not a ceiling.</summary>
     private const int InitialLights = 256;
@@ -607,7 +531,7 @@ internal static unsafe class AlloyLights
     /// <summary>True once the rig is usable: compute + SSBO entry points resolved and the program linked.</summary>
     internal static bool Ready => _prog != 0 && !_failed;
 
-    /// <summary>CX-188: records the light SSBO holds this frame -- the <c>uLightCount</c> any pass that culls
+    /// <summary>Records the light SSBO holds this frame -- the <c>uLightCount</c> any pass that culls
     /// <c>uLights</c> for itself (the deferred pass's per-tile list) has to walk.</summary>
     internal static int UploadedLights => _uploaded;
 
@@ -676,22 +600,10 @@ internal static unsafe class AlloyLights
         _log?.Info($"AlloyLights: light SSBO grown to {lights} lights");
     }
 
-    /// <summary>Bin this pass's lights into the froxel grid. <paramref name="view"/> is the engine's view
-    /// matrix as raw bytes (row-major v*M, read column-major by GLSL = the transpose, so
-    /// <c>uView * vec4(world,1)</c> is exact -- the same convention as the Alloy draw's uMVP);
-    /// <paramref name="p00"/>/<paramref name="p11"/> are the projection's diagonal terms, which are
-    /// transpose-invariant and therefore safe to read straight off the stack.</summary>
-    /// <summary>Read the froxel grid's entire projection input off the projection matrix itself, so the depth
-    /// slicing and the froxel bounds can never disagree about which pass they belong to. #257 made
-    /// <c>FrameInputs.CamNear</c>/<c>CamFar</c> the SCENE camera's own, so they no longer belong to an
-    /// auxiliary pass -- but this pass may be rendering a probe cube, whose projection is its own.
-    /// <para>Raw bytes are row-major and GLSL reads them column-major, so the GLSL-visible element (col c,
-    /// row r) is <c>raw[c*4+r]</c>. For a GL perspective projection <c>G[2][2] = -(f+n)/(f-n)</c>,
-    /// <c>G[3][2] = -2fn/(f-n)</c> and <c>G[2][3] = -1</c>, which inverts to <c>n = B/(A-1)</c>,
-    /// <c>f = B/(A+1)</c>. That last element is also the whole basis for the eye-space convention this rig
-    /// assumes (forward is -z, so <c>clip.w == -eye.z</c> and the fragment side's <c>gl_Position.w</c> is a
-    /// linear view depth): it is CHECKED here rather than assumed, and a projection that fails the check --
-    /// orthographic, reversed-Z, +z-forward -- returns false and hands the pass back to the engine.</para></summary>
+    /// <summary>Read the froxel grid's whole projection input off the projection matrix itself, so the depth
+    /// slicing and the froxel bounds can never disagree about which pass they belong to -- this pass may be
+    /// rendering a probe cube, whose projection is its own. Raw bytes are row-major and GLSL reads them
+    /// column-major, so <c>G[2][3] == -1</c> is CHECKED: an ortho or reversed-Z projection returns false.</summary>
     internal static bool TryPerspective(float* proj, out float p00, out float p11, out float near, out float far)
     {
         p00 = proj[0]; p11 = proj[5];
@@ -709,8 +621,10 @@ internal static unsafe class AlloyLights
     /// slack only absorbs float noise, never a different projection class.</summary>
     private const float WRowEpsilon = 1e-4f;
 
-    /// <summary>Bins for a pass drawn into a <paramref name="vpW"/> x <paramref name="vpH"/> viewport; <paramref name="tally"/>
-    /// lets a sampled frame's build add its entry totals to the period line (the screen's build, not a probe face's).</summary>
+    /// <summary>Bin this pass's lights into the froxel grid for a <paramref name="vpW"/> x
+    /// <paramref name="vpH"/> viewport. <paramref name="view"/> is the engine's view matrix as raw bytes
+    /// (row-major v*M, read column-major by GLSL = the transpose); <paramref name="tally"/> lets a sampled
+    /// frame's build add its entry totals to the period line -- the screen's build, not a probe face's.</summary>
     internal static bool Build(float* view, float p00, float p11, float near, float far, int vpW, int vpH, bool tally)
     {
         // NOT gated on the light count: with zero point lights the dispatch still writes an all-zero cluster
@@ -798,7 +712,7 @@ internal static unsafe class AlloyLights
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMovers, _bufMovers);
     }
 
-    /// <summary>CX-43: the cluster lookup (grid, tile, depth range) and the light curve into the pass block,
+    /// <summary>The cluster lookup (grid, tile, depth range) and the light curve into the pass block,
     /// for the viewport and depth range this pass draws with. Each curve term is its own member, so a lane
     /// added here never changes what an older one means.</summary>
     /// <returns>Whether the pass draws the view the cluster table was built for (<c>uBounds</c> 1).</returns>
@@ -826,13 +740,13 @@ internal static unsafe class AlloyLights
         return own;
     }
 
-    /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen
+    /// <summary>The local-cube receiver's three softness terms -- PCF radius in texels, the screen
     /// radius in pixels below which that disc stands down, and the world distance inside which a fragment is
     /// reported lit outright. Read here so <c>/shadow</c> retunes all three live, like every other knob.</summary>
     internal static float ShadowSoft => _shadowSoft;
-    /// <summary>#641: <c>uLocalFloor</c> -- the shadow floor scaled by the area ambient's luminance (a mid-grey
-    /// ambient gives the full floor, a night area a fraction of it, so darkness stays dark).
-    /// ponytail: a luminance scalar, not a per-channel ambient tint; go to a vec3 if a coloured ambient ever reads wrong.</summary>
+    /// <summary><c>uLocalFloor</c> -- the shadow floor scaled by the area ambient's luminance (a mid-grey
+    /// ambient gives the full floor, a night area a fraction of it, so darkness stays dark). ponytail: a
+    /// luminance scalar, not a per-channel ambient tint; go to a vec3 if a coloured ambient reads wrong.</summary>
     internal static float ShadowFloor
     {
         get
@@ -843,19 +757,19 @@ internal static unsafe class AlloyLights
         }
     }
     internal static float ShadowDiscPx => _discPx;
-    /// <summary>#642: the penumbra scale -- the light's source radius (<c>/light radius</c>), in world units.</summary>
+    /// <summary>The penumbra scale -- the light's source radius (<c>/light radius</c>), in world units.</summary>
     internal static float ShadowSource => _srcRadius;
-    /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
+    /// <summary>Cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
     internal static float ShadowCap => Shadows.Cap.V;
-    /// <summary>CX-188 budget: <c>shadow.perpixel</c> -- how many lights a PIXEL may shadow at all (uShBudget).
-    /// Every light past the budget lights the pixel unshadowed; 0 = no budget, the pre-budget path.</summary>
+    /// <summary><c>shadow.perpixel</c> -- how many lights a PIXEL may shadow at all (uShBudget).
+    /// Every light past the budget lights the pixel unshadowed; 0 = no budget.</summary>
     internal static float ShadowPerPixel => Shadows.PerPixel.V;
-    /// <summary>CX-188 budget: <c>light.floor</c> -- the absolute display-linear brightness a light's reach ends
-    /// at (uLightFloor), as against <see cref="BinReach"/>'s share of its authored radius. 0 = no cut.</summary>
+    /// <summary><c>light.floor</c> -- the absolute display-linear brightness a light's reach ends at
+    /// (uLightFloor), as against <see cref="BinReach"/>'s share of its authored radius. 0 = no cut.</summary>
     internal static float LightFloor => Lighting.Floor.V;
-    /// <summary>CX-188 budget: <c>light.fullmodel</c> -- the share of a pixel's brightest light above which a
-    /// light keeps the near-field core, the source-sized lobe and the subsurface leak (uFullModel). 0 = every
-    /// light keeps all three, which is the pre-LOD body term for term.</summary>
+    /// <summary><c>light.fullmodel</c> -- the share of a pixel's brightest light above which a light keeps the
+    /// near-field core, the source-sized lobe and the subsurface leak (uFullModel). 0 = every light keeps all
+    /// three, which is the pre-LOD body term for term.</summary>
     internal static float FullModel => Lighting.FullModel.V;
     /// <summary><c>shadow.cubedist</c>: the view depth past which a fragment reads no cube (uLocalPcss.w; 0 = none).</summary>
     internal static float ShadowDist => Shadows.CubeDist.V;
@@ -865,13 +779,13 @@ internal static unsafe class AlloyLights
     /// Read with <c>/alloy viz 38</c> (lights per pixel). 1 = the full radius.</summary>
     private static float _binReach => Lighting.BinReach.V;
     /// <summary><c>/light reachfade</c>: 1 = the lit stage windows every light to its binned reach (see
-    /// <c>uReach</c>), 0 = the bin cut alone, as #384 shipped it.</summary>
+    /// <c>uReach</c>), 0 = the bin cut alone.</summary>
     internal static float ReachUniform => Lighting.ReachFade.V ? _binReach : 0f;
     internal static float BinReach => _binReach;
     /// <summary>EXPERIMENT: the most lights a froxel keeps -- the K strongest by the engine's curve at the
     /// froxel's nearest point times the colour's luma, vanilla's per-object list made per froxel. 0 = all.
-    /// The seam risk is the one #336 met with a per-froxel shadow order: a light dropped in one froxel and
-    /// kept in its neighbour draws a grid edge, so the weakest kept light must be invisible for the cap to be.</summary>
+    /// The seam risk is a light dropped in one froxel and kept in its neighbour, which draws a grid edge: the
+    /// weakest kept light must be invisible for the cap to be.</summary>
     private static int _binCap => Lighting.BinCap.V;
     /// <summary>Adjusted radius of the uploaded lights this frame -- min, mean, max -- for the period line.
     /// The plaza heatmap read 32+ lights per pixel; whether that is many lights or huge radii is this number.</summary>
@@ -961,54 +875,40 @@ internal static unsafe class AlloyLights
 
         fixed (uint* q = _query) Gl.GenQueries(2, q);
         _prog = prog;
-        _log?.Info($"AlloyLights: clustered forward+ ready -- {GridX}x{GridY}x{GridZ} froxels, " +
+        _log?.Info($"AlloyLights: cluster build ready -- {GridX}x{GridY}x{GridZ} froxels, " +
                    $"{ClusterCap} lights/cluster, {InitialLights}-light SSBO (grown on demand -- no ceiling)");
         return true;
     }
 
-    /// <summary>GLSL the lit fragment shader includes verbatim: the cluster lookup + the per-light loop. Kept
-    /// here so the binning rule (grid dims, exponential slice mapping, SSBO layout) has exactly one source.
-    /// The attenuation curves are ported from the staging receiver's Alloy lighting block (inc_lighting.shd,
-    /// #67) so a seam between an owned and an engine-drawn part falls off the same way.</summary>
     /// <summary>sRGB -&gt; linear exponent, verified against <c>RenderInterface::GetColorSpaceFromSRGB</c>
     /// (the constant it reads is 2.2). Shared with <see cref="FrameRead"/>, which applies
     /// the same curve CPU-side to the area terms.</summary>
     internal const float SrgbGamma = 2.2f;
-    /// <summary>#674: added to a static light's cube slot in the record's w (GLSL <c>CX_LIGHT_STATIC</c>).</summary>
+    /// <summary>Added to a static light's cube slot in the record's w (GLSL <c>CX_LIGHT_STATIC</c>).</summary>
     internal const float LightStatic = 256f;
-    /// <summary>CX-56: a static light's set index PLUS ONE rides above the static bit in multiples of this (GLSL
+    /// <summary>A static light's set index PLUS ONE rides above the static bit in multiples of this (GLSL
     /// <c>CX_LIGHT_SET</c>); 0 = no set entry. Exact in a float up to 2^24 / 512 = 32768 lights.</summary>
     internal const float LightSetStride = 512f;
 
-    /// <summary>The clustered-lighting helpers the Alloy lit fragment stage is built from. Its sizing
-    /// tokens are expanded by <see cref="GlProgram"/> at compile time, like any other stage's.</summary>
-    /// <summary>The local-light cube receiver (#95). Composed BEFORE <see cref="FragmentLib"/> because the
-    /// per-light loop in there calls it. The cubes come from <see cref="CasterPass"/>, which renders
-    /// six faces per light into one <c>samplerCubeArrayShadow</c> -- so a light's shadow is one hardware-PCF
-    /// fetch, and there is no per-slot sampler to unroll (the interim receiver's ceiling was exactly that
-    /// unroll; a cube array has no such limit and the cost is VRAM alone).
-    /// <para>Every geometric input comes from <c>uLocalLight</c>, the position and far plane the cube was
-    /// actually BAKED with -- never the live light. A carried torch moves between the bake and the sample,
-    /// and comparing against where it is NOW rather than where the depth was recorded from detaches its own
-    /// shadow by exactly that step.</para>
-    /// <para><c>uLocalLight[64]</c> is pinned against <c>CasterPass.MaxCubes</c> by that class's SelfCheck --
-    /// GLSL cannot size it from the C# constant, so the check is what keeps the two honest.</para></summary>
+    /// <summary>The local-light cube receiver. Composed BEFORE <see cref="FragmentLib"/> because the
+    /// per-light loop in there calls it; the cubes come from <see cref="CasterPass"/>, six faces per light in
+    /// one <c>samplerCubeArrayShadow</c>. Every geometric input comes from <c>uLocalLight</c>, the position
+    /// and far plane the cube was BAKED with -- never the live light, which has moved since.</summary>
     internal static string LocalShadowLib => ShaderSource.Get("cx_localshadow.glsl");
 
+    /// <summary>GLSL the lit fragment stage includes verbatim: the cluster lookup plus the per-light loop.
+    /// Kept here so the binning rule (grid dims, exponential slice mapping, SSBO layout) has exactly one
+    /// source, and the attenuation curves are the engine's, so a seam between an owned and an engine-drawn
+    /// part falls off the same way.</summary>
     internal static string FragmentLib => ShaderSource.Get("cx_lightfrag.glsl");
 
-    /// <summary>The sun cascade receiver (#94), included by the lit fragment stage after
-    /// <see cref="FragmentLib"/>. The maps come from <see cref="CasterPass"/>, which renders one
-    /// concentric cascade per layer around the shadow focus and publishes the matrix each layer was actually
-    /// drawn with -- so this only ever projects, never re-derives.
-    /// <para>Selection is "the first cascade whose box holds the fragment", innermost first: with concentric
-    /// fits every cascade is contained in the next, so the first hit is also the sharpest one available. No
-    /// split distances, no view depth, and nothing that depends on the camera pose.</para>
-    /// <para><c>uSunVp[4]</c> is pinned against <c>CasterPass.MaxCascades</c> by that class's SelfCheck --
-    /// GLSL cannot size it from the C# constant, so the check is what keeps the two honest.</para></summary>
+    /// <summary>The sun cascade receiver, included by the lit fragment stage after
+    /// <see cref="FragmentLib"/>. The maps come from <see cref="CasterPass"/>, which publishes the matrix each
+    /// layer was actually drawn with, so this only ever projects. Selection is "the first cascade whose box
+    /// holds the fragment", innermost first: concentric fits nest, so the first hit is also the sharpest.</summary>
     internal static string SunShadowLib => ShaderSource.Get("cx_sunshadow.glsl");
 
-    /// <summary>Resref the cluster build is looked up under before the embedded stage is used (#92). An override
+    /// <summary>Resref the cluster build is looked up under before the embedded stage is used. An override
     /// may carry the same <c>$CAP$</c>/<c>$GROUP$</c> tokens the embedded source does -- see
     /// <see cref="ShaderResource.Tokens"/> -- because the CPU sizes its buffers from those same constants.</summary>
     internal const string ShdClusterCs = "cx_cluster_cs";

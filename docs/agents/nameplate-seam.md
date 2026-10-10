@@ -10,7 +10,7 @@ it says so explicitly — those are the pieces the implementer has to build.
 > **Status (ADR 0025, #594).** The feature shipped (`managed/Services/Nameplate/`). The settings
 > model this guide was written against is gone: there is one `cx.cfg`, every knob is a
 > `KnobGroup` declaration (`NameplateKnobs`, group `nameplate`), the panel is `/settings`, and
-> the chat command is the generated `/nameplate`. So where the text below says `vanilla=1` read
+> the chat command is the generated `/nameplate`. The whole-extender opt-out below is spelled
 > `alloy.enabled=0`; `/np`, `cx-nameplate.cfg`, `ConfigFile.Load/Save`, `Settings.Bool/Int/Float/Text`,
 > the "two buckets" of ADR 0013 and the per-feature `SettingsPanel` gear no longer exist. §5 and §6
 > are kept as the record of the seam they described; build against `docs/spec/unified-settings.md`.
@@ -424,17 +424,17 @@ clip-z range differs from the engine's; irrelevant for x/y, relevant if you ever
 
 **Option A is strongly preferred** — it is the matrix the world was actually drawn with.
 
-### The `vanilla=1` hole
+### The `alloy.enabled=0` hole
 
 `AlloyRenderer.Initialize` returns at the opt-out **before** anything that would latch a camera
 (since CX-89 the anchor is a direct call from the shim, so it installs no `FadeDoors` hook at all):
 
 ```csharp
 if (AlloyGate.OptedOut)
-{ log.Info("AlloyRenderer: stood down (vanilla=1) -- the engine owns every resource this session"); return; }
+{ log.Info("AlloyRenderer: stood down (alloy.enabled=0) -- the engine owns every resource this session"); return; }
 ```
 
-So under `vanilla=1` in `cx.cfg`, `FrameRead.Tick` never runs and `FrameInputs` stays empty —
+So under `alloy.enabled=0` in `cx.cfg`, `FrameRead.Tick` never runs and `FrameInputs` stays empty —
 **neither option A nor B has a camera.**
 
 The clean split, and it costs nothing: discovery is **name-sorted**, and `Alloy…` sorts before
@@ -1264,7 +1264,7 @@ If a truly per-frame wrap is ever needed, the fix is a caller-owned `LineSpan[]`
 
 1. Confirm the **z-order** decision with the user (§1) — nameplates currently paint over chat + dialog.
 2. Decide the **camera source** (§3): publish `SceneVp` from `AlloyRenderer.Frame.cs:96` (preferred), or
-   reconstruct from `FrameInputs`. Either way, state what happens under `vanilla=1`.
+   reconstruct from `FrameInputs`. Either way, state what happens under `alloy.enabled=0`.
 3. Read the **highlight set** from `AlloyRenderer.Highlight.cs` rather than tracking Tab (§10).
 4. Hook `CNWCObject::SetPopUpBubbleText` for bubbles — **verify in Ghidra first** (§12). Do not try to
    join `ChatLine` to a world object; it has no object id.

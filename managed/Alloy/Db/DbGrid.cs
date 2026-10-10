@@ -3,17 +3,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-feed: <b>the visible set, as an index over the scene database.</b> The same shape as
-/// <c>AreaGrid</c> -- one NWN tile per cell, a wrapping 64 x 64 grid, a cell carries the real AABB of what is
-/// filed in it -- but INCREMENTAL rather than rebuilt per enrolment, because in DB mode there is no enrolment
-/// to rebuild it on: an object is filed when its record is created and re-filed only when it moves.
-/// <para><b>Statics and movers.</b> An object marked <see cref="ObjFlag.Static"/> is filed in a cell and never
-/// looked at again; everything else goes on the MOVER list, which every query walks whole. That split is the
-/// one AreaGrid already made and for the same reason: a mover's box changes whenever its transform does, so
-/// filing it buys a re-file per motion and saves nothing. A static whose box is unknown (no geometry bounds
-/// yet) is filed UNBOUNDED and is in every query -- unknown bounds are not "small".</para>
-/// <para>Keyed on the OBJECT, not the part: a query yields objects and the caller walks their part ranges, so
-/// one creature is one grid entry rather than forty.</para></summary>
+/// <summary><b>The visible set, as an index over the scene database</b>, in the engine's <c>AreaGrid</c> shape:
+/// one NWN tile per cell, a wrapping 64 x 64 grid, a cell carrying the real AABB of what it holds, keyed on the
+/// OBJECT not the part. INCREMENTAL: a <see cref="ObjFlag.Static"/> object is filed once and never re-examined,
+/// everything else walks the MOVER list whole, and a static with unknown bounds is UNBOUNDED -- in every query.</summary>
 internal static unsafe class DbGrid
 {
     internal const float CellSize = 10f;
@@ -142,9 +135,8 @@ internal static unsafe class DbGrid
 
     /// <summary>Append every object whose cell survives <paramref name="planes"/> (six vec4s, the
     /// <c>CullPass.Planes</c> convention: inside when <c>dot(n, p) + d &gt;= 0</c>), plus every mover and every
-    /// unbounded object, into <paramref name="into"/> from <paramref name="n"/>. <paramref name="slack"/> grows
-    /// each cell box so a cell about to enter the view is yielded the frame before. Returns the new count;
-    /// allocation-free.</summary>
+    /// unbounded object, into <paramref name="into"/> from <paramref name="n"/>; <paramref name="slack"/> grows
+    /// each cell box so a cell about to enter view is yielded a frame early. Returns the new count, allocation-free.</summary>
     internal static int Query(float* planes, float slack, int[] into, int n)
     {
         if (!_ready) return n;

@@ -150,7 +150,7 @@ vec3 CxDisplayOverlays(vec3 lin)
 {
     float strength = CxTargetStrength();
     vec4 c = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$)), 1.0);
-    // The content's display-space passes first (SoW puts its desaturation and racial vision here),
+    // The content's display-space passes first (content puts desaturation and racial vision here),
     // then the targeting shape last -- inc_standard.shd's own order, and its own reason: the shape is
     // UI drawn on the ground, and a caster has to read its colour over a monochrome scene.
     c.rgb = CxDisplayHook(c.rgb);

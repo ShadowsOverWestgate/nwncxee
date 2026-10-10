@@ -6,13 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-anim: the properties the animation runtime lives by, over a SYNTHETIC model and a
-/// synthetic database -- no engine, no GL, so <c>run-demo.sh</c> exercises them.
-/// <para>Each is a failure that would be chased somewhere else entirely in a live session. A sampler off by a
-/// key reads as "the animations are wrong"; an event window that misses a wrap reads as "footsteps are
-/// silent"; an attach composition in the wrong order reads as "weapons float"; a compose that runs on a still
-/// frame reads as "the renderer is slow"; and a bone palette with the matrix transposed reads as "creatures
-/// are folded inside out".</para></summary>
+/// <summary>The properties the animation runtime lives by, over a SYNTHETIC model and a synthetic database --
+/// no engine, no GL, so <c>run-demo.sh</c> exercises them. Each is a failure that would be chased somewhere
+/// else entirely in a live session: a sampler off by a key reads as "the animations are wrong", an event
+/// window that misses a wrap as "footsteps are silent", a transposed bone palette as "folded inside out".</summary>
 public static unsafe partial class DbAnim
 {
     internal static bool SelfCheck(ExtenderLog log)
@@ -416,13 +413,10 @@ public static unsafe partial class DbAnim
 
     // ================= 4b: a parent that moves carries its children =================
 
-    /// <summary>The user's window-resize repro, as the engine's own sequence: a label attached to a GUI gob,
-    /// then <c>CGuiMan::SetGuiSize</c> @0x57efc0 re-centring the gob under it (panel vtbl <c>+0x128</c>
-    /// <c>Reposition</c> -&gt; <c>SetPositionScreenCenter</c> -&gt; <c>MapScreenToGuiScene</c> -&gt;
-    /// <c>Gob::SetPosition</c>). Vanilla's <c>CAurBehaviorAttach::Control</c> @0x4a2810 re-derives the child's
-    /// placement from the parent's part every animate, so the label rides along; the compose visits only what
-    /// changed, and the parent's move marks the PARENT -- which is why the label used to stay where the panel's
-    /// centre had been. One pass, with only the parent marked, is the whole test.</summary>
+    /// <summary>A window-resize repro, as the engine's own sequence: a label attached to a GUI gob, then
+    /// <c>CGuiMan::SetGuiSize</c> @0x57efc0 re-centring the gob under it. Vanilla's
+    /// <c>CAurBehaviorAttach::Control</c> @0x4a2810 re-derives the child's placement from the parent's part
+    /// every animate; the compose visits only what changed, so one pass with only the PARENT marked tests it.</summary>
     private static void Carried(Checker check)
     {
         ModelDef m = Chain();
@@ -497,8 +491,8 @@ public static unsafe partial class DbAnim
 
     // ================= 5: change-driven =================
 
-    /// <summary>A still frame composes NOTHING. This is CX-115's whole claim, and the one that is invisible
-    /// when it breaks: a compose that runs over every object every frame still draws the right picture.</summary>
+    /// <summary>A still frame composes NOTHING -- the change-driven claim, and the one that is invisible when
+    /// it breaks: a compose that runs over every object every frame still draws the right picture.</summary>
     private static void Still(Checker check)
     {
         ModelDef m = Chain();
@@ -577,11 +571,10 @@ public static unsafe partial class DbAnim
         SceneDb.Scenes.Free(scene);
     }
 
-    /// <summary>CX-188: a creature's step composes its part tree ONCE. The pose layer's compose runs inside
-    /// <see cref="StepObject"/> and the tail still owes the skin palette, which used to be bought by
-    /// re-asserting <see cref="ObjAnim.Moved"/> -- and that recomposed the whole range a second time. The two
-    /// are keyed separately now; this fails if either half is lost, because a tail that no longer skins does
-    /// not count and a tail that recomposes counts a second object.</summary>
+    /// <summary>A creature's step composes its part tree ONCE. The pose layer's compose runs inside
+    /// <see cref="StepObject"/> and the tail still owes the skin palette; the two are keyed separately, and
+    /// this fails if either half is lost -- a tail that no longer skins does not count, and a tail that
+    /// recomposes counts a second object.</summary>
     private static void SkinTail(Checker check)
     {
         ModelDef m = Chain();
@@ -696,10 +689,9 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>A compiled bone map names nodes of the TREE ROOT (<see cref="TreeRoot"/>): for a piece
-    /// <c>Gob::Append</c> grafted, the body's skeleton -- TDN's head in the shin slot read its own eyelashes as
-    /// <c>torso_g</c> -- and for a separately attached gob (a robe) its own model. The piece hangs off the body's
-    /// leaf, so its own node 2 sits 2 m above the skeleton's. Then the freeze: only the BODY moves, and the
-    /// piece's staged palette must follow it -- a riding piece is never <c>Moved</c> itself.</summary>
+    /// <c>Gob::Append</c> grafted, the body's skeleton; for a separately attached gob (a robe) its own model.
+    /// The piece hangs off the body's leaf, so its own node 2 sits 2 m above the skeleton's. Then the freeze:
+    /// only the BODY moves and the piece's staged palette must follow -- a rider is never <c>Moved</c> itself.</summary>
     private static void BoneMapOfRoot(Checker check)
     {
         ModelDef pm = Chain();
@@ -792,12 +784,9 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>The two forms of <see cref="SkinDef.BoneNodes"/>, over a file that states NO bind pose -- the
-    /// shape of every stock cloak, tail and wing, which is where the derived bind runs. One bone, node
-    /// <c>mid</c>: the ASCII form says that as the slot LIST {1}, the compiled binary as the bone MAP
-    /// {-1,0,-1}, and both have to put <c>mid</c> in slot 0. The list's length and its largest entry plus
-    /// one disagree here -- 1 against 2 -- which is the case the heuristic got wrong. Reading the list as a map is what the length
-    /// heuristic did, and it answered slot 0 with the identity -- a cloak deformed by a bone it does not
-    /// use.</summary>
+    /// shape of every stock cloak, tail and wing, where the derived bind runs. One bone, node <c>mid</c>: the
+    /// ASCII form says that as the slot LIST {1}, the compiled binary as the bone MAP {-1,0,-1}, and both must
+    /// put <c>mid</c> in slot 0, though the list's length and its largest entry plus one disagree (1 vs 2).</summary>
     private static void BoneTableForm(Checker check)
     {
         // form 2: the compiled binary's map WITH its bind arrays, which are per NODE (ExecuteSkinGPU reads
@@ -865,11 +854,10 @@ public static unsafe partial class DbAnim
 
     // ================= 7: re-entrancy =================
 
-    /// <summary>What an event HANDLER is allowed to do, and the three ways it used to corrupt the queue it was
-    /// called from: destroy its own object, play another animation (which inserts at or below the running index
-    /// and SHIFTS the queue), and deregister a callback mid-walk. The engine survives all three by re-reading
-    /// its list and testing a SafePointer; the DB runtime has to re-derive a positional slot instead, and
-    /// nothing but a test says it does.</summary>
+    /// <summary>What an event HANDLER is allowed to do, and the three ways it can corrupt the queue it was
+    /// called from: destroy its own object, play another animation (which inserts at or below the running
+    /// index and SHIFTS the queue), and deregister a callback mid-walk. The engine survives by re-reading its
+    /// list and testing a SafePointer; CX re-derives a positional slot instead, and only a test says it does.</summary>
     private static void Reentrancy(Checker check)
     {
         ModelDef m = Chain();
@@ -1074,8 +1062,7 @@ public static unsafe partial class DbAnim
     /// <summary>The colliding controller ids land in the column their node's KIND names. One track set is fed
     /// to a mesh, a light and an emitter part: file id 100 is a mesh's selfIllumColor and a light's
     /// verticalDisplacement, 128 a mesh's alpha and an emitter's fps, 88 a light's radius and an emitter's
-    /// birth rate. Dispatching on the id alone put every animated emitter rate in the light columns, which is
-    /// a torch that never catches.</summary>
+    /// birth rate. Dispatching on the id alone puts an emitter's rate in the light columns.</summary>
     private static void ControllerKinds(Checker check)
     {
         var illum = new ControllerTrack
@@ -1184,12 +1171,9 @@ public static unsafe partial class DbAnim
 
     /// <summary>
     /// <c>Gob::GetAnimation</c>'s contract, which is the one the game branches on: the handle answers
-    /// <b>is this animation PLAYING</b>, not <b>does the model have it</b>.
-    /// <para>This case exists because getting it wrong crashed the client. <c>GetOverlayAnimationPlaying</c>
-    /// reads the handle, and <c>CNWCObject::SetAnimation</c> then calls <c>ShowEquippedItems</c> through a slot
-    /// that answers null on a placeable, with no guard -- so a handle returned for an animation the model
-    /// merely owns turned a placeable update into <c>ShowEquippedItems(nullptr)</c>. CX-113's
-    /// <c>"default"</c> fallback resolves nearly every name, so that was nearly every query.</para>
+    /// <b>is this animation PLAYING</b>, not <b>does the model have it</b>. Getting that wrong crashes the
+    /// client: <c>CNWCObject::SetAnimation</c> calls <c>ShowEquippedItems</c> through a slot that answers null
+    /// on a placeable, with no guard, so a handle for an animation the model merely OWNS passes it null.
     /// </summary>
     private static void Playing(Checker check)
     {

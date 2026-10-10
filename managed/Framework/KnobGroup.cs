@@ -6,10 +6,9 @@ namespace CX.Framework;
 
 /// <summary>
 /// One feature's knobs (ADR 0025): feature = group = submenu = chat command = reset unit = key prefix.
-/// <see cref="Declare"/> registers the group for enumeration and registers its generated
-/// <c>/&lt;group&gt;</c> chat handler; the factories declare knobs in row order, binding each from the
-/// pre-main <see cref="Settings"/> dictionary as it is constructed, so a static field is right on first
-/// touch. A group that stands down this session still declares, so its rows exist.
+/// <see cref="Declare"/> registers the group for enumeration and its generated <c>/&lt;group&gt;</c> chat handler;
+/// the factories declare knobs in row order, binding each from the pre-main <see cref="Settings"/> dictionary as
+/// it is constructed, so a static field is right on first touch. A group that stands down still declares.
 /// </summary>
 public sealed partial class KnobGroup
 {
@@ -60,12 +59,10 @@ public sealed partial class KnobGroup
     /// <summary>The knob declared under <paramref name="key"/>, or null.</summary>
     public static Knob? Find(string key) { lock (_all) return _byKey.TryGetValue(key, out Knob? k) ? k : null; }
 
-    /// <summary>Declare a group. <paramref name="master"/> is the label of <c>&lt;group&gt;.enabled</c>, the
-    /// first row, User tier (so <paramref name="masterHelp"/> is required); <paramref name="parent"/> names
-    /// another group's master by KEY (<c>"alloy.enabled"</c>) and may be declared later.</summary>
-    /// <paramref name="masterTier"/> below User keeps the switch in chat and <c>cx.cfg</c> only: a core feature a
-    /// player has no reason to turn off. Several groups may name one <paramref name="submenu"/>; each then sits
-    /// under its <paramref name="title"/> (default: the submenu), ordered by <paramref name="order"/>.</summary>
+    /// <summary>Declare a group. <paramref name="master"/> labels <c>&lt;group&gt;.enabled</c>, the first row, User
+    /// tier (so <paramref name="masterHelp"/> is required); a <paramref name="masterTier"/> below User keeps that
+    /// switch in chat and <c>cx.cfg</c> only. <paramref name="parent"/> names another group's master by KEY, later
+    /// if need be; groups sharing a <paramref name="submenu"/> sit under their <paramref name="title"/> in <paramref name="order"/>.</summary>
     public static KnobGroup Declare(string name, string category, string submenu, string? master = null,
                                     string? masterHelp = null, bool masterDefault = true,
                                     Effect masterEffect = Effect.Live, Action? masterChanged = null,

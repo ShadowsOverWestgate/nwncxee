@@ -5,34 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-188 / ADR 0028 section 5: <b>every engine read the DB-mode frame used to do inside its DRAW,
-/// done once on the GAME thread and handed across by VALUE.</b>
-///
-/// <para>This is the <c>FrameInputsPublished</c> precondition of <see cref="RenderThread"/>, and the trace
-/// that produced it corrected the one in that file's header. <c>FrameInputs</c> itself needs no publishing in
-/// this mode -- every DB-mode writer is inside the per-view draw and so moves to whichever thread draws. What
-/// the draw also did was read ENGINE OBJECTS: the current <c>CNWCArea</c> (its flags, extent and day/night
-/// palette), the engine's light-radius multiplier through
-/// <c>RenderInterface::GetGlobalShaderParamf</c>, the engine scene shell's fog words, and the scene's
-/// <c>WindManager</c>. Those are game-thread-owned memory, read while the game thread simulates the next
-/// frame -- a different and larger problem than a CX global, and not one a publish of <c>FrameInputs</c>
-/// addresses.</para>
-///
-/// <para><b>Values, not pointers.</b> Nothing below is a pointer the renderer dereferences.
-/// <see cref="Area"/> is carried for IDENTITY only -- an edge compare and a log line -- because the area the
-/// renderer drew may already have been freed by the time it is compared, and a view whose <c>ref struct</c>
-/// rules say "do not retain" says exactly that (#193). Every other field is a float, an int or a vector read
-/// at fold time.</para>
-///
-/// <para><b>Where the fold runs.</b> Inside <see cref="RenderSnapshot.Fold"/>, i.e. inside
-/// <see cref="RenderSnapshot.Publish"/>, on the game thread, under the lock that IS the frame's
-/// happens-before edge -- the same place and for the same reason the dirty fold runs there. It is also a perf
-/// win with the knob OFF: the area walk and the attenuation latch used to run once per world VIEW and now run
-/// once per frame.</para>
-///
-/// <para><b>Fog is per view</b>, not per frame: <c>SceneFeed.FogRead</c> prefers the AREA's own fog and falls
-/// back to the scene SHELL's words, and a GUI panel's scene is not the area's. So each recorded view carries
-/// its own resolved fog (<see cref="RenderSnapshot.ViewRec.Fog"/>) and the renderer reads no shell.</para></summary>
+/// <summary><b>Every engine object read a frame needs, read once on the GAME thread and handed across by
+/// VALUE</b>: the current <c>CNWCArea</c>'s flags, extent and day/night palette, the engine's light-radius
+/// multiplier, the scene's <c>WindManager</c>. Folded in <see cref="RenderSnapshot.Publish"/> under the lock
+/// that IS the frame's happens-before edge. Fog is per VIEW, not here, and no field is a pointer to follow.</summary>
 public struct FrameHoist
 {
     /// <summary>The <c>CNWCArea*</c> this frame's terms were read from, or zero at the main menu and between

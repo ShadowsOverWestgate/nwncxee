@@ -3,7 +3,7 @@
 
 Sources: directories of .mdl, .hak/.erf/.mod containers, and nwsync manifests
 (`nwsync:<sha1-prefix>`). Binary models go through NeverBlender's pure-Python
-decompiler (NEVERBLENDER env or ~/repos/neverblender); ASCII models are scanned as-is.
+decompiler (NEVERBLENDER, resolved by tools/paths.py); ASCII models are scanned as-is.
 Output: one TSV row per mesh node on stdout, tallies on stderr.
 
     tools/mdlcensus/census.py "$HOME/.local/share/Neverwinter Nights"/hak/*.hak > haks.tsv
@@ -12,7 +12,9 @@ Output: one TSV row per mesh node on stdout, tallies on stderr.
 import argparse, collections, os, re, sqlite3, struct, sys, zlib
 from compression import zstd
 
-sys.path.insert(0, os.environ.get("NEVERBLENDER", os.path.expanduser("~/repos/neverblender/NeverBlender")))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import paths  # noqa: E402  tools/paths.py: env, local.env, then the Steam library
+sys.path.insert(0, paths.require("NEVERBLENDER"))
 import nvb_decompile  # noqa: E402
 
 NWN_HOME = os.path.expanduser("~/.local/share/Neverwinter Nights")

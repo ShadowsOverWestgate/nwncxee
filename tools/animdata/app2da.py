@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read appearance.2da (stock and SoW) and print the rows a player character can be.
+"""Read appearance.2da (stock and content) and print the rows a player character can be.
 
     ./app2da.py            # both files, PC rows
     ./app2da.py --all      # every row that has WALKDIST/RUNDIST
@@ -7,7 +7,9 @@
 import os, sys
 
 STOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "extract", "appearance.2da")
-SOW = "~/repos/sow-codebase/topdata/.cache/2da/appearance.2da"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import paths  # noqa: E402  tools/paths.py: env, local.env, then the Steam library
+CONTENT = paths.require("CONTENT_APPEARANCE_2DA")
 
 
 def read2da(path):
@@ -53,7 +55,7 @@ COLS = ["LABEL", "NAME", "RACE", "MODELTYPE", "MOVERATE", "WALKDIST", "RUNDIST",
 
 if __name__ == "__main__":
     allrows = "--all" in sys.argv
-    for tag, path in (("stock", STOCK), ("sow", SOW)):
+    for tag, path in (("stock", STOCK), ("content", CONTENT)):
         if not os.path.exists(path):
             print(f"# {tag}: missing {path}")
             continue

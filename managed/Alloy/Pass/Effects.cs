@@ -3,10 +3,8 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>effects</c> group (spec §4.3): the sky, beam and halo passes' storage, one group because
-/// each is one toggle. Touched from <see cref="RenderCommands.Register"/> so the group declares at Initialize
-/// on the main thread.
-/// <para>ADR 0030: the halo toggle and its gain are ONE row -- <see cref="Halos"/> is the brightness, and 0 is
-/// the pass off -- because "halos on, at zero brightness" is a state no player means to be in.</para></summary>
+/// each is one toggle. The halo toggle and its gain are ONE row (ADR 0030) -- <see cref="Halos"/> is the
+/// brightness and 0 is the pass off -- because "halos on, at zero brightness" is a state no player means.</summary>
 internal static class Effects
 {
     internal static readonly KnobGroup G;

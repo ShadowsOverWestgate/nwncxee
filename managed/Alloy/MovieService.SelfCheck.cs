@@ -5,11 +5,10 @@ namespace CX.Alloy;
 
 public sealed unsafe partial class MovieService
 {
-    /// <summary>An independent transcription of <c>CExoMoviePlayerInternal::ShowFrame</c> @0x1165e30's own
-    /// ortho, GUI-scale terms and all, so <see cref="MoviePlate.Fit"/> is checked against the engine rather
-    /// than against itself. The engine draws a fixed [-1,1] quad inside
-    /// <c>SetOrthoTransform(-right, right, -top, top, -1, 1)</c>, so its quad's clip-space half-extent is
-    /// <c>1/right</c> by <c>1/top</c>.</summary>
+    /// <summary>An independent transcription of <c>ShowFrame</c> @0x1165e30's own ortho, GUI-scale terms and
+    /// all, so <see cref="MoviePlate.Fit"/> is checked against the engine rather than against itself. The
+    /// engine's fixed [-1,1] quad inside <c>SetOrthoTransform(-right, right, -top, top, -1, 1)</c> has
+    /// clip-space half-extent <c>1/right</c> by <c>1/top</c>.</summary>
     private static void EngineOrtho(int w, int h, int vpW, int vpH, float guiScale, out float right, out float top)
     {
         float sw = vpW, sh = vpH;
@@ -18,9 +17,8 @@ public sealed unsafe partial class MovieService
         right = m * (sw / guiScale) / w;
     }
 
-    /// <summary>Off-device: the letterbox fit and the texture window. The fit is the whole of what CX-99
-    /// ports -- everything else in the draw is GL calls -- and a wrong one is a stretched movie that no
-    /// assertion on a live client would catch any faster.</summary>
+    /// <summary>Off-device: the letterbox fit and the texture window. The fit is the whole of the ported
+    /// arithmetic -- everything else in the draw is GL calls -- and a wrong one is a stretched movie.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);

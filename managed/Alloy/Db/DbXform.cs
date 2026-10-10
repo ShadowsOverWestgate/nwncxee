@@ -4,44 +4,21 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 seam-anim: <b>the transform step.</b> <c>ObjWorld</c> from the object's placement columns
-/// plus the attach chain, and <c>PartWorld</c> down each part tree -- visiting only what moved (ADR 0028
-/// section 4), and callable on demand so a by-value getter right after a setter answers the new value.
-/// <para><b>The composition, term for term</b>, is <c>Alloy/Scene/GobXform.cs</c>'s, which is the engine's
-/// matrix stack read off <c>ApplyMatrix</c> @0x4db450 and <c>aurMatrixStack::Scale</c> @0x4db060: a leaf's
-/// matrix is <c>S_leaf T_leaf ... S_root T_root S_obj T_obj</c>, row-vector, translation in the fourth row.
-/// Every scale in the chain is uniform, so the product is a similarity transform and each part's matrix is its
-/// own local times its parent's world -- which is why this is a flat pre-order walk and not a climb.</para>
-/// <para><b>Threading.</b> Every column here is written on the GAME thread and read by the renderer with no
-/// snapshot, which is correct while <c>alloy.renderthread</c> is 0 (it is, and it is gated off until GUI
-/// ownership lands) and a torn <c>Matrix4x4</c> read once it is not. What the snapshot has to carry is listed
-/// in <c>cx-wt/notes/seam-anim-render-thread.md</c>.</para>
-/// <para><b>What the engine's version had to do and this does not:</b> no <c>gobbucket</c> membership test, no
-/// pointer-keyed registry, no staggered full refresh for "a writer nobody predicted", no
-/// <c>alloy.xformcheck</c>. Every writer of a placement column goes through the seam and marks the record, so
-/// the change set is exact rather than inferred.</para></summary>
+/// <summary><b>The transform step.</b> <c>ObjWorld</c> from the placement columns plus the attach chain and
+/// <c>PartWorld</c> down each part tree, visiting only what moved (ADR 0028 section 4). A leaf is
+/// <c>S_leaf T_leaf ... S_obj T_obj</c>, row-vector, translation in the fourth row; every scale is uniform, so
+/// a part's matrix is its local times its parent's world -- a flat pre-order walk. GAME thread only.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>The compose generation: a per-object stamp says "already composed under this generation"
-    /// without clearing an array.
-    /// <para>CX-188: nothing in a live frame bumps it any more. It used to be bumped once per frame at
-    /// <see cref="Settle"/>, and that single increment defeated the whole dedup: the boundary re-walks the
-    /// WHOLE dirty list, so every object on it (~977 of ~1,000, for the ~94 that had moved) recomposed its
-    /// entire part range, measured as 10,6k part composes a frame in a STILL scene. Staleness is the
-    /// authority, and it is exact -- <see cref="Stale"/> for the object's own placement and
-    /// <see cref="_partClock"/> for a part pose written under it. The generation stays because it is the one
-    /// way to force a whole pass (the self-checks do, and a recycled slot's zero stamp still reads as
-    /// "never composed").</para></summary>
+    /// without clearing an array. Nothing in a live frame bumps it -- staleness is the authority
+    /// (<see cref="Stale"/> for the object's placement, <see cref="_partClock"/> for a part pose). It stays as
+    /// the one way to force a whole pass, and a recycled slot's zero stamp still reads as never composed.</summary>
     private static int _poseGen = 1;
-    /// <summary>Per object: <see cref="DbTable.MarkClock"/> of the parts table as its last compose left it.
-    /// A part whose <see cref="DbTable.MarkAt"/> is past this was marked AFTER that compose, so its local pose
-    /// may not be in the composed matrices -- the one change <see cref="Stale"/> cannot see, because it reads
-    /// the object's placement and a part pose is not in it (<c>SetPartPosition</c>, the look-at's head track,
-    /// <c>PoseRig</c>'s bone writes).
-    /// <para>Invalidation: there is none to wire. The stamp is taken from a monotonic clock at the end of each
-    /// compose, so every later mark is strictly greater; a recycled part slot is marked
-    /// <see cref="Dirty.Created"/> at alloc, which is itself a mark past any earlier stamp, and
-    /// <see cref="OnCreate"/> resets an object's stamp to -1 so its first compose honours everything.</para></summary>
+    /// <summary>Per object: <see cref="DbTable.MarkClock"/> of the parts table as its last compose left it. A
+    /// part whose <see cref="DbTable.MarkAt"/> is past this was marked AFTER that compose -- the one change
+    /// <see cref="Stale"/> cannot see, since a part pose is not in the object's placement. Nothing invalidates
+    /// it: the clock is monotonic, and <see cref="OnCreate"/> resets an object's stamp to -1.</summary>
     private static readonly long[] _partClock = Unstamped();
 
     /// <inheritdoc cref="_partClock"/>
@@ -107,9 +84,7 @@ public static unsafe partial class DbAnim
 
     /// <summary>A getter's compose: everything pending, then THIS object even when the dirty tail no longer
     /// holds it. An object moved twice in one pass is on the dirty list once, behind the tail cursor after the
-    /// first compose, so <see cref="Compose"/> alone answered its old matrix -- and
-    /// <c>CGuiResizeBar::HandleDrag</c> @0x5957d0 wrote that stale "resizebar" world back through
-    /// <c>SetPartPosition</c> against the panel's fresh one: the bar's depth stuck at -0.05 under a panel at 163.8.</summary>
+    /// first compose, so <see cref="Compose"/> alone would answer its old matrix.</summary>
     public static void ComposeFor(DbId obj)
     {
         ComposePending();
@@ -199,16 +174,10 @@ public static unsafe partial class DbAnim
         PlaceChildren(i);
     }
 
-    /// <summary>
-    /// The object's world cull sphere (<see cref="SceneDb.ObjSphere"/>), which the feed's visible-set index
-    /// files objects by -- so an object without one is never drawn. Centre is the object's world origin and the
-    /// radius is the model's own bound about that origin, times the composed scale.
-    /// <para>The radius is taken from the model's stated bounds rather than from the posed part tree, which is
-    /// what the engine's <c>Gob::GetMinimumSphere</c> walks every fifth animate. The exporter writes those
-    /// bounds from the ANIMATED geometry, so they already cover the pose; the difference is that a sphere here
-    /// never shrinks to fit a settled pose, i.e. it over-reports and can only draw something that would have
-    /// been culled -- never cull something that should draw.</para>
-    /// </summary>
+    /// <summary>The object's world cull sphere (<see cref="SceneDb.ObjSphere"/>), which the feed's visible-set
+    /// index files objects by -- an object without one is never drawn. Centre is the world origin, radius the
+    /// model's stated bound about that origin times the composed scale: the exporter writes those bounds from
+    /// the ANIMATED geometry, so the sphere over-reports and can never cull something that should draw.</summary>
     private static void Sphere(int i)
     {
         Matrix4x4 w = SceneDb.ObjWorld[i];
@@ -233,12 +202,8 @@ public static unsafe partial class DbAnim
 
     /// <summary>The one placement term <c>Part::GetWorld</c> does not carry: the engine's gob loop in
     /// <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 climbs the attach chain and multiplies each ancestor's
-    /// visual-transform SCALE -- not its adjusted scale -- into the pushed scale. 1.0 for every object without
-    /// an attachment, which is everything but held items, heads and worn pieces.
-    /// <para>A grafted body piece (<see cref="Grafted"/>) is instead part of its creature's ONE tree in the engine,
-    /// so it carries its anchor part's whole world scale: the creature's <c>ScaleObject</c> and visual transform
-    /// and any animated part scale. Placed at the anchor's position and rotation alone, a downscaled creature's
-    /// torso, belt, legs and robe drew full size at the scaled skeleton's joints.</para></summary>
+    /// visual-transform SCALE -- not its adjusted scale -- into the pushed scale. 1.0 without an attachment; a
+    /// grafted piece (<see cref="Grafted"/>) is in its creature's ONE tree, so it takes the anchor's world scale.</summary>
     private static float AttachScale(int i)
     {
         if (Grafted(i))
@@ -338,15 +303,10 @@ public static unsafe partial class DbAnim
         rot = RotOf(m);
     }
 
-    /// <summary>
-    /// The rotation a composed matrix carries, as a UNIT quaternion. The matrix is a similarity transform, so
-    /// its basis rows are <c>s</c> times a rotation's: handing them to
-    /// <see cref="Quaternion.CreateFromRotationMatrix"/> as they stand yields a quaternion of norm
-    /// <c>sqrt(s)</c>, and the engine's <c>Part::GetWorld</c> accumulates unit quaternions instead.
-    /// <para>That mattered twice: the attach solver writes this into <c>ObjRot</c> (a non-unit one scales the
-    /// attached weapon or head a second time, and <c>GetOrientation</c> hands the game a quaternion that is not
-    /// a rotation), and the dangly solve takes its inertia, wind and gravity through it.</para>
-    /// </summary>
+    /// <summary>The rotation a composed matrix carries, as a UNIT quaternion. The matrix is a similarity
+    /// transform, so its basis rows are <c>s</c> times a rotation's and
+    /// <see cref="Quaternion.CreateFromRotationMatrix"/> would answer norm <c>sqrt(s)</c>; the attach solver
+    /// writes this into <c>ObjRot</c>, where a non-unit one scales the attached piece a second time.</summary>
     internal static Quaternion RotOf(in Matrix4x4 m)
     {
         float s = ScaleOf(m);
@@ -380,7 +340,7 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>The transform step's period numbers: how many objects and parts a frame actually recomposed.
-    /// In a still scene both read 0, which is CX-115's change-driven claim made checkable.</summary>
+    /// In a still scene both read 0, which makes the change-driven claim checkable.</summary>
     internal static (int Objects, int Parts) TakeComposeCounts()
     {
         var r = (_composed, _composedParts);

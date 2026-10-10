@@ -5,48 +5,11 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-116: <b>CX builds the area's tiles.</b> The DB-side replacement for the engine's tile build --
-/// <c>Scene::SpawnTile</c> @0x474470 -&gt; <c>SpawnPartsForTile</c> @0x563450 -&gt;
-/// <c>CollapsePartTree</c> @0x562ff0 -&gt; <c>CombineParts</c> @0x573d30 -&gt;
-/// <c>ProcessStaticParts</c> @0x470970 -&gt; <c>SceneBSPAddTileData</c> @0x47cd00 -- plus the tile lights,
-/// the tile flames and animation loops, the texture swap and the fog of war. The walkmesh
-/// (<c>CNWTileSurfaceMesh</c>) is NOT here: it serves pathing and stays the game's.
-/// <para><b>The API is the <c>Scene</c> vtable.</b> Every method below answers one slot the game layer already
-/// calls, so the CX-120 seam forwards rather than translates (Linux slot / Windows slot, from
-/// <c>tools/abi/vtable-slots.py Scene</c> -- Windows is Linux-0x8 throughout because Linux carries two
-/// destructor slots):
-/// <list type="table">
-/// <item><term>0x038 / 0x030</term><description><c>SpawnTile</c> -&gt; <see cref="SpawnTile"/></description></item>
-/// <item><term>0x040 / 0x038</term><description><c>SetTileLights</c> -&gt; <see cref="SetTileLights"/></description></item>
-/// <item><term>0x048 / 0x040</term><description><c>SetTileFlames</c> -&gt; <see cref="SetTileFlames"/></description></item>
-/// <item><term>0x050 / 0x048</term><description><c>ReplaceTileTexture</c> -&gt; <see cref="ReplaceTileTexture"/></description></item>
-/// <item><term>0x058 / 0x050</term><description><c>DeleteTile</c> -&gt; <see cref="DeleteTile"/></description></item>
-/// <item><term>0x030 / 0x028</term><description><c>InitBSP</c> -&gt; <see cref="InitGrid"/></description></item>
-/// <item><term>0x0f0 / 0x0e8</term><description><c>GetNumTileFlames</c> -&gt; <see cref="NumTileFlames"/></description></item>
-/// <item><term>0x0f8 / 0x0f0</term><description><c>GetNumTileLights</c> -&gt; <see cref="NumTileLights"/></description></item>
-/// <item><term>0x080 / 0x078</term><description><c>ResetAreaTileFading</c> -&gt; <see cref="ResetFading"/></description></item>
-/// </list>
-/// and the one free function, <c>AuroraSetTileFoggedByWar</c> @0x453320 -&gt; <see cref="SetFoggedByWar"/>.</para>
-/// <para><b>Model space, one transform per placement.</b> The engine bakes: <c>CollapsePartTree</c> composes the
-/// placement into every part's own pose and then CLEARS the tree, and the pools hold the result in world space
-/// under an identity matrix (#655) -- which is why ADR 0017's exact-content hash read 1.00x on tiles, and why
-/// <c>MeshChart</c> had to rebase a tile mesh to its min corner to share one chart. CX does not bake. A tile
-/// placement is ONE object record (<see cref="SceneDb.TileObj"/>) whose <see cref="SceneDb.ObjPos"/> /
-/// <see cref="SceneDb.ObjRot"/> ARE the placement, and whose geometry is the model's: the merge
-/// (<see cref="Plan"/>) runs once per distinct tile MODEL, in model space, and every placement of that model
-/// shares its arena ranges. Two placements of one tile model are then two matrices over one vertex range.</para>
-/// <para><b>What the merge is.</b> <c>CombineParts</c> buckets a tile's trimesh parts
-/// (<c>CreatePartBuckets</c>) and calls <c>VertexPrimitive::MergePart</c> @0x55adf0 on each bucket's host --
-/// which, measured, appends the member part to the host primitive's merge LIST (+0x88, count +0x90) and clears
-/// the member's render flag (<c>part[0x96] = 0</c>); the vertices are concatenated later, when the pool is
-/// filled, from poses that are already world. The engine runs it ONCE PER MODEL: <c>SpawnTile</c> guards the
-/// call on <c>Model+0x8d</c> and sets that byte, so only a tile model's FIRST placement is combined. CX takes
-/// the per-model intent and drops the per-placement accident: one merge plan per <see cref="ModelDef"/>,
-/// cached, in model space.</para>
-/// <para>Cold by construction: every method here runs on the game thread at area load or on a tile message,
-/// never per frame. The per-frame half is <see cref="TickFade"/>, which walks the dense tile table and
-/// allocates nothing.</para></summary>
-public static class TileBuild
+/// <summary><b>CX builds the area's tiles</b>, replacing the engine's chain from <c>Scene::SpawnTile</c>
+/// @0x474470 to <c>SceneBSPAddTileData</c> @0x47cd00, plus the tile lights, flames, texture swap and fog of war
+/// (the walkmesh stays the game's). Each method answers one <c>Scene</c> vtable slot and is COLD -- area load or
+/// a tile message. The merge runs once per tile MODEL in MODEL space: a placement is one matrix over it.</summary>
+public static partial class TileBuild
 {
     /// <summary><c>CNWTile::TILE_WIDTH</c>/<c>TILE_LENGTH</c> = 10.0 and the half-tile the grid-to-world
     /// conversion adds: <c>CNWTile::SetPosition</c> @0x732560 writes
@@ -77,85 +40,13 @@ public static class TileBuild
     /// <inheritdoc cref="Main1Range"/>
     private const int MainPriority = 4;
 
-    /// <summary>The eleven tile animations <c>CNWCTile::PlayAnimation</c> @0x80c770 names, in its switch
-    /// order (every address in this file is an nm address, i.e. Ghidra - 0x100000). The game layer picks one
-    /// and forwards the NAME to <c>Gob::PlayAnimation</c>, so CX keeps the enables rather than the names:
-    /// <c>Day</c>/<c>Night</c> at load, <c>AnimLoop01..03</c> per the record's three anim-loop bytes, and
-    /// <see cref="AnimName"/> is what the seam turns an index back into.</summary>
+    /// <summary>The eleven tile animations <c>CNWCTile::PlayAnimation</c> @0x80c770 names, in its switch order
+    /// (every address in this file is an nm address, i.e. Ghidra - 0x100000). The game layer forwards the NAME
+    /// to <c>Gob::PlayAnimation</c>, so CX keeps the enables instead -- <c>Day</c>/<c>Night</c> at load,
+    /// <c>AnimLoop01..03</c> per the record's three bytes -- and <see cref="AnimName"/> inverts an index.</summary>
     private static readonly string[] AnimNames =
         ["tiledefault", "AnimLoop01", "AnimLoop02", "AnimLoop03", "on", "off", "fade", "Day", "Night", "Day2Night", "Night2Day"];
 
-    /// <summary>One tile model's merge plan, in MODEL space: the merged meshes, the arena range each one took,
-    /// and the model's light nodes. Built once per <see cref="ModelDef"/> and shared by every placement.</summary>
-    public sealed class MergePlan
-    {
-        /// <summary>The merged meshes, one per bucket (<c>CombineParts</c>' <c>CreatePartBuckets</c>).</summary>
-        public MeshDef[] Meshes = Array.Empty<MeshDef>();
-        /// <summary>Per merged mesh, the <see cref="MeshArena"/> range it holds (-1 when the arena refused).</summary>
-        public int[] Ranges = Array.Empty<int>();
-        /// <summary>Per merged mesh, the <c>tilefade</c> class of its bucket (1 fades, 2 cap, 4 no shadow,
-        /// 0 plain): the fade ramps a class-1 mesh and nothing else.</summary>
-        public int[] FadeClass = Array.Empty<int>();
-        /// <summary>The model nodes each bucket swallowed -- what a part tree marks
-        /// <see cref="SceneDb.PartMerged"/> (CX-114 reads this; nothing here writes parts).</summary>
-        public int[][] Members = Array.Empty<int[]>();
-        /// <summary>The model's light nodes, in node order, with their rest pose and controller values.</summary>
-        public PlanLight[] Lights = Array.Empty<PlanLight>();
-        /// <summary>The nodes named <c>&lt;model&gt;sl1</c> and <c>&lt;model&gt;sl2</c> (-1 for none), and
-        /// their model-space poses. <c>ProcessTilePart</c> stores these PARTS (not their lights) at
-        /// <c>TileData+0x10</c>/<c>+0x18</c>, and <c>Scene::SetSingleTileFlame</c> @0x55ef30 copies the part's
-        /// position and orientation into the flame object -- so these are where a tile's two flames stand.</summary>
-        public int Sl1 = -1, Sl2 = -1;
-        /// <inheritdoc cref="Sl1"/>
-        public Vector3 Sl1Pos, Sl2Pos;
-        /// <inheritdoc cref="Sl1"/>
-        public Quaternion Sl1Rot = Quaternion.Identity, Sl2Rot = Quaternion.Identity;
-        /// <summary>Model-space bounds of every merged mesh together: the whole tile's geometry, for culling.</summary>
-        public Vector3 BMin, BMax;
-        /// <summary>Model-space bounds of what the engine FILES in <c>TileData+0x30</c>, which is what
-        /// <c>Scene::SpawnTile</c>'s union walks: trimesh parts with <c>tilefade 0</c> and non-empty geometry,
-        /// outside the animated half. <c>ProcessStaticParts</c> @0x570970 moves <c>tilefade 2</c> to
-        /// <c>TileData+0x90</c> and <c>4</c> to <c>+0xb0</c> and REMOVES both from <c>+0x30</c>, and an AABB
-        /// walkmesh part answers <c>AsPartTriMesh</c> (its vtable slot 0x60 is <c>PartTriMesh</c>'s) so it IS
-        /// filed and DOES count. This is the box the live comparison uses.</summary>
-        public Vector3 FiledBMin, FiledBMax;
-        /// <summary>Model-space bounds of the <c>tilefade 1</c> geometry alone: what <c>CheckFadePlane</c>
-        /// @0x47bf30 tests against the camera plane.</summary>
-        public Vector3 FadeBMin, FadeBMax;
-        /// <summary>The tile has any <c>tilefade 1</c> geometry at all (else the ramp never moves).</summary>
-        public bool HasFade;
-        /// <summary>Model-space box of each <c>tilefade 1</c> node, in node order: what
-        /// <c>CheckFadePlane</c> tests ONE AT A TIME.</summary>
-        public Vector3[] FadeLo = Array.Empty<Vector3>(), FadeHi = Array.Empty<Vector3>();
-        /// <summary>Nodes that did NOT merge (animated, or a kind that never merges): they stay their own parts.</summary>
-        public int Unmerged;
-        /// <summary>Renderable mesh nodes the model has, merged or not.</summary>
-        public int MeshNodes;
-        /// <summary>Mesh nodes that land in <c>TileData+0x30</c>: the count a live comparison uses.</summary>
-        public int FiledNodes;
-        /// <summary>The model's <c>aabb</c> nodes, and how many carry a built tree: the walkmesh vanilla's
-        /// floor cast hits (<c>SceneBSPAddPart</c> stores it at the BSP leaf's +0x90).</summary>
-        public int AabbNodes, AabbTrees;
-    }
-
-    /// <summary>One light node of a tile model, resolved to model space with its rest controller values.</summary>
-    public struct PlanLight
-    {
-        public int Node;
-        public Vector3 Pos, Colour;
-        public float Range, RangeAlt, Multiplier;
-        public bool Shadow, AmbientOnly, Dynamic;
-        public int Priority;
-        /// <summary>0 for the node named <c>&lt;model&gt;ml1</c> and 1 for <c>&lt;model&gt;ml2</c>, else -1:
-        /// the two lights <c>Scene::SetTileLights</c> @0x55edf0 re-colours. <c>ProcessTilePart</c> @0x561720
-        /// picks them by NAME, <c>strcasecmp</c> against the model name plus the literal <c>"ml1"</c> (nm
-        /// 0x12f0a88) or <c>"ml2"</c> (0x12f0a90), and stores the part's <c>AsPartLight()</c> at
-        /// <c>TileData+0x0</c>/<c>+0x8</c>. Node ORDER is not the rule and gets a tile with a third light
-        /// node wrong.</summary>
-        public int MainSlot;
-    }
-
-    private static readonly Dictionary<ModelDef, MergePlan> _plans = new();
     /// <summary>(scene handle, grid cell) -&gt; tile slot: CX's <c>SceneBSPGetTileData</c>. Cold path only.</summary>
     private static readonly Dictionary<(uint Scene, int X, int Y), int> _byCell = new();
 
@@ -163,23 +54,6 @@ public static class TileBuild
     private static int _refusedBig, _refusedArena, _collisions, _outOfOrder, _cellTaken, _lightSpill, _refusedHeight;
     private static float _cellSize = 10f;
 
-    /// <summary>Every term <c>CreatePartBuckets</c> compares, stored rather than hashed.</summary>
-    private readonly record struct MeshFields(string T0, string T1, string T2, string T3, string Mat, string Hint,
-                                              int Fade, int Transparency, Vector3 Diffuse, Vector3 Ambient,
-                                              Vector3 Specular, float Shininess, uint Flags);
-
-    private static MeshFields FieldsOf(MeshDef m)
-    {
-        uint flags = (m.Shadow ? 1u : 0) | (m.Beaming ? 2u : 0) | (m.Lightmapped ? 4u : 0) | (m.RotateTexture ? 8u : 0);
-        for (int sx = 0; sx < m.Uv.Length; sx++) if (m.Uv[sx].Length > 0) flags |= 16u << sx;
-        if (m.Colors.Length > 0) flags |= 1u << 8;
-        if (m.Tangents.Length > 0) flags |= 1u << 9;
-        return new MeshFields(Low(m.Textures[0]), Low(m.Textures[1]), Low(m.Textures[2]), Low(m.Textures[3]),
-                              Low(m.MaterialName), Low(m.RenderHint), m.TileFade, m.TransparencyHint,
-                              m.Diffuse, m.Ambient, m.Specular, m.Shininess, flags);
-    }
-
-    private static string Low(string s) => s.ToLowerInvariant();
     private static int _arenaAsks, _planBuilds, _mergedNodes, _litRegistered, _swaps;
     private static int _gridW, _gridH, _ring = EngineRing;
     private static float _heightTransition = 5f;
@@ -190,19 +64,16 @@ public static class TileBuild
     /// <inheritdoc cref="Placements"/>
     public static int Models => _plans.Count;
     /// <summary>Merged meshes offered to the arena: one per distinct tile mesh, never one per placement. The
-    /// CX-113 census and <c>MeshChart</c>'s <c>built</c> count are held to this number.</summary>
+    /// mesh census and <c>MeshChart</c>'s <c>built</c> count are held to this number.</summary>
     public static int ArenaAsks => _arenaAsks;
     public static int LightsRegistered => _litRegistered;
 
     // ---- Scene vtable: the grid ----
 
-    /// <summary>Linux <c>Scene</c> +0x30 / Windows +0x28, <c>InitBSP(int, int, int, bool, float)</c>:
-    /// <c>CNWCArea::LoadArea</c> calls it <c>(w, h, 5, true, 10.0f)</c>. The DB has no BSP (the visible set is
-    /// the grid over the per-tile bounds), so this records the grid and the ring, widened to
-    /// <c>alloy.border</c> exactly as <see cref="AreaBorder"/> widens the engine's.
-    /// <para><paramref name="cellSize"/> is the BSP CELL SIZE, which is a different number from the tileset's
-    /// height step -- it is recorded for the record and is not the height step
-    /// (<see cref="SetTileset"/>).</para></summary>
+    /// <summary>Linux <c>Scene</c> +0x30 / Windows +0x28, <c>InitBSP(int, int, int, bool, float)</c>, which
+    /// <c>CNWCArea::LoadArea</c> calls <c>(w, h, 5, true, 10.0f)</c>. There is no BSP -- the visible set is the
+    /// grid over the per-tile bounds -- so this records the grid and the ring, widened to <c>alloy.border</c>.
+    /// <paramref name="cellSize"/> is the BSP CELL SIZE, not the height step (<see cref="SetTileset"/>).</summary>
     public static void InitGrid(DbId scene, int w, int h, int border, float cellSize)
     {
         _gridW = w;
@@ -212,10 +83,9 @@ public static class TileBuild
         if (border > 0 && Math.Max(w, h) >= LargeArea) _ring = LargeRing;
     }
 
-    /// <summary>An area this many tiles along its longer side keeps only <see cref="LargeRing"/> tiles of border,
-    /// trimming even the engine's own five. On a 27x24 city the 15-tile ring was 2430 of 3078 placements --
-    /// lightmap rects, casters and records for scenery past the walkable edge -- where three already fill the
-    /// view from inside a big area.
+    /// <summary>An area this many tiles along its longer side keeps only <see cref="LargeRing"/> tiles of
+    /// border, trimming even the engine's own five: on a 27x24 city the 15-tile ring was 2430 of 3078
+    /// placements, where three already fill the view from inside a big area.
     /// ponytail: two constants, not knobs; promote them if a builder needs a wider ring on a big map.</summary>
     internal const int LargeArea = 20, LargeRing = 3;
     /// <summary>Ring tiles the engine asked for past <see cref="LargeRing"/>, not placed.</summary>
@@ -230,12 +100,10 @@ public static class TileBuild
         return Math.Max(dx, dy) > _ring;
     }
 
-    /// <summary>The area's tileset height step: <c>CNWTileSet::GetHeightTransition</c> @0x5e10c0, which
-    /// <c>CNWCArea::LoadArea</c> (src/CNWCArea.c:2554) reads and passes to <c>CNWCTile::SetPosition</c> as the
-    /// multiplier on the record's height index. There is NO sane default -- a wrong step puts every raised
-    /// tile at the wrong altitude -- so until the seam calls this, every spawn refuses loudly and the step is
-    /// reported unset on the period line. The seam's hook point is the tileset the area indexes
-    /// (<c>CNWCArea+0x290</c>, already read by <c>ModelLoad.Tiles</c>'s <c>CNWTile::SetID</c> layer).</summary>
+    /// <summary>The area's tileset height step: <c>CNWTileSet::GetHeightTransition</c> @0x5e10c0, the
+    /// multiplier <c>CNWCArea::LoadArea</c> passes to <c>CNWCTile::SetPosition</c> for the record's height
+    /// index. There is NO sane default -- a wrong step puts every raised tile at the wrong altitude -- so
+    /// until the seam calls this, every spawn refuses loudly and the step is reported unset.</summary>
     public static void SetTileset(float heightTransition)
     {
         if (heightTransition > 0f) { _heightTransition = heightTransition; return; }
@@ -246,11 +114,9 @@ public static class TileBuild
     public static float HeightTransition => _heightTransition;
 
     /// <summary>Open or close the <c>LoadBorder</c>/<c>ReloadBorder</c> window: inside it a spawn is a ring
-    /// tile and replays outward to the widened ring. <see cref="AreaBorder"/> already brackets
-    /// <c>CNWCArea::LoadBorder</c>/<c>ReloadBorder</c> for the engine's scene and calls this from inside its
-    /// own window, so the DB ring needs no second hook; the seam may also call it. When <c>AreaBorder</c>
-    /// stands down the ring is the engine's five tiles, there is nothing to widen, and the window staying
-    /// shut is the right answer.</summary>
+    /// tile and replays outward to the widened ring. <see cref="AreaBorder"/> calls this from inside its own
+    /// window, so the ring needs no second hook; when it stands down the ring is the engine's five tiles and
+    /// the window staying shut is the right answer.</summary>
     public static void BorderWindow(bool open) => _borderWindow = open;
 
     /// <summary>The scene handle the live comparison places its throwaway tiles under
@@ -295,21 +161,10 @@ public static class TileBuild
 
     // ---- Scene vtable 0x38: SpawnTile ----
 
-    /// <summary>Linux <c>Scene</c> +0x38 / Windows +0x30,
-    /// <c>SpawnTile(char const*, Vector const&amp;, int, int, Quaternion*)</c>: build the tile at
-    /// <paramref name="pos"/> from model <paramref name="model"/>, oriented <paramref name="orient"/> quarter
-    /// turns about +Z. <paramref name="border"/> non-zero marks a ring tile (the engine's own argument), and
-    /// <paramref name="rot"/> overrides the derived quaternion when the caller passes one, as the engine's
-    /// optional <c>Quaternion*</c> does.
-    /// <para><b>A non-null <paramref name="rot"/> is NOT a grid tile.</b> The same slot spawns every STATIC
-    /// placeable: <c>CNWCArea::LoadArea</c> and <c>RespawnStaticPlaceablesForTile</c> @0x708aa0 call it with
-    /// the object's own world position and an explicit quaternion, which is why a Static placeable's model is
-    /// a tile gob (<c>Gob+0x1a8</c> set -- CX-170 section 5). Those land as
-    /// plain object records associated with the cell's tile, not as tile records: they are off the grid, and
-    /// several can share one cell, so filing them in the cell index would have them overwrite each other and
-    /// the tile. Measured live: a stock area spawned 1155 grid tiles and 2 of these.</para>
-    /// <para>Returns the tile slot, or -1 with a loud refusal: a missing model, a full table and a refused
-    /// merge are each counted and named, never a quiet hole.</para></summary>
+    /// <summary>Linux <c>Scene</c> +0x38 / Windows +0x30, <c>SpawnTile(char const*, Vector const&amp;, int, int,
+    /// Quaternion*)</c>: the tile at <paramref name="pos"/> from <paramref name="model"/>,
+    /// <paramref name="orient"/> quarter turns about +Z, non-zero <paramref name="border"/> a ring tile. <b>A
+    /// non-null <paramref name="rot"/> is a STATIC placeable</b>: off the grid, a plain object record. -1 refuses.</summary>
     public static int SpawnTile(DbId scene, string model, Vector3 pos, int orient, int border, Quaternion? rot = null)
     {
         ModelDef? def = ModelCache.Acquire(model);
@@ -351,7 +206,7 @@ public static class TileBuild
     /// distinct from the -1 a refusal returns.</summary>
     public const int StaticTile = -2;
 
-    /// <summary>One <see cref="ModelCache"/> reference per PLACEMENT (CX-113), so a tile model stays resident
+    /// <summary>One <see cref="ModelCache"/> reference per PLACEMENT, so a tile model stays resident
     /// exactly as long as something stands on it. A model the cache does not hold -- the self-checks' -- is
     /// not referenced, and is told apart by identity rather than by a flag.</summary>
     private static void Hold(ModelDef def)
@@ -365,9 +220,9 @@ public static class TileBuild
         if (def != null && ReferenceEquals(ModelCache.FindModel(def.Name), def)) ModelCache.Release(def);
     }
 
-    /// <summary>The CX-113 census, which answers the CX-116 perf clause (meshes against placements for a tile
-    /// area): one note per merged mesh per placement. Only when <see cref="PartTree.Build"/> did NOT build a
-    /// part range -- when it does, the part tree counts its own placements and this would double them.</summary>
+    /// <summary>The mesh census -- meshes against placements for a tile area: one note per merged mesh per
+    /// placement. Only when <see cref="PartTree.Build"/> did NOT build a part range; when it does, the part
+    /// tree counts its own placements and this would double them.</summary>
     private static void Census(MergePlan plan, bool ours, bool add)
     {
         if (!ours) return;
@@ -581,9 +436,8 @@ public static class TileBuild
         return t;
     }
 
-    /// <summary>The widened ring (#353), against the DB instead of the engine's scene: the outermost engine
-    /// ring tile of every strip is replayed further out, to <c>alloy.border</c> tiles. Sound for the same
-    /// reason it is on the engine's scene -- the edge model is chosen per row/column from the nearest real
+    /// <summary>The widened ring: the outermost engine ring tile of every strip is replayed further out, to
+    /// <c>alloy.border</c> tiles. Sound because the edge model is chosen per row/column from the nearest real
     /// tile, so every tile along a strip's outward axis is the same model at the same height.</summary>
     private static void ReplayOutward(DbId scene, ModelDef def, Vector3 pos, int orient, int border, Quaternion? rot)
     {
@@ -599,158 +453,12 @@ public static class TileBuild
             }
     }
 
-    // ---- Scene vtable 0x40: SetTileLights ----
-
-    /// <summary>Linux <c>Scene</c> +0x40 / Windows +0x38,
-    /// <c>SetTileLights(Vector const&amp;, Vector const&amp;, Vector const&amp;)</c>: re-colour the tile's two
-    /// MAIN lights. Ported write for write from @0x55edf0 -- colour, then <c>range</c>/<c>rangeAlt</c> 10/12
-    /// for main light 1 and 5/8 for main light 2, <c>castShadows</c> 1 and <c>priority</c> 4 on both. The
-    /// engine's early-out (nothing changes when the colour is already that) is kept: it is what stops a
-    /// re-load re-dirtying every tile.</summary>
-    public static void SetTileLights(DbId scene, Vector3 pos, Vector3 c1, Vector3 c2)
-    {
-        _palCalls++;
-        if (c1 == Vector3.Zero) _palBlack1++;
-        if (c2 == Vector3.Zero) _palBlack2++;
-        int t = At(scene, pos);
-        if (t < 0) { _tileLightMiss++; return; }
-        bool moved = false;
-        for (int c = 0; c < SceneDb.TileLightCount[t]; c++)
-        {
-            int k = SceneDb.TileLightIds[t * SceneDb.TileLightStride + c];
-            if (k < 0 || !SceneDb.Lights.LiveAt(k)) continue;
-            int slot = SceneDb.LitMainSlot[k];
-            if (slot != 0 && slot != 1) continue;
-            Vector3 want = slot == 0 ? c1 : c2;
-            if (SceneDb.LitColour[k] == want) continue;
-            SceneDb.LitColour[k] = want;
-            SceneDb.LitRange[k] = slot == 0 ? Main1Range : Main2Range;
-            SceneDb.LitRangeAlt[k] = slot == 0 ? Main1RangeAlt : Main2RangeAlt;
-            SceneDb.LitShadow[k] = true;
-            SceneDb.LitPriority[k] = MainPriority;
-            SceneDb.Lights.Mark(k, Dirty.Material);
-            moved = true;
-        }
-        if (moved) SceneDb.Tiles.Mark(t, Dirty.Material);
-    }
-
-    /// <summary>The palette rows the area message named, kept for the census and the live comparison. The
-    /// COLOURS are the game layer's (<c>CNWCTile::SetMainLightColor</c> @0x90d050 reads RED/GREEN/BLUE out of
-    /// the light-colour 2DA itself and hands the Vectors down), so CX reads no 2DA.</summary>
-    public static void NoteRecord(DbId scene, Vector3 pos, int tileId, byte main1, byte main2,
-                                 byte src1, byte src2, byte replaceRow, byte anim1, byte anim2, byte anim3)
-    {
-        int t = At(scene, pos);
-        if (t < 0) return;
-        SceneDb.TileSetId[t] = tileId;
-        SceneDb.TileMain1[t] = main1;
-        SceneDb.TileMain2[t] = main2;
-        SceneDb.TileSrc1[t] = src1;
-        SceneDb.TileSrc2[t] = src2;
-        SceneDb.TileReplaceRow[t] = replaceRow;
-        SceneDb.TileAnim1[t] = anim1;
-        SceneDb.TileAnim2[t] = anim2;
-        SceneDb.TileAnim3[t] = anim3;
-    }
-
-    // ---- Scene vtable 0x48: SetTileFlames ----
-
-    /// <summary>Linux <c>Scene</c> +0x48 / Windows +0x40,
-    /// <c>SetTileFlames(Vector const&amp;, CAurObject*, CAurObject*)</c>: the two <c>fx_flame01</c>
-    /// "sourcelight" objects the tile's two source-light rows asked for. The game layer mints them
-    /// (<c>CNWCTile::SetSourceLightColor</c> @0x90d3c0 calls <c>NewCAurObject("fx_flame01", "sourcelight")</c>
-    /// and plays the animation NAMED by the palette row -- <c>"%i"</c> of the index -- then <c>Animate(1.0)</c>),
-    /// so CX only files which objects a tile's flames are. Called with two nulls first, to clear.</summary>
-    public static void SetTileFlames(DbId scene, Vector3 pos, DbId flame1, DbId flame2)
-    {
-        int t = At(scene, pos);
-        if (t < 0) return;
-        ModelDef? def = SceneDb.TileModel[t];
-        MergePlan? plan = def != null ? Plan(def) : null;
-        PlaceFlame(t, ref SceneDb.TileFlame1[t], flame1, plan?.Sl1 ?? -1, plan?.Sl1Pos ?? Vector3.Zero, plan?.Sl1Rot ?? Quaternion.Identity);
-        PlaceFlame(t, ref SceneDb.TileFlame2[t], flame2, plan?.Sl2 ?? -1, plan?.Sl2Pos ?? Vector3.Zero, plan?.Sl2Rot ?? Quaternion.Identity);
-        SceneDb.Tiles.Mark(t, Dirty.Tree);
-    }
-
-    /// <summary>One flame slot, ported from <c>Scene::SetSingleTileFlame</c> @0x55ef30: nothing happens when
-    /// the slot already holds that object; otherwise the old one leaves the slot (its lights re-shade), and
-    /// the new one takes the <c>sl1</c>/<c>sl2</c> PART's pose -- the engine copies <c>part+0x10</c> into
-    /// <c>gob+0xa8</c> and <c>part+0x1c</c> into <c>gob+0xb4</c> -- enters the scene, and re-shades its own
-    /// lights. The engine's parts are world-space by then; CX's are model-space, so the flame's world pose is
-    /// the tile placement composed with the part's.
-    /// <para>No <c>sl</c> part means the tile has nowhere to put a flame: the object is left where it is and
-    /// the refusal is counted, never a flame silently at the origin.</para></summary>
-    private static void PlaceFlame(int t, ref DbId slot, DbId want, int node, Vector3 nodePos, Quaternion nodeRot)
-    {
-        if (slot == want) return;
-        if (!slot.IsNull) { MarkLightsOf(slot); slot = default; }
-        if (want.IsNull) return;
-        // VANILLA SKIPS, SILENTLY. Scene::SetSingleTileFlame @0x55ef30 guards the whole placement on
-        // `srcPart != 0 && flame != 0`, so a tile whose model has no sl1/sl2 node clears the slot and never
-        // attaches the object -- the flame simply does not appear. That is content, not a failure of ours
-        // (Kingmaker's tilesets do it), so it is counted on the period line and not said out loud.
-        if (node < 0) { _flamesNoSl++; return; }
-        if (!SceneDb.Objects.Valid(want)) return;
-        int o = want.Index;
-        Quaternion tileRot = SceneDb.TileOrient[t] == 0 && SceneDb.TileModel[t] == null
-            ? Quaternion.Identity : Quaternion.CreateFromAxisAngle(Vector3.UnitZ, SceneDb.TileOrient[t] * 90f * (MathF.PI / 180f));
-        SceneDb.ObjPos[o] = SceneDb.TilePos[t] + Vector3.Transform(nodePos, tileRot);
-        SceneDb.ObjRot[o] = Quaternion.Normalize(tileRot * nodeRot);
-        SceneDb.ObjScene[o] = SceneDb.TileScene[t];
-        SceneDb.ObjVisible[o] = true;
-        Matrix4x4 w = Matrix4x4.CreateFromQuaternion(SceneDb.ObjRot[o]);
-        w.Translation = SceneDb.ObjPos[o];
-        SceneDb.ObjWorld[o] = w;
-        SceneDb.Objects.Mark(o, Dirty.Xform | Dirty.Visible);
-        MarkLightsOf(want);
-        slot = want;
-        _flames++;
-    }
-
-    /// <summary>The engine's <c>UpdateStaticLighting</c> over a flame gob's own lights, as a dirty mark: the
-    /// static lighting a flame contributes has to be recomputed where it used to stand and where it now does.</summary>
-    private static void MarkLightsOf(DbId obj)
-    {
-        if (!_objLights.TryGetValue(obj.Value, out List<int>? list)) return;
-        foreach (int k in list) if (SceneDb.Lights.LiveAt(k)) SceneDb.Lights.Mark(k, Dirty.Xform | Dirty.Material);
-    }
-
-    private static int _flames, _flamesNoSl, _modelPulled, _swapOther;
-
-    /// <summary>Linux <c>Scene</c> +0xf0 / Windows +0xe8, <c>GetNumTileFlames(Vector const&amp;)</c>.</summary>
-    public static int NumTileFlames(DbId scene, Vector3 pos)
-    {
-        int t = At(scene, pos);
-        if (t < 0) return 0;
-        return (SceneDb.TileFlame1[t].IsNull ? 0 : 1) + (SceneDb.TileFlame2[t].IsNull ? 0 : 1);
-    }
-
-    /// <summary>Linux <c>Scene</c> +0xf8 / Windows +0xf0, <c>GetNumTileLights(Vector const&amp;)</c>.</summary>
-    public static int NumTileLights(DbId scene, Vector3 pos)
-    {
-        int t = At(scene, pos);
-        return t < 0 ? 0 : SceneDb.TileLightCount[t];
-    }
-
     // ---- Scene vtable 0x50: ReplaceTileTexture ----
 
-    /// <summary>Linux <c>Scene</c> +0x50 / Windows +0x48,
-    /// <c>ReplaceTileTexture(Vector const&amp;, char const*, char const*)</c>: swap one texture NAME across the
-    /// tile's meshes. The engine is called with <paramref name="oldTex"/> = <c>"replace_tex"</c> (the tileset's
-    /// placeholder) and <paramref name="newTex"/> = the <c>TEXTURENAME</c> column of the area's texture
-    /// palette row, which <c>CNWCTile::SetReplaceTexture</c> @0x90d580 reads for itself.
-    /// <para>The swap is per PLACEMENT, so it cannot change the shared merge plan: CX records the substitution
-    /// on the tile and marks it <see cref="Dirty.Texture"/>, and the renderer resolves the name per draw. A
-    /// tile that does swap therefore shares its vertex range with every other placement of its model and
-    /// differs only in a texture binding.</para>
-    /// <para>Recording it is not enough: nothing read <see cref="SceneDb.TileReplaceTex"/>, so every swapped
-    /// tile drew the tileset's <c>replace_tex</c> placeholder -- the ground patch showing the wrong floor.
-    /// The name is applied to the placement's own parts as a per-part override, which is where
-    /// <c>AurTextureReplaceTileReferences</c> @0x58e4b0 puts it too: it collects the tile's textures through
-    /// <c>SceneBSPGetTileTextures</c> @0x57c210, which reads each part's material slot 0 and nothing else,
-    /// and <c>CAurTexture::SetReference</c>s the one whose reference is the loaded <c>replace_tex</c>. Slot 0
-    /// only, therefore, and matched by NAME because CX has no shared <c>CAurTexture</c> to match by
-    /// identity.</para></summary>
+    /// <summary>Linux <c>Scene</c> +0x50 / Windows +0x48, <c>ReplaceTileTexture(Vector const&amp;, char const*,
+    /// char const*)</c>: swap one texture NAME (<paramref name="oldTex"/> is the tileset's <c>"replace_tex"</c>
+    /// placeholder) across the tile's meshes. Per PLACEMENT, so it leaves the shared merge plan alone: the name
+    /// goes on the placement's own parts as a slot-0 override, matched by NAME, and the tile is marked.</summary>
     public static void ReplaceTileTexture(DbId scene, Vector3 pos, string newTex, string oldTex)
     {
         int t = At(scene, pos);
@@ -847,864 +555,6 @@ public static class TileBuild
         SceneDb.Objects.Free(obj);
     }
 
-    // ---- fog of war and the two ramps ----
-
-    /// <summary>The free function <c>AuroraSetTileFoggedByWar</c> @0x453320, which
-    /// <c>CNWCTile::SetTileExplored</c> @0x90de40 calls with <c>explored == 0</c> whenever the module's
-    /// fog-of-war bits are set. While a tile is fogged its reveal ramp is held at 0, exactly as the
-    /// @0x481000 BSP visitor holds the engine's.</summary>
-    public static void SetFoggedByWar(DbId scene, Vector3 pos, bool fogged)
-    {
-        int t = At(scene, pos);
-        if (t < 0) return;
-        if (SceneDb.TileFogged[t] == fogged) return;
-        SceneDb.TileFogged[t] = fogged;
-        if (fogged) SceneDb.TileReveal[t] = 0f;
-        SceneDb.Tiles.Mark(t, Dirty.Visible);
-        Publish(t);
-    }
-
-    /// <summary>Linux <c>Scene</c> +0x80 / Windows +0x78, <c>CAurScene::ResetAreaTileFading()</c>: every tile
-    /// back to fully drawn and fully revealed.</summary>
-    public static void ResetFading(DbId scene)
-    {
-        for (int t = 1; t < SceneDb.Tiles.High; t++)
-        {
-            if (!SceneDb.Tiles.LiveAt(t) || SceneDb.TileScene[t] != scene) continue;
-            SceneDb.TileFade[t] = 1f;
-            SceneDb.TileFadeAcc[t] = 0f;
-            SceneDb.TileReveal[t] = SceneDb.TileFogged[t] ? 0f : 1f;
-            Publish(t);
-        }
-    }
-
-    /// <summary>The per-frame half, and the only hot method here: both per-tile ramps, over the dense table.
-    /// The camera-occlusion decision and the ramp arithmetic are <see cref="TileFadeRamp"/>'s already ported
-    /// ones (<see cref="TileFadeRamp.Plane"/>, <see cref="TileFadeRamp.TwoDBoxAbovePlane"/>,
-    /// <see cref="TileFadeRamp.Step"/>) -- DB mode changes where the per-tile boxes come from, not what the
-    /// engine decides. Allocation-free.</summary>
-    /// <summary>The fade plane's TARGET, as mode 0 reads it: the camera's FOLLOW target's position.
-    /// <c>TileFadeRamp.OcclusionPlane</c> goes <c>Camera::BehaviorHost</c> -&gt;
-    /// <c>AsBehaviorCameraFollow()</c> -&gt; its <c>Target</c> gob -&gt; <c>Gob::Position</c>: the followed
-    /// character, NOT the scene's focus point, which is a different field with a different writer. The focus
-    /// is the fallback for a camera with no follow target yet, because a plane through the origin ramps the
-    /// wrong roofs (measured: focus &lt;0 0 0&gt; and the plane stood down every frame).</summary>
-    public static bool FadeTarget(DbId scene, DbId cam, out Vector3 target)
-    {
-        target = default;
-        if (SceneDb.Cameras.Valid(cam))
-        {
-            DbId follow = SceneDb.CamFollow[cam.Index];
-            if (SceneDb.Objects.Valid(follow)) { target = SceneDb.ObjPos[follow.Index]; return true; }
-        }
-        if (!SceneDb.Scenes.Valid(scene)) return false;
-        target = SceneDb.SceneFocus[scene.Index];
-        return target != Vector3.Zero;
-    }
-
-    public static void TickFade(DbId scene, Vector3 target, Vector3 camPos, float dt, int geomFadeMode,
-                                DbId cam = default)
-    {
-        _fadeTicks++;
-        int fading = 0, veiled = 0, classified = 0, out_ = 0;
-        bool planeOk = TileFadeRamp.Plane(target, camPos, out float nx, out float ny, out float d);
-        // ProcessTriMeshParts @0x480d40 takes the fade path for (mode == 1 && the plane stands) || mode == 4:
-        // mode 4 ("always") fades the roof whatever the camera is doing, so it must not be gated on the
-        // plane -- and with mode 4 there is no plane to test against, so every tilefade-1 tile fades out.
-        bool live = TileFadeRamp.FadeLive(geomFadeMode, planeOk);
-        bool always = live && !planeOk;
-        // Only tiles IN FRONT of the camera are classified. Mode 0's ramp culls against all six frustum
-        // planes (TileFadeRamp.Tick's BoxVisible), as the engine's BSP visitor does; this culls against the
-        // camera's near plane alone, which is the one that matters for the fault it prevents -- a roof
-        // BEHIND the camera on the far side of the fade plane fading out unseen, and being transparent
-        // already when the camera turns to it. SceneDb.CamVolume cannot serve here: a camera move CLEARS
-        // CamVolumeSet (DbCamera.SetPosition/SetRotation) and the chase camera moves every frame, so at
-        // animate time it is never set -- measured, "NO VIEW VOLUME YET" on every tick.
-        bool cull = SceneDb.Cameras.Valid(cam);
-        // DbCamera.Forward, not the raw column: the game turns the chase camera through its sub-object, so
-        // CamRot stays identity and this near-plane test faced permanently straight down.
-        Vector3 fwd = cull ? DbCamera.Forward(cam) : Vector3.Zero;
-        if (cull && fwd.LengthSquared() < 1e-6f) cull = false;
-        _culling = cull;
-        for (int t = 1; t < SceneDb.Tiles.High; t++)
-        {
-            if (!SceneDb.Tiles.LiveAt(t) || SceneDb.TileScene[t] != scene) continue;
-            int nb = SceneDb.TileFadeBoxN[t];
-            bool inView = !cull || !BoxBehind(SceneDb.TileBmin[t], SceneDb.TileBmax[t], camPos, fwd);
-            if (live && inView)
-            {
-                if (nb > 0) classified++;
-                // CheckFadePlane @0x47bf30 walks the tile's tilefade-1 parts and fades it when ANY ONE of
-                // them is not entirely beyond the plane -- part by part, never their union. A union box has
-                // corners no part occupies, and those corners straddle planes every real part is clear of:
-                // measured on the stock inn, the union faded 3 roof tiles where the engine faded 1.
-                int baseAt = t * SceneDb.TileFadeBoxStride;
-                bool fadingOut = always && nb > 0;
-                if (!always)
-                    for (int f = 0; f < nb; f++)
-                    {
-                        Vector3 lo = SceneDb.TileFadeBoxLo[baseAt + f], hi = SceneDb.TileFadeBoxHi[baseAt + f];
-                        if (TileFadeRamp.TwoDBoxAbovePlane(lo.X, lo.Y, hi.X, hi.Y, nx, ny, d)) continue;
-                        fadingOut = true;
-                        break;
-                    }
-                if (fadingOut) out_++;
-                TileFadeRamp.Step(ref SceneDb.TileFade[t], ref SceneDb.TileFadeAcc[t], fadingOut, dt);
-            }
-            else if (!live && SceneDb.TileFade[t] != 1f) { SceneDb.TileFade[t] = 1f; SceneDb.TileFadeAcc[t] = 0f; }
-
-            float reveal = SceneDb.TileReveal[t];
-            float want = SceneDb.TileFogged[t] ? 0f : 1f;
-            if (reveal != want)
-            {
-                float step = dt * RevealRate;
-                SceneDb.TileReveal[t] = want > reveal ? MathF.Min(want, reveal + step) : MathF.Max(want, reveal - step);
-            }
-            // Last, so a reveal that moved this tick reaches the parts this tick: publishing before the
-            // reveal step left every fog-of-war ramp one frame behind its own value.
-            Publish(t);
-            if (SceneDb.TileFade[t] < 1f) fading++;
-            if (SceneDb.TileReveal[t] < 1f) veiled++;
-        }
-        _fading = fading;
-        _veiled = veiled;
-        _classified = classified;
-        _fadingOut = out_;
-        _fadeMode = geomFadeMode;
-        _planeOk = planeOk;
-        _fadeTarget = target;
-        if (fading > _fadingPeak) _fadingPeak = fading;
-    }
-
-    /// <summary>Is the world box entirely BEHIND the camera? The box's most forward corner is the one with
-    /// the largest <c>dot(forward, corner - eye)</c>; when even that is negative, nothing of the box is in
-    /// front of the eye.</summary>
-    private static bool BoxBehind(Vector3 lo, Vector3 hi, Vector3 eye, Vector3 fwd)
-    {
-        float best = (fwd.X > 0f ? hi.X : lo.X) * fwd.X
-                   + (fwd.Y > 0f ? hi.Y : lo.Y) * fwd.Y
-                   + (fwd.Z > 0f ? hi.Z : lo.Z) * fwd.Z
-                   - Vector3.Dot(fwd, eye);
-        return best < 0f;
-    }
-
-    /// <summary>What the fade did on the last tick, in the SAME two quantities mode 0's ramp reports
-    /// (<c>N classified and M fading out per frame</c>), so the two paths can be compared like for like --
-    /// plus the tiles currently mid-ramp and the session peak, which is what says the roof fade worked in a
-    /// session that ended with the camera somewhere else.</summary>
-    public static int FadeTicks => _fadeTicks;
-    /// <inheritdoc cref="FadeTicks"/>
-    public static int Classified => _classified;
-    /// <inheritdoc cref="FadeTicks"/>
-    public static int FadingOut => _fadingOut;
-    /// <inheritdoc cref="FadeTicks"/>
-    public static int Fading => _fading;
-    /// <inheritdoc cref="FadeTicks"/>
-    public static int FadingPeak => _fadingPeak;
-
-    private static int _fadeTicks, _fading, _fadingPeak, _veiled, _fadeMode, _classified, _fadingOut, _fadeBoxSpill;
-    /// <summary><see cref="SetTileLights"/> calls whose cell held no tile: a palette the area never applied.</summary>
-    private static int _tileLightMiss;
-    /// <summary><see cref="SetTileLights"/> calls, and how many handed main light 1 / 2 black (lightcolor.2da
-    /// row 0): a black main light is the area's choice, not a lost palette. Since boot, these four: the area
-    /// edge that resets the other tallies fires AFTER <c>LoadArea</c>'s tile loop, which is when they count.</summary>
-    private static int _palCalls, _palBlack1, _palBlack2;
-    private static int _modelsWithAabb, _modelsNoAabb, _aabbParts, _partsMade, _aabbWanted, _aabbFreed, _droppedReal, _realPlaced;
-    /// <summary>CX-118: walkmesh objects made from a <c>.wok</c>, placements whose tile model already carried
-    /// an <c>aabb</c> node (so no <c>.wok</c> is loaded), and the three outcomes that make no object -- no
-    /// readable resource (a refusal, named), an EMPTY walkmesh (what a tileset's filler tiles ship, and what
-    /// the engine reads as a surface mesh with no face), and one that parsed with nodes but no
-    /// <c>aabb</c>.</summary>
-    private static int _wokMade, _wokInModel, _wokMissing, _wokNoNode, _wokEmpty;
-    private static int _wokSaidN;
-    private static readonly System.Collections.Generic.HashSet<string> _wokSaidNames = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly System.Collections.Generic.HashSet<string> _wokSeen = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>CX-118: the tile's WALKMESH, as its own invisible static object.
-    /// <para>Vanilla's floor is this and nothing else. <c>SceneBSPAddPart</c> @0x47ca10 files any part whose
-    /// <c>Part</c> vtable +0x98 (<c>AsPartAABB</c>) answers into the BSP cell's <c>+0x90</c> slot, and
-    /// <c>HitPartOnBSPNode</c> @0x47b790 casts against exactly that, behind <c>hitcheck_static_bsp_parts</c>
-    /// (which is 1). Measured live: the floor under the ladder's spawn answers <c>kind=1 face=44
-    /// surface=0x10 nrm=(0,0,1) part=Object915</c> with the other two static arms off.</para>
-    /// <para>The geometry is NOT in the tile's <c>.mdl</c>: it is a separate <c>.wok</c> resource under the
-    /// same resref (restype 2016), an ASCII <c>#MAXWALKMESH</c> file wrapping one <c>node aabb</c>. Only ~15
-    /// of ~1150 placements have an <c>aabb</c> node in the model itself, which is why DB mode had a floor on
-    /// those and nowhere else -- and why <c>ComputeZValue</c> kept its 9.0 sentinel everywhere else.</para>
-    /// <para><b>Both at once:</b> vanilla's <c>+0x90</c> is a plain assignment, so when a model carries an
-    /// <c>aabb</c> AND a <c>.wok</c> exists, whichever part is added last wins -- it does not merge them. CX
-    /// takes the model's when it has one and loads no <c>.wok</c> for that placement: one walkmesh per tile,
-    /// never two coincident ones, and the ~15 that already worked keep answering exactly as before.</para></summary>
-    private static void Walkmesh(DbId scene, ModelDef tileDef, Vector3 pos, Quaternion rot, in Matrix4x4 place)
-    {
-        if (_wokSeen.Add(tileDef.Name) && _wokSeen.Count <= 12)
-            _log?.Info($"TileBuild: walkmesh census: tile '{tileDef.Name}' modelAabb={Plan(tileDef).AabbNodes} "
-                     + "(0 means its floor must come from the .wok)");
-        // The self-check fixtures place tiles of their own, which have no .wok by design -- 1120 of them in a
-        // run. They are not this session's world, so they are not on its census either: counted, they read as
-        // the area's own missing floors (and the tally is session-long, because an area edge fires AFTER the
-        // tile loop and would wipe the area's real numbers).
-        bool fixture = tileDef.Name.StartsWith("cxtest", StringComparison.OrdinalIgnoreCase);
-        if (Plan(tileDef).AabbNodes > 0) { if (!fixture) _wokInModel++; return; }
-        ModelDef? wok = ModelCache.Acquire(tileDef.Name + ModelFeed.WokSuffix, out string? why);
-        if (wok == null)
-        {
-            if (!fixture) { _wokMissing++; Said(tileDef.Name, why ?? "the cache would not hand one back"); }
-            return;
-        }
-        // An empty walkmesh is a tileset's filler tile saying "no floor here", not a failure: the engine's own
-        // loader ends with a surface mesh of no faces for exactly these. Counted apart from a refusal, and
-        // never said out loud -- it was what made every area read as thousands of MISSING walkmeshes.
-        if (wok.Nodes.Length == 0) { if (!fixture) _wokEmpty++; ModelCache.Release(wok); return; }
-        bool any = false;
-        foreach (NodeDef nd in wok.Nodes) if (nd.Kind == NodeKind.Aabb && nd.Aabb != null && nd.Aabb.Tree.Length > 0) { any = true; break; }
-        if (!any) { _wokNoNode++; ModelCache.Release(wok); Said(tileDef.Name, "it parsed with no aabb node"); return; }
-        DbId obj = NewObject(scene, wok, pos, rot, place, tile: false, walkmesh: true);
-        if (obj.IsNull) { ModelCache.Release(wok); return; }
-        // Filed with the cell's statics, so the tile's Drop (DeleteTile, SceneRevoke) frees it and releases the
-        // .wok reference: a walkmesh lives exactly as long as its tile.
-        Cell(pos, out int gx, out int gy);
-        var key = CellKey(scene, gx, gy);
-        if (!_statics.TryGetValue(key, out List<DbId>? list)) _statics[key] = list = new List<DbId>(2);
-        list.Add(obj);
-        _wokMade++;
-    }
-
-    /// <summary>Say the first walkmesh refusal out loud: a tileset whose <c>.wok</c>s CX cannot read has no
-    /// floor anywhere, and the symptom (a creature nine metres up, a fogged frame) names nothing.</summary>
-    private static void Said(string model, string why)
-    {
-        // The self-check fixtures run first and have no .wok by design; letting them spend the budget means
-        // the real tileset's first failure is never named, which is the one that matters.
-        if (model.StartsWith("cxtest", StringComparison.OrdinalIgnoreCase)) return;
-        // DISTINCT names: a tileset's filler tiles repeat hundreds of times and would otherwise spend the
-        // whole budget saying the same thing, which is exactly what hid the real failures once.
-        if (_wokSaidNames.Contains(model)) return;
-        _wokSaidNames.Add(model);
-        if (_wokSaidN >= 8) return;
-        _wokSaidN++;
-        _log?.Always($"TileBuild: no walkmesh for tile '{model}' -- {why}.");
-        if (_wokSaidN < 8) return;
-        _log?.Always($"TileBuild: a tile walkmesh could not be loaded ({_wokMissing} with no .wok resource, "
-                   + $"{_wokNoNode} parsed with no aabb node). Those tiles have NO FLOOR: a creature's "
-                   + "ComputeZValue cast misses and the engine keeps its Z=9 sentinel.");
-    }
-
-    private static bool _planeOk, _culling;
-    private static Vector3 _fadeTarget;
-
-    /// <summary>Tiles whose model has <c>tilefade 1</c> geometry at all -- the population that CAN fade. Zero
-    /// here with a zero peak says the tileset, not the ramp.</summary>
-    /// <summary>Live <c>aabb</c> parts in the whole database, counted on demand rather than tallied -- a
-    /// tally cannot be read against the area edge that resets it, and this is the number that says whether
-    /// the walkmeshes EXIST independently of whether the hit set files them.</summary>
-    /// <summary>Live NON-border tile placements: the area's own tiles, the ones a floor cast needs.</summary>
-    private static int LiveReal()
-    {
-        int n = 0;
-        for (int t = 1; t < SceneDb.Tiles.High; t++) if (SceneDb.Tiles.LiveAt(t) && !SceneDb.TileIsBorder[t]) n++;
-        return n;
-    }
-
-    private static int AabbLive() => AabbLive(out _);
-
-    private static int AabbLive(out int boxed)
-    {
-        int n = 0;
-        boxed = 0;
-        for (int p = 1; p < SceneDb.Parts.High; p++)
-        {
-            if (!SceneDb.Parts.LiveAt(p) || SceneDb.PartKindOf[p] != PartKind.Aabb) continue;
-            n++;
-            if (SceneDb.HitPartBMin[p].X <= SceneDb.HitPartBMax[p].X) boxed++;
-        }
-        return n;
-    }
-
-    private static int FadeCapable()
-    {
-        int n = 0;
-        for (int t = 1; t < SceneDb.Tiles.High; t++) if (SceneDb.Tiles.LiveAt(t) && SceneDb.TileFadeBoxN[t] > 0) n++;
-        return n;
-    }
-
-    /// <summary>Hand the tile's two ramps to the draw the way seam-feed asks for them, and KEEP THEM APART.
-    /// The camera-occlusion fade is an alpha -- <c>Scene</c>'s draw multiplies <c>TileData+0x70</c> into the
-    /// part's own alpha (<c>part+0xa0</c>, src/Scene.c:6268-6271) -- so it goes to
-    /// <see cref="SceneDb.PartFade"/>. The fog-of-war reveal is NOT: with <c>TileData+0xc8 &lt; 1</c> the
-    /// engine enables FOG and scales the scene's fog colour by <c>reveal^2</c> and its start/end by
-    /// <c>reveal</c> (src/Scene.c:6257-6266). Folding it into the alpha would make an unexplored tile
-    /// transparent instead of fogged, so it goes to <see cref="SceneDb.PartReveal"/> and seam-feed turns it
-    /// into fog parameters per draw.</summary>
-    private static void Publish(int t)
-    {
-        float fade = SceneDb.TileFade[t], reveal = SceneDb.TileReveal[t];
-        // the common case: a still tile costs two compares, not a part walk
-        if (_published[t] == fade && _publishedReveal[t] == reveal) return;
-        _published[t] = fade;
-        _publishedReveal[t] = reveal;
-        DbId obj = SceneDb.TileObj[t];
-        if (obj.IsNull || !SceneDb.Objects.Valid(obj)) return;
-        int o = obj.Index, first = SceneDb.ObjPartFirst[o], n = SceneDb.ObjPartCount[o];
-        for (int k = 0; k < n; k++)
-        {
-            int p = first + k;
-            bool moved = false;
-            if (SceneDb.PartFade[p] != fade) { SceneDb.PartFade[p] = fade; moved = true; }
-            if (SceneDb.PartReveal[p] != reveal) { SceneDb.PartReveal[p] = reveal; moved = true; }
-            if (moved) SceneDb.TouchPart(p, Dirty.Material);
-        }
-    }
-
-    /// <summary>The fade product each tile last published, so <see cref="TickFade"/> walks a tile's parts only
-    /// when it moved. Seeded at -1 so the first publish always lands.</summary>
-    private static readonly float[] _published = NewPublished(), _publishedReveal = NewPublished();
-    private static float[] NewPublished() { var a = new float[SceneDb.MaxTiles]; Array.Fill(a, -1f); return a; }
-
-    // ---- the merge plan ----
-
-    /// <summary>The merge plan for <paramref name="def"/>, built on first use and shared from then on. ONE call
-    /// to <see cref="MeshArena.Acquire"/> per merged mesh, for the model, so every placement of the model
-    /// draws the same vertex ranges -- the whole point of CX-116's perf clause.</summary>
-    public static MergePlan Plan(ModelDef def)
-    {
-        if (_plans.TryGetValue(def, out MergePlan? have)) return have;
-        MergePlan plan = BuildPlan(def);
-        _plans[def] = plan;
-        _planBuilds++;
-        return plan;
-    }
-
-    /// <summary>How many models have a plan, and whether one is held for <paramref name="def"/>.</summary>
-    public static bool HasPlan(ModelDef def) => _plans.ContainsKey(def);
-
-    private static MergePlan BuildPlan(ModelDef def)
-    {
-        var plan = new MergePlan();
-        var buckets = new Dictionary<long, List<int>>();
-        var order = new List<long>();
-        var verts = new Dictionary<long, int>();
-        // The fields behind each bucket key, so a 64-bit hash collision cannot merge unlike meshes. Per
-        // PLAN: two different models' buckets may hash alike, which is not a collision.
-        var keyFields = new Dictionary<long, MeshFields>();
-        int unmerged = 0, meshNodes = 0;
-
-        Matrix4x4[] toModel = NodeMatrices(def);
-        bool[] animatedHalf = AnimatedHalf(def);
-        var filedLo = new Vector3(float.MaxValue);
-        var filedHi = new Vector3(float.MinValue);
-        var fadeLo = new Vector3(float.MaxValue);
-        var fadeHi = new Vector3(float.MinValue);
-        var fadeParts = new List<(Vector3 Lo, Vector3 Hi)>(2);
-        for (int i = 0; i < def.Nodes.Length; i++)
-        {
-            NodeDef n = def.Nodes[i];
-            // Mesh-bearing nodes the engine FILES in TileData+0x30 and unions its tile box from. An AABB
-            // walkmesh node answers AsPartTriMesh (PartAABB's slot 0x60 is PartTriMesh::AsPartTriMesh, dumped
-            // with tools/abi/vtable-slots.py), so it is filed and counts; tilefade 2 and 4 are moved out.
-            if (n.Mesh != null && !animatedHalf[i] && n.Mesh.Indices.Length >= 3 && n.Mesh.Positions.Length > 0
-                && (n.Kind == NodeKind.TriMesh || n.Kind == NodeKind.Aabb) && n.Mesh.TileFade == 0)
-            {
-                Box(n.Mesh, toModel[i], ref filedLo, ref filedHi);
-                plan.FiledNodes++;
-            }
-            if (n.Mesh != null && !animatedHalf[i] && n.Mesh.TileFade == TileFadeFades && n.Mesh.Positions.Length > 0)
-            {
-                Box(n.Mesh, toModel[i], ref fadeLo, ref fadeHi);
-                Bounds(n.Mesh.BMin, n.Mesh.BMax, toModel[i], out Vector3 flo, out Vector3 fhi);
-                fadeParts.Add((flo, fhi));
-                plan.HasFade = true;
-            }
-
-            if (n.Kind != NodeKind.TriMesh || n.Mesh == null || !n.Mesh.Render) { unmerged++; continue; }
-            meshNodes++;
-            if (animatedHalf[i] || Animated(def, n)) { unmerged++; continue; }
-            // The engine's own ceiling: CreatePartBuckets requires the bucket's total to stay BELOW 0xffff,
-            // because the merged primitive is indexed as 16 bits -- and so is every Alloy draw
-            // (GL_UNSIGNED_SHORT throughout). A full bucket is left alone and another opened. A single node
-            // that cannot fit one on its own is refused here rather than silently overflowing an index.
-            if (n.Mesh.Positions.Length > MaxBucketVerts) { unmerged++; _refusedBig++; Refuse($"{def.Name}: node '{n.Name}' has {n.Mesh.Positions.Length} vertices, past the 16-bit index -- it is not merged"); continue; }
-            long key = BucketKey(n.Mesh);
-            while (buckets.ContainsKey(key) && verts[key] + n.Mesh.Positions.Length > MaxBucketVerts)
-                key = (long)Mix((ulong)key, 1);
-            if (!buckets.TryGetValue(key, out List<int>? list))
-            {
-                buckets[key] = list = new List<int>(4);
-                verts[key] = 0;
-                order.Add(key);
-                keyFields[key] = FieldsOf(n.Mesh);
-            }
-            else if (!keyFields.TryGetValue(key, out MeshFields have) || !have.Equals(FieldsOf(n.Mesh)))
-            {
-                // #25: the key is a 64-bit hash, so a collision (or a re-key landing on a live key) would
-                // merge two unlike meshes. The fields are stored and compared, and a clash opens its own bucket.
-                _collisions++;
-                Refuse($"{def.Name}: bucket key collision on node '{n.Name}' -- it gets its own bucket");
-                key = (long)Mix((ulong)key, 0x9e37);   // not-an-offset: a second probe for a colliding bucket key
-                buckets[key] = list = new List<int>(4);
-                verts[key] = 0;
-                order.Add(key);
-                keyFields[key] = FieldsOf(n.Mesh);
-            }
-            list.Add(i);
-            verts[key] += n.Mesh.Positions.Length;
-        }
-
-        // CX-116: the tile's WALKMESH. Vanilla's floor cast is the BSP leaf's +0x90, which SceneBSPAddPart
-        // @0x47ca10 fills from the tile part whose AsPartAABB is non-null -- i.e. from the tile model's own
-        // aabb node. Counted per model so "the cast misses" can be told apart from "the model has none".
-        foreach (NodeDef nd2 in def.Nodes)
-            if (nd2.Kind == NodeKind.Aabb) { plan.AabbNodes++; if (nd2.Aabb != null && nd2.Aabb.Tree.Length > 0) plan.AabbTrees++; }
-        if (plan.AabbNodes > 0) _modelsWithAabb++; else _modelsNoAabb++;
-        plan.Unmerged = unmerged;
-        plan.MeshNodes = meshNodes;
-        int nb = order.Count;
-        plan.Meshes = new MeshDef[nb];
-        plan.Ranges = new int[nb];
-        plan.FadeClass = new int[nb];
-        plan.Members = new int[nb][];
-        var bmin = new Vector3(float.MaxValue);
-        var bmax = new Vector3(float.MinValue);
-        for (int b = 0; b < nb; b++)
-        {
-            List<int> members = buckets[order[b]];
-            MeshDef merged = Concat(def, members, toModel);
-            plan.Meshes[b] = merged;
-            plan.Members[b] = members.ToArray();
-            plan.FadeClass[b] = def.Nodes[members[0]].Mesh!.TileFade;
-            plan.Ranges[b] = MeshArena.Acquire(merged);
-            _arenaAsks++;
-            if (members.Count > 1) _mergedNodes += members.Count - 1;
-            bmin = Vector3.Min(bmin, merged.BMin);
-            bmax = Vector3.Max(bmax, merged.BMax);
-        }
-        if (nb == 0) { bmin = def.BMin; bmax = def.BMax; }
-        // #8: the cull box has to cover the ANIMATED half too (the <resref>a subtree and the nodes an
-        // animation names are not in any bucket), so the model's own stated bounds are unioned in.
-        plan.BMin = Vector3.Min(bmin, def.BMin);
-        plan.BMax = Vector3.Max(bmax, def.BMax);
-        plan.FiledBMin = plan.FiledNodes > 0 ? filedLo : plan.BMin;
-        plan.FiledBMax = plan.FiledNodes > 0 ? filedHi : plan.BMax;
-        plan.FadeBMin = plan.HasFade ? fadeLo : Vector3.Zero;
-        plan.FadeBMax = plan.HasFade ? fadeHi : Vector3.Zero;
-        plan.FadeLo = new Vector3[fadeParts.Count];
-        plan.FadeHi = new Vector3[fadeParts.Count];
-        for (int f = 0; f < fadeParts.Count; f++) { plan.FadeLo[f] = fadeParts[f].Lo; plan.FadeHi[f] = fadeParts[f].Hi; }
-        plan.Lights = PlanLights(def, toModel);
-        plan.Sl1 = def.Find(def.Name + "sl1");
-        plan.Sl2 = def.Find(def.Name + "sl2");
-        if (plan.Sl1 >= 0) Pose(toModel[plan.Sl1], out plan.Sl1Pos, out plan.Sl1Rot);
-        if (plan.Sl2 >= 0) Pose(toModel[plan.Sl2], out plan.Sl2Pos, out plan.Sl2Rot);
-        foreach (int r in plan.Ranges) if (r < 0) { _refusedArena++; Refuse($"{def.Name}: the mesh arena refused a merged tile mesh -- that bucket draws nothing"); }
-        return plan;
-    }
-
-    /// <summary>A model-space box for one mesh under one node transform, unioned into the pair.</summary>
-    private static void Box(MeshDef m, in Matrix4x4 w, ref Vector3 lo, ref Vector3 hi)
-    {
-        Bounds(m.BMin, m.BMax, w, out Vector3 a, out Vector3 b);
-        lo = Vector3.Min(lo, a);
-        hi = Vector3.Max(hi, b);
-    }
-
-    /// <summary>Position and rotation out of a node's model-space matrix (the flame placement reads these).</summary>
-    private static void Pose(in Matrix4x4 m, out Vector3 pos, out Quaternion rot)
-    {
-        pos = m.Translation;
-        rot = Quaternion.CreateFromRotationMatrix(m);
-    }
-
-    /// <summary>Each node's rest transform into model space: the parent chain's position/orientation/scale, in
-    /// pre-order (a parent always precedes its children, so one pass suffices).</summary>
-    private static Matrix4x4[] NodeMatrices(ModelDef def)
-    {
-        var m = new Matrix4x4[def.Nodes.Length];
-        for (int i = 0; i < def.Nodes.Length; i++)
-        {
-            NodeDef n = def.Nodes[i];
-            Matrix4x4 local = Matrix4x4.CreateScale(n.Scale <= 0f ? 1f : n.Scale)
-                            * Matrix4x4.CreateFromQuaternion(Normalise(n.Orientation));
-            local.Translation = n.Position;
-            if (n.Parent >= i) { _outOfOrder++; Refuse($"a model node names a parent at or after itself ({n.Parent} >= {i}) -- it is treated as a root"); }
-            m[i] = n.Parent >= 0 && n.Parent < i ? local * m[n.Parent] : local;
-        }
-        return m;
-    }
-
-    private static Quaternion Normalise(Quaternion q)
-        => q.LengthSquared() > 1e-12f ? Quaternion.Normalize(q) : Quaternion.Identity;
-
-    /// <summary>The merged primitive is indexed as 16 bits, so a bucket's vertices have to fit one
-    /// (<c>CreatePartBuckets</c>' own <c>&lt; 0xffff</c> test, and Alloy's index type is
-    /// <c>GL_UNSIGNED_SHORT</c> everywhere).</summary>
-    private const int MaxBucketVerts = 65535;
-
-    /// <summary>The ANIMATED half of a tile, as <c>CollapsePartTree</c> @0x562ff0 splits it: the subtree under
-    /// the node named <c>&lt;resref&gt;a</c>. <c>SpawnPartsForTile</c> @0x563450 looks that node up by name and,
-    /// when it exists, gives the tile a real <c>Gob</c> whose part tree is that subtree -- kept in MODEL space
-    /// with the placement on the gob -- while everything else is flattened to world space, merged and filed.
-    /// So a node under <c>&lt;resref&gt;a</c> never merges, whether or not an animation names it today.</summary>
-    private static bool[] AnimatedHalf(ModelDef def)
-    {
-        var flag = new bool[def.Nodes.Length];
-        // The engine keys on Model+0x10, the model's OWN name, which is what ModelDef.Name holds -- and it
-        // looks the node up at all only when SpawnPartsForTile's `border` argument is 0: a ring tile takes
-        // the gob-less path and its whole tree is collapsed. CX keeps the subtree unmerged either way,
-        // because a ring tile's placement shares the model's one plan and a plan cannot be two things at
-        // once. A ring tile's animated half therefore stays its own parts instead of being merged away:
-        // a handful of draws on the ring, and nothing else.
-        int root = def.Find(def.Name + "a");
-        if (root < 0) return flag;
-        flag[root] = true;
-        for (int i = 0; i < def.Nodes.Length; i++)
-        {
-            NodeDef n = def.Nodes[i];
-            if (n.Parent >= 0 && flag[n.Parent]) flag[i] = true;
-        }
-        return flag;
-    }
-
-    /// <summary>A node merges only when nothing animates it: an animation that names it, or a geometry
-    /// controller with more than one key.
-    /// <para><b>Deliberate difference from the engine</b> (<c>ponytail:</c> revisit if a tile animation is
-    /// ever seen to move merged geometry). <c>CreatePartBuckets</c> @0x573570 gates on the MODEL:
-    /// <c>MaxTree::AsModel(node+0x58)</c> with <c>Model+0xa0 &gt;= 1</c> -- one animation anywhere in the
-    /// model and NOTHING in it is merged. Most NWN tiles declare at least one, so vanilla barely batches
-    /// tiles at all. CX gates per NODE instead, which merges strictly more and is safe because an animated
-    /// node is still excluded; the engine's two per-node terms (<c>render 1</c> on host and member,
-    /// <c>shadow</c> equality) are in <see cref="BucketKey"/> and in the eligibility test above.</para></summary>
-    private static bool Animated(ModelDef def, NodeDef n)
-    {
-        foreach (ControllerTrack c in n.Controllers)
-            if (c.Times.Length > 1) return true;
-        for (ModelDef? m = def; m != null; m = m.Super)
-            foreach (AnimDef a in m.Anims)
-                foreach (AnimNode an in a.Nodes)
-                    if (string.Equals(an.Name, n.Name, StringComparison.OrdinalIgnoreCase) && an.Controllers.Length > 0)
-                        return true;
-        return false;
-    }
-
-    /// <summary>Everything that has to agree for two tile meshes to merge: the textures, the material, the
-    /// transparency and <c>tilefade</c> classes, the fixed-function terms and which UV sets exist. A
-    /// difference in any of them is a different draw, so it is a different bucket.</summary>
-    private static long BucketKey(MeshDef m)
-    {
-        ulong h = 0xcbf29ce484222325;   // not-an-offset: the FNV-1a 64-bit offset basis
-        foreach (string s in m.Textures) h = MixStr(h, s);
-        h = MixStr(h, m.MaterialName);
-        h = MixStr(h, m.RenderHint);
-        h = Mix(h, (ulong)m.TileFade);
-        h = Mix(h, (ulong)m.TransparencyHint);
-        h = Mix(h, Bits(m.Diffuse));
-        h = Mix(h, Bits(m.Ambient));
-        h = Mix(h, Bits(m.Specular));
-        h = Mix(h, (ulong)BitConverter.SingleToUInt32Bits(m.Shininess));
-        uint flags = (m.Shadow ? 1u : 0) | (m.Beaming ? 2u : 0) | (m.Lightmapped ? 4u : 0) | (m.RotateTexture ? 8u : 0);
-        for (int s = 0; s < m.Uv.Length; s++) if (m.Uv[s].Length > 0) flags |= 16u << s;
-        if (m.Colors.Length > 0) flags |= 1u << 8;
-        if (m.Tangents.Length > 0) flags |= 1u << 9;
-        return (long)Mix(h, flags);
-    }
-
-    private static ulong Bits(Vector3 v)
-        => BitConverter.SingleToUInt32Bits(v.X) | ((ulong)BitConverter.SingleToUInt32Bits(v.Y) << 21)
-           | ((ulong)BitConverter.SingleToUInt32Bits(v.Z) << 42);
-
-    private static ulong Mix(ulong h, ulong v) => (h ^ v) * 0x100000001b3;   // not-an-offset: the FNV-1a 64-bit prime
-
-    private static ulong MixStr(ulong h, string s)
-    {
-        foreach (char c in s) h = Mix(h, char.ToLowerInvariant(c));
-        return Mix(h, (ulong)s.Length + 1);
-    }
-
-    /// <summary>Concatenate one bucket's meshes into a single model-space <see cref="MeshDef"/>: positions by
-    /// the node's rest matrix, normals and tangents by its rotation, indices offset. This is the merge the
-    /// engine does per placement, done once for the model.</summary>
-    /// <summary>Members whose node transform mirrors (det &lt; 0) and whose winding the merge therefore had to
-    /// reverse. Reported, because "the tileset mirrors tiles" is a fact about content that should be visible.</summary>
-    internal static int MirroredMembers => _mirroredMembers;
-    private static int _mirroredMembers;
-
-    /// <summary>Merged members whose face table and triangle list disagree, so their per-face material ids
-    /// could not be carried. Counted because the grass source reads those ids.</summary>
-    internal static int UnalignedMembers => _unalignedMembers;
-    private static int _unalignedMembers;
-
-    private static MeshDef Concat(ModelDef def, List<int> members, Matrix4x4[] toModel)
-    {
-        MeshDef first = def.Nodes[members[0]].Mesh!;
-        if (members.Count == 1 && toModel[members[0]].IsIdentity) return first;
-
-        int nv = 0, ni = 0;
-        foreach (int i in members) { MeshDef m = def.Nodes[i].Mesh!; nv += m.Positions.Length; ni += m.Indices.Length; }
-
-        var outMesh = new MeshDef
-        {
-            Positions = new Vector3[nv],
-            Normals = new Vector3[nv],
-            Indices = new uint[ni],
-            Textures = (string[])first.Textures.Clone(),
-            MaterialName = first.MaterialName,
-            RenderHint = first.RenderHint,
-            Diffuse = first.Diffuse,
-            Ambient = first.Ambient,
-            Specular = first.Specular,
-            Shininess = first.Shininess,
-            TransparencyHint = first.TransparencyHint,
-            TileFade = first.TileFade,
-            Render = first.Render,
-            Shadow = first.Shadow,
-            Beaming = first.Beaming,
-            Lightmapped = first.Lightmapped,
-            RotateTexture = first.RotateTexture,
-        };
-        bool tangents = first.Tangents.Length > 0;
-        bool colors = first.Colors.Length > 0;
-        if (tangents) outMesh.Tangents = new Vector4[nv];
-        if (colors) outMesh.Colors = new uint[nv];
-        for (int s = 0; s < 4; s++) if (first.Uv[s].Length > 0) outMesh.Uv[s] = new Vector2[nv];
-
-        var bmin = new Vector3(float.MaxValue);
-        var bmax = new Vector3(float.MinValue);
-        int vAt = 0, iAt = 0;
-        float area = 0f;
-        var surfaces = new int[ni / 3];
-        foreach (int node in members)
-        {
-            MeshDef m = def.Nodes[node].Mesh!;
-            Matrix4x4 w = toModel[node];
-            var rot = new Matrix4x4(w.M11, w.M12, w.M13, 0, w.M21, w.M22, w.M23, 0, w.M31, w.M32, w.M33, 0, 0, 0, 0, 1);
-            for (int v = 0; v < m.Positions.Length; v++)
-            {
-                Vector3 p = Vector3.Transform(m.Positions[v], w);
-                outMesh.Positions[vAt + v] = p;
-                bmin = Vector3.Min(bmin, p);
-                bmax = Vector3.Max(bmax, p);
-                outMesh.Normals[vAt + v] = v < m.Normals.Length
-                    ? Vector3.Normalize(Vector3.TransformNormal(m.Normals[v], rot)) : Vector3.UnitZ;
-                if (tangents && v < m.Tangents.Length)
-                {
-                    var tg = m.Tangents[v];
-                    Vector3 td = Vector3.Normalize(Vector3.TransformNormal(new Vector3(tg.X, tg.Y, tg.Z), rot));
-                    outMesh.Tangents[vAt + v] = new Vector4(td, tg.W);
-                }
-                if (colors && v < m.Colors.Length) outMesh.Colors[vAt + v] = m.Colors[v];
-                for (int s = 0; s < 4; s++)
-                    if (outMesh.Uv[s].Length > 0 && v < m.Uv[s].Length) outMesh.Uv[s][vAt + v] = m.Uv[s][v];
-            }
-            // A MIRRORED node (negative determinant) reverses triangle orientation when its vertices are
-            // baked into model space, so the merged mesh would wind backwards there: back-face culled away,
-            // or lit from behind -- a dark surface where the tileset authored a lit one. The engine never
-            // meets this because it draws each node under its own matrix and lets the rasteriser's own
-            // front-face rule follow the matrix; a concatenation has one matrix for all of them, so the
-            // winding has to be corrected here instead. Flipped per member, and counted.
-            bool mirrored = w.GetDeterminant() < 0f;
-            if (mirrored) _mirroredMembers++;
-            for (int k = 0; k + 2 < m.Indices.Length; k += 3)
-            {
-                outMesh.Indices[iAt + k] = m.Indices[k] + (uint)vAt;
-                outMesh.Indices[iAt + k + 1] = m.Indices[mirrored ? k + 2 : k + 1] + (uint)vAt;
-                outMesh.Indices[iAt + k + 2] = m.Indices[mirrored ? k + 1 : k + 2] + (uint)vAt;
-            }
-            // The member's per-face MATERIAL ids, carried across the merge: the grass source tests them
-            // (AurGrassMaterialInUse, GrassField.Db) and a merged mesh that reported one id for every face
-            // would grow grass on the whole tile.
-            bool aligned = m.Faces.Length * 3 == m.Indices.Length;
-            if (!aligned) _unalignedMembers++;
-            for (int t = 0; t * 3 + 2 < m.Indices.Length; t++)
-                // -1, not 0, for a member whose face table does not line up with its triangle list: 0 is a
-                // REAL material id, and a member whose faces and indices disagree (a vertex-group rebuild)
-                // would shift every later member's ids -- which is one way grass ends up on a wall.
-                surfaces[iAt / 3 + t] = aligned ? m.Faces[t].Surface : -1;
-            area += m.SurfaceArea;
-            vAt += m.Positions.Length;
-            iAt += m.Indices.Length;
-        }
-        outMesh.Faces = Faces(outMesh);
-        for (int t = 0; t < outMesh.Faces.Length && t < surfaces.Length; t++)
-            outMesh.Faces[t].Surface = surfaces[t];
-        outMesh.BMin = bmin;
-        outMesh.BMax = bmax;
-        outMesh.Average = (bmin + bmax) * 0.5f;
-        outMesh.Radius = (bmax - bmin).Length() * 0.5f;
-        outMesh.SurfaceArea = area;
-        return outMesh;
-    }
-
-    /// <summary>The merged triangle list as faces, with each face's plane: the shadow and hit passes read
-    /// these, and a concatenation has no face adjacency across its members (-1, as a border face carries).</summary>
-    private static FaceDef[] Faces(MeshDef m)
-    {
-        var f = new FaceDef[m.Indices.Length / 3];
-        for (int t = 0; t < f.Length; t++)
-        {
-            int a = (int)m.Indices[t * 3], b = (int)m.Indices[t * 3 + 1], c = (int)m.Indices[t * 3 + 2];
-            Vector3 n = Vector3.Cross(m.Positions[b] - m.Positions[a], m.Positions[c] - m.Positions[a]);
-            float len = n.Length();
-            n = len > 1e-12f ? n / len : Vector3.UnitZ;
-            f[t] = new FaceDef
-            {
-                V0 = a, V1 = b, V2 = c, Surface = 0, SmoothGroup = 0,
-                Adj0 = -1, Adj1 = -1, Adj2 = -1,
-                PlaneNormal = n, PlaneDistance = -Vector3.Dot(n, m.Positions[a]),
-            };
-        }
-        return f;
-    }
-
-    /// <summary>The model's light nodes, resolved to model space with their rest controller values. The first
-    /// two are the tile's MAIN lights -- the pair <c>TileData+0x0</c>/<c>+0x8</c> holds and
-    /// <c>Scene::SetTileLights</c> re-colours -- in node order, which is the order
-    /// <c>MdlNodeLight::InternalCreateInstance</c> @0x43f800 creates them in.</summary>
-    private static PlanLight[] PlanLights(ModelDef def, Matrix4x4[] toModel)
-    {
-        int n = 0;
-        foreach (NodeDef nd in def.Nodes) if (nd.Kind == NodeKind.Light) n++;
-        if (n == 0) return Array.Empty<PlanLight>();
-        int ml1 = def.Find(def.Name + "ml1"), ml2 = def.Find(def.Name + "ml2");
-        var lights = new PlanLight[n];
-        int at = 0;
-        for (int i = 0; i < def.Nodes.Length; i++)
-        {
-            NodeDef nd = def.Nodes[i];
-            if (nd.Kind != NodeKind.Light) continue;
-            LightDef? ld = nd.Light;
-            lights[at] = new PlanLight
-            {
-                Node = i,
-                Pos = toModel[i].Translation,
-                Colour = Ctl3(nd, CtlColour, Vector3.One),
-                Range = Ctl1(nd, CtlRadius, 0f),
-                RangeAlt = Ctl1(nd, CtlShadowRadius, 0f),
-                Multiplier = Ctl1(nd, CtlMultiplier, 1f),
-                Shadow = ld?.Shadow ?? false,
-                AmbientOnly = ld?.AmbientOnly ?? false,
-                Dynamic = ld?.Dynamic ?? false,
-                Priority = ld?.Priority ?? 0,
-                MainSlot = i == ml1 ? 0 : i == ml2 ? 1 : -1,
-            };
-            at++;
-        }
-        return lights;
-    }
-
-    /// <summary>A controller's value at key 0, one float.</summary>
-    private static float Ctl1(NodeDef n, int type, float dflt)
-    {
-        ControllerTrack? c = n.Controller(type);
-        return c != null && c.Values.Length > 0 ? c.Values[0] : dflt;
-    }
-
-    /// <summary>A controller's value at key 0, three floats.</summary>
-    private static Vector3 Ctl3(NodeDef n, int type, Vector3 dflt)
-    {
-        ControllerTrack? c = n.Controller(type);
-        return c != null && c.Columns >= 3 && c.Values.Length >= 3 ? new Vector3(c.Values[0], c.Values[1], c.Values[2]) : dflt;
-    }
-
-    // ---- light registration ----
-
-    /// <summary>File the tile's lights into <see cref="SceneDb.Lights"/> AS THE TILE IS BUILT -- which is
-    /// what deleted <c>LightRegistry</c>'s own BSP light pass. That pass existed only because
-    /// <c>CollapsePartTree</c> clears every tile part's child list, so no part-tree walk could reach a tile
-    /// light and the lights had to be recovered from the tile's own part list during the BSP traversal.
-    /// CX-188 deleted the registry outright: <c>SceneWalk</c>, its one feed, went with the engine-scene
-    /// Alloy path, so nothing ever admitted a light to it.</summary>
-    private static void RegisterLights(DbId tile, DbId obj, MergePlan plan, in Matrix4x4 place, int[]? into)
-    {
-        if (into != null) Array.Fill(into, -1);
-        if (plan.Lights.Length == 0) { if (into != null) SceneDb.TileLightCount[tile.Index] = 0; return; }
-        int count = 0;
-        foreach (PlanLight pl in plan.Lights)
-        {
-            if (into != null && count >= SceneDb.TileLightStride)
-            { _lightSpill++; Refuse($"a tile model has more than {SceneDb.TileLightStride} light nodes -- the rest are not registered"); break; }
-            DbId id = SceneDb.Lights.Alloc();
-            if (id.IsNull) { _refusedLights++; Refuse($"the light table is full at {SceneDb.MaxLights} lights -- tile lights are being dropped"); break; }
-            int k = id.Index;
-            SceneDb.LitObj[k] = obj;
-            // The part that instances the light node, when the part tree has one. Registered with DbInputs as
-            // well, because the renderer has to see ONE light list however a light arrived -- and a tileset's
-            // lights do not hang off an object's part tree the way a gob's do.
-            int lp = PartOfNode(obj, pl.Node);
-            SceneDb.LitPart[k] = lp;
-            if (lp >= 0) { DbInputs.RegisterTileLight(lp, k); _dbInputsHeld++; }
-            else _noPartForLight++;
-            SceneDb.LitTile[k] = tile;
-            SceneDb.LitPos[k] = Vector3.Transform(pl.Pos, place);
-            SceneDb.LitColour[k] = pl.Colour;
-            SceneDb.LitRange[k] = pl.Range;
-            SceneDb.LitRangeAlt[k] = pl.RangeAlt;
-            SceneDb.LitMultiplier[k] = pl.Multiplier;
-            SceneDb.LitPriority[k] = pl.Priority;
-            SceneDb.LitShadow[k] = pl.Shadow;
-            SceneDb.LitAmbientOnly[k] = pl.AmbientOnly;
-            SceneDb.LitDynamic[k] = pl.Dynamic;
-            SceneDb.LitMainSlot[k] = pl.MainSlot;
-            if (into != null) into[count] = k;
-            else { if (!_objLights.TryGetValue(obj.Value, out List<int>? l)) _objLights[obj.Value] = l = new List<int>(2); l.Add(k); }
-            count++;
-            _litRegistered++;
-        }
-        if (into != null) SceneDb.TileLightCount[tile.Index] = count;
-    }
-
-    /// <summary>A static placeable's lights, by its object handle. #7: a static's lights used to be allocated
-    /// and then forgotten -- nothing freed them, so every area change leaked a row per placeable lamp.</summary>
-    private static readonly Dictionary<uint, List<int>> _objLights = new();
-    /// <summary>One tile's light slots while they are being filled: the game thread is the only writer, so a
-    /// single buffer serves and the fill allocates nothing.</summary>
-    private static readonly int[] _lightScratch = new int[SceneDb.TileLightStride];
-    private static int _dbInputsHeld, _noPartForLight;
-
-    /// <summary>Free every light row <paramref name="obj"/> owns (a tile's through its slots, a static's
-    /// through <see cref="_objLights"/>), symmetrically with <see cref="DbInputs"/>.</summary>
-    private static void FreeLights(DbId obj, int tileSlot)
-    {
-        if (tileSlot >= 0)
-        {
-            int baseAt = tileSlot * SceneDb.TileLightStride;
-            for (int c = 0; c < SceneDb.TileLightCount[tileSlot]; c++)
-            {
-                DropLight(SceneDb.TileLightIds[baseAt + c]);
-                SceneDb.TileLightIds[baseAt + c] = -1;
-            }
-            SceneDb.TileLightCount[tileSlot] = 0;
-            return;
-        }
-        if (!_objLights.Remove(obj.Value, out List<int>? list)) return;
-        foreach (int k in list) DropLight(k);
-    }
-
-    private static void DropLight(int k)
-    {
-        if (k < 0 || !SceneDb.Lights.LiveAt(k)) return;
-        int lp = SceneDb.LitPart[k];
-        if (lp >= 0) { DbInputs.PartDestroyed(lp); _dbInputsHeld--; }
-        SceneDb.LitPart[k] = -1;
-        SceneDb.LitTile[k] = default;
-        SceneDb.Lights.Free(SceneDb.Lights.IdAt(k));
-    }
-
-    /// <summary>The light rows a tile owns, as slot indices (-1 for an empty slot).</summary>
-    public static int LightAt(int tileSlot, int which)
-        => (uint)which < (uint)SceneDb.TileLightCount[tileSlot]
-           ? SceneDb.TileLightIds[tileSlot * SceneDb.TileLightStride + which] : -1;
-
-    /// <summary>The part in <paramref name="obj"/>'s range that instances model node
-    /// <paramref name="node"/>, or -1 while <see cref="PartTree.Build"/> is a stub. Scanned rather than
-    /// indexed: reference expansion means the range is not node-for-node.</summary>
-    private static int PartOfNode(DbId obj, int node)
-    {
-        if (obj.IsNull || !SceneDb.Objects.Valid(obj)) return -1;
-        int o = obj.Index, first = SceneDb.ObjPartFirst[o], n = SceneDb.ObjPartCount[o];
-        for (int k = 0; k < n; k++)
-            if (SceneDb.PartNode[first + k] == node && ReferenceEquals(SceneDb.PartModel[first + k], SceneDb.ObjModel[o]))
-                return first + k;
-        return -1;
-    }
-
     // ---- bounds, stats, refusals ----
 
     /// <summary>A model-space box placed by a transform: the eight corners' world extent. The engine's
@@ -1729,7 +579,7 @@ public static class TileBuild
     /// (<c>CNWCTile::PlayAnimation</c>'s switch).</summary>
     public static string AnimName(int which) => (uint)which < (uint)AnimNames.Length ? AnimNames[which] : "";
 
-    /// <summary>One clause of the Alloy period line. The two numbers the CX-116 perf clause is judged on are
+    /// <summary>One clause of the Alloy period line. The two numbers the tile build is judged on are
     /// <c>meshes</c> (arena asks, one per distinct tile mesh) against <c>placements</c>.</summary>
     public static string Stats()
         => $"dbtiles {Placements} placements / {_plans.Count} models / {_arenaAsks} meshes, {_litRegistered} lights"

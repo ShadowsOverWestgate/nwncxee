@@ -15,27 +15,8 @@ namespace CX.Services.Dialog;
 /// <summary>
 /// Native-C# NPC conversation UI, the chatbox pattern applied to dialogs: SkipOriginal the GUI-layer entry
 /// points so the vanilla <c>CGuiInGameChatDialog</c> panel is never created, capture the already-decoded
-/// text/replies the message layer hands them, and render an owned overlay in the same SwapBuffers pass
-/// ChatService owns. The message layer (<c>HandleServerToPlayerDialog</c>) runs unmodified, so voice-over,
-/// dialog camera, and speaker tracking are preserved for free.
-///
-/// The window is movable/resizable (a slim title bar carrying the speaker name drags it; a bottom-right grip
-/// sets width + the height breakpoint), lockable, and scrolls: it auto-stretches to fit content up to
-/// <c>dialog.maxheight</c>, past which a scrollbar appears. The whole window fades in/out on open/close; the
-/// text content cross-fades and the window height eases on each new node. Every setting is a
-/// <see cref="DialogKnobs"/> row; the rect is Hidden state the drags write. The shared atlas re-bake
-/// (<c>ui.font</c>) re-lays the open window through <see cref="TextRig.FontChanged"/>.
-///
-/// Hooks: ShowDialogEntry / ShowDialogReplies (skip + capture), ShowReplyChosen (skip), CloseDialog
-/// (call-through: ResetGuiState). Replies go out via SendPlayerToServerDialog_Reply (major 0x14 / minor 0x03)
-/// with the live CNWCMessage as <c>this</c>. State is static; content laid out cold in the hooks / input
-/// handlers, drawn + animated hot.
-/// <para><c>dialog.enabled</c> is live per node: <see cref="OnShowEntry"/> decides who owns the node it opens
-/// and the other hooks follow that decision (<see cref="_engineOwns"/>). Off, every hook forwards and the
-/// stock panel runs; the engine no-ops replies on a null panel, so the flip can only happen where the panel
-/// is (re)made. On with the stock panel still up, the node is taken over through the engine's own
-/// <c>CloseDialog</c> -- a pure GUI teardown (virtual delete, null <c>+0x70</c>, <c>ResetGuiState(0x298)</c>;
-/// Ghidra, both builds), no wire traffic (#591).</para>
+/// text/replies the message layer hands them, and draw an owned overlay in ChatService's SwapBuffers pass. The
+/// message layer runs unmodified (voice-over, camera, speaker tracking stay); layout is cold, the draw hot.
 /// </summary>
 public sealed unsafe class DialogService : IExtenderService
 {
@@ -62,7 +43,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static volatile float _scroll;              // px scrolled from content top; clamped by Draw
 
     // Text selection over the NPC body block (replies stay clickable), via the framework's opt-in selectable-text
-    // capability (#63). Dialog turns it on for its NPC body; Ctrl+C copies the selected runes, else the whole node.
+    // capability. Dialog turns it on for its NPC body; Ctrl+C copies the selected runes, else the whole node.
     private static readonly SelectableText _sel = new();
 
     // ---- window rect: DialogKnobs.X/Y/W once Placed, else derived from the viewport each Rebuild ----
@@ -111,12 +92,10 @@ public sealed unsafe class DialogService : IExtenderService
     private readonly record struct HitRect(float X, float Y, float W, float H, int Index);
     private static volatile DialogFrame? _frame;
 
-    /// <summary>The MODAL gate: true while an NPC conversation window is on screen and interactive -- including
-    /// the brief await-node gap after a reply is picked (window still opaque, waiting for the server's next node).
-    /// HotkeyInputService reads this to route keys here + suppress gameplay hotkeys, so digit-spam / clicks in the
-    /// gap don't leak to the world. Distinct from <c>_open</c>, the SELECTION gate (reply picking + hover), which
-    /// drops the instant a reply is chosen. False during the window fade-out, so a closing window lets clicks
-    /// fall through -- desired.</summary>
+    /// <summary>The MODAL gate: true while an NPC conversation window is on screen and interactive, including the
+    /// await-node gap after a reply is picked, so digit-spam / clicks in that gap don't leak to the world
+    /// (HotkeyInputService reads it to route keys here). Distinct from <c>_open</c>, the SELECTION gate, which
+    /// drops the instant a reply is chosen. False during the fade-out, so a closing window lets clicks through.</summary>
     public static bool IsOpen => _visible;
 
     private static CloseDialogFn _closeOrig;
@@ -127,7 +106,7 @@ public sealed unsafe class DialogService : IExtenderService
     /// <summary>The current node is the stock panel's: decided at <see cref="OnShowEntry"/> from
     /// <c>dialog.enabled</c>, followed by the replies / chosen / force hooks until the next entry.</summary>
     private static volatile bool _engineOwns;
-    private static Window? _window;   // the framework Window Dialog draws through (#63)
+    private static Window? _window;   // the framework Window Dialog draws through
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -136,10 +115,10 @@ public sealed unsafe class DialogService : IExtenderService
         SelectableText.SelfCheck(log);
         UiCategory.Declare();   // the UI groups declare in panel order whether or not the hooks arm
 
-        if (!SymbolMap.Require(log, "DialogService", RequiredSymbols)) return;   // #420: whole or nothing
-        if (!EngineLayout.Require(log, "DialogService", "CNWCObject", "CGuiInGame")) return;   // #432: the portrait slot + the stock panel slot
+        if (!SymbolMap.Require(log, "DialogService", RequiredSymbols)) return;   // whole or nothing
+        if (!EngineLayout.Require(log, "DialogService", "CNWCObject", "CGuiInGame")) return;   // the portrait slot + the stock panel slot
 
-        // Second UiHost consumer (#63/#64): Dialog draws through the same z-ordered roll-call ChatService does,
+        // Second UiHost consumer: Dialog draws through the same z-ordered roll-call ChatService does,
         // as a rect-less window (Focusable=false) whose content-draw IS Draw and whose input delegates ARE its
         // existing modal handlers. It never owns the keyboard (no text entry) but withholds chords while visible
         // (SuppressChords, kept in sync with _visible) so reply digits / ESC / Ctrl+C never leak to gameplay or a
@@ -171,7 +150,7 @@ public sealed unsafe class DialogService : IExtenderService
 
     // ---- hooks (cold: the message thread) -----------------------------------------------------
 
-    /// <summary>The ownership boundary (#591). Off: the node is the stock panel's -- CX's window fades if it was
+    /// <summary>The ownership boundary. Off: the node is the stock panel's -- CX's window fades if it was
     /// up and the engine call runs, making its panel at <c>+0x70</c> if it has none. On: CX's; a stock panel still
     /// up from an off interlude is torn down first through the engine's own <c>CloseDialog</c>.</summary>
     [UnmanagedCallersOnly]
@@ -248,7 +227,7 @@ public sealed unsafe class DialogService : IExtenderService
         return 0;
     }
 
-    /// <summary>The dialog unit (#420). Optional and NOT listed: ForceDialogVisible (an empty body on both
+    /// <summary>The dialog unit. Optional and NOT listed: ForceDialogVisible (an empty body on both
     /// builds, no Windows anchor), GetObjectName + GetGameObject (title band falls back to no name/portrait).</summary>
     private static readonly string[] RequiredSymbols =
     {
@@ -269,7 +248,7 @@ public sealed unsafe class DialogService : IExtenderService
         => _engineOwns && _forceOrig != null ? _forceOrig(self, duration) : 0;
 
     /// <summary>Call-through on both paths: the engine deletes its panel (a no-op on null) and resets its modal
-    /// state; CX's window fades if it was up.</summary>
+    /// state (<c>ResetGuiState(0x298)</c>); CX's window fades if it was up.</summary>
     [UnmanagedCallersOnly]
     private static void OnCloseDialog(IntPtr self)
     {
@@ -445,7 +424,7 @@ public sealed unsafe class DialogService : IExtenderService
         return false;
     }
 
-    /// <summary>True when the pointer is over the dialog window. Wired as the window's hit-test override (#64)
+    /// <summary>True when the pointer is over the dialog window. Wired as the window's hit-test override
     /// so the framework cursor fold shows the UI pointer and click routing reaches us.</summary>
     public static bool MouseOverUi(int x, int y)
     {
@@ -604,6 +583,8 @@ public sealed unsafe class DialogService : IExtenderService
         SelectableText.Copy(text);   // framework clipboard capability; no-op on empty / unresolved symbol
     }
 
+    /// <summary>Send a reply on the live <c>CNWCMessage</c> as <c>this</c> (major 0x14 / minor 0x03); refuses
+    /// when the sender symbol or the message object is missing.</summary>
     private static void SendReply(uint dialogId, uint replyIndex, byte isAbort, uint pageId)
     {
         if (EngineFn.SendDialogReply == null) { _log?.Info("[dialog] reply sender unresolved; not sending"); return; }
@@ -689,9 +670,8 @@ public sealed unsafe class DialogService : IExtenderService
 
     /// <summary>Hot: animate + draw the overlay. Chrome (bg/border/scrollbar/grip) is emitted per-frame at the
     /// eased height into a reused buffer (zero-alloc); content is drawn clipped + scrolled + faded; the title
-    /// glyphs draw un-clipped on top. This is the framework Window's content-draw slot (#63),
-    /// driven by UiHostService's z-order roll-call once per frame; it paints only in-game (was ChatService's
-    /// InGame branch), so a session boundary / ESC menu suppresses the panel exactly as before.</summary>
+    /// glyphs draw un-clipped on top. This is the framework Window's content-draw slot, driven by UiHostService
+    /// once per frame; it paints only in-game, so a session boundary or the ESC menu suppresses the panel.</summary>
     private static void Draw()
     {
         // Keep the chord-withhold flag in lockstep with the modal gate each frame (the close paths clear _visible
@@ -839,7 +819,7 @@ public sealed unsafe class DialogService : IExtenderService
         if (placed)
         {
             panelW = System.Math.Clamp(DialogKnobs.W.V, MinW, vpW);
-            panelX = Window.ClampAxis(DialogKnobs.X.V, panelW, vpW);   // framework on-screen clamp (#63)
+            panelX = Window.ClampAxis(DialogKnobs.X.V, panelW, vpW);   // framework on-screen clamp
         }
         else
         {
@@ -926,7 +906,7 @@ public sealed unsafe class DialogService : IExtenderService
         // screen. Default = a fixed slot above the bottom margin, sized for the breakpoint so the top never jumps.
         float restPanelH = titleH + System.Math.Min(contentH, maxBodyH);
         float panelY = placed
-            ? Window.ClampAxis(DialogKnobs.Y.V, restPanelH, vpH)   // framework on-screen clamp (#63)
+            ? Window.ClampAxis(DialogKnobs.Y.V, restPanelH, vpH)   // framework on-screen clamp
             : System.Math.Max(0f, vpH - BottomMargin - (titleH + maxBodyH));
 
         // Title band: the speaker name only (nothing else), truncated at the right pad -- screen coords, fixed.
@@ -1080,19 +1060,16 @@ public sealed unsafe class DialogService : IExtenderService
         return n == 0 ? "" : Encoding.ASCII.GetString(buf, n);
     }
 
-    /// <summary>Resolve a speaker object id to its display name for the title band ("" = unnamed -> an empty
-    /// title band). Runs on the message thread from inside the ShowDialogEntry hook. GetObjectName writes into
-    /// a caller-owned CExoString: it MUST be zeroed first (the engine frees any non-null buf), and the buffer it
-    /// allocates MUST be freed via the CExoString dtor after we copy the chars out, or it leaks one heap block per
-    /// node. Confirmed contract (Ghidra): out is {char* buf@0; uint len@8; uint cap@0xc}, empty = len==0, and
-    /// arbitrary/stale ids are safe (the engine null-checks GetGameObject internally). Same *(*g_pAppManager)
-    /// chain as the portrait; pass the CClientExoApp* (the wrapper does the +8 to the internal itself).</summary>
+    /// <summary>Resolve a speaker object id to its display name for the title band ("" = unnamed). Message
+    /// thread, inside the ShowDialogEntry hook; a stale or arbitrary id is safe (the engine null-checks it).
+    /// GetObjectName takes a caller-owned CExoString {char* buf@0; uint len@8; uint cap@0xc} that MUST be zeroed
+    /// first (the engine frees a non-null buf) and dtor'd after copying out, or a node leaks a heap block.</summary>
     private static string ResolveName(uint speakerId)
     {
         if (_appMgr == IntPtr.Zero || _getObjectName == null || _exoDtor == null) return "";
         IntPtr mgr = *(IntPtr*)_appMgr; if (mgr == IntPtr.Zero) return "";
         IntPtr app = *(IntPtr*)mgr;     if (app == IntPtr.Zero) return "";
-
+        // app is the CClientExoApp*: GetObjectName does the +8 to the internal itself.
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // MANDATORY: the engine frees a non-null buf before writing
         _getObjectName(app, speakerId, (IntPtr)exo);
@@ -1160,7 +1137,7 @@ public sealed unsafe class DialogService : IExtenderService
         _windowAlpha = sWa; _contentAlpha = sCa; _bodyH = sBh; _animClockMs = sClk; _animPrimed = sPr;
         _openGen = sOg; _contentGen = sCg; _lastOpenGen = sLo; _lastContentGen = sLc;
 
-        // ---- on-screen clamping + scale invariance (AC #63): Rebuild derives the panel rect via Window.ClampAxis
+        // ---- on-screen clamping + scale invariance: Rebuild derives the panel rect via Window.ClampAxis
         // so it stays fully on-screen for any user X/Y. (Text-selection geometry moved to SelectableText.SelfCheck
         // alongside the lifted capability.)
         {
@@ -1179,7 +1156,9 @@ public sealed unsafe class DialogService : IExtenderService
             Metrics.Scale = 1f; float clampAt1 = Window.ClampAxis(600f, pw, vpW);
             Metrics.Scale = 2f; float clampAt2 = Window.ClampAxis(600f, pw, vpW);
             Metrics.Scale = savedScale;
-            check.Expect(clampAt1 == clampAt2, "on-screen clamping is scale-invariant (identical at 1x and 2x)");
+            check.Expect(clampAt1 == 600f && clampAt2 == 600f,
+              $"on-screen clamping is screen space at any UI scale: an x of 600 with a 400-wide panel in 1280 "
+              + $"is left alone (1x {clampAt1}, 2x {clampAt2})");
         }
 
         log.Info(check.Ok ? "DialogService.SelfCheck: passed" : "DialogService.SelfCheck: FAILED");

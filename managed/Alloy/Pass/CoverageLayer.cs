@@ -4,20 +4,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-189: the alpha-to-coverage layer -- the one multisampled target in the Alloy frame, for the cutout parts
-/// whose material asks for coverage instead of a hard cut (<c>parameter int NWN_ALPHA_MODE 2</c>, on any
-/// <c>.mtr</c>; hair is the first user). Everything else stays single-sample and deferred; only these parts pay for samples.
-/// <para>After <see cref="PassId.DeferredLights"/>, so the frame under the parts is finished: <see cref="Begin"/>
-/// copies the lit colour and depth into EVERY sample, the parts draw forward with coverage from their alpha, and
-/// <see cref="End"/> box-resolves the colour back. An uncovered sample still holds the background, so the plain
-/// resolve IS "the covered samples' mean over the background, by coverage" -- no custom colour resolve. The depth
-/// goes back where half the samples or more were covered (<c>cx_a2cdepth_f</c>), which is what the passes after
-/// it (SSR, OIT, water, particles, fog, the finished-depth motion vectors) test against. The G-buffer, light
-/// record and SSR record under such a pixel are the background's; each reader drops a record whose view depth
-/// no longer matches the frame's.</para>
-/// <para>Scissored to the screen rectangle of the parts it draws, so the seed and the resolve cost the parts'
-/// footprint, not the frame. Stands down (logged once, the parts draw as ordinary cutouts) on a driver without
-/// multisampled storage or a target that will not complete.</para>
+/// The alpha-to-coverage layer -- the one multisampled target in the Alloy frame, for the cutout parts whose
+/// material asks for coverage instead of a hard cut (<c>parameter int NWN_ALPHA_MODE 2</c> on any
+/// <c>.mtr</c>). <see cref="Begin"/> seeds every sample from the finished lit frame, the parts draw forward
+/// with coverage from their alpha, and <see cref="End"/> resolves colour and depth back.
 /// </summary>
 internal static unsafe class CoverageLayer
 {
@@ -26,13 +16,27 @@ internal static unsafe class CoverageLayer
 
     private static readonly StandDown _down = new("CoverageLayer");
     private static ExtenderLog? _log;
-    private static uint _fbo, _resolveFbo, _col, _dep, _progSeed, _progDepth;
-    private static int _w, _h, _samples, _maxSamples;
-    private static int _uSeedHdr = -1, _uSeedDepth = -1, _uDepthMs = -1, _uDepthN = -1;
-    private static int _rx, _ry, _rw, _rh;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name from the
+    /// dead context survives as a field nobody remembered to zero. The run's rectangle and the two restore
+    /// latches ride here too -- they are read by the <see cref="End"/> of the same frame that set them, and no
+    /// frame spans a context loss.</summary>
+    private sealed class CoverageState
+    {
+        public uint Fbo, ResolveFbo, Col, Dep, ProgSeed, ProgDepth;
+        public int W, H, Samples;
+        /// <summary>The driver's sample ceiling, queried once per context.</summary>
+        public int MaxSamples;
+        public int USeedHdr = -1, USeedDepth = -1, UDepthMs = -1, UDepthN = -1;
+        /// <summary>The run's viewport-space rectangle: seeded, scissored and resolved over.</summary>
+        public int Rx, Ry, Rw, Rh;
+        /// <summary>Frames with nothing for the layer, counting towards <see cref="IdleFrames"/>.</summary>
+        public int Idling;
+        /// <summary>Multisampling and face culling as the caller had them, restored at <see cref="End"/>.</summary>
+        public bool MsWas, CullWas;
+    }
+
+    private static CoverageState _gl = new();
     private static long _runs, _pixels, _frameArea, _released;
-    private static int _idle;
-    private static bool _msWas, _cullWas;
     /// <summary>Frames with nothing for the layer before its targets are freed: they are full-frame and
     /// multisampled (177 MB at 4x and 2560x1440), so an area without coverage content should not keep them.</summary>
     private const int IdleFrames = 600;
@@ -40,7 +44,7 @@ internal static unsafe class CoverageLayer
     /// <summary>Will the layer try to open this frame? False hands the coverage tail back to the cutout pass.</summary>
     internal static bool Armed => Renderer.A2c.V >= 2 && !_down.Failed;
     /// <summary>The armed layer's sample count, for the mask variant's <c>uA2cSamples</c>.</summary>
-    internal static int Samples => _samples;
+    internal static int Samples => _gl.Samples;
     /// <summary>The layer shapes its own sample mask this run (<c>alloy.a2cmask</c>, and the variant built).</summary>
     internal static bool Masked { get; private set; }
 
@@ -49,8 +53,7 @@ internal static unsafe class CoverageLayer
     /// <summary>Context loss: every name went with the context.</summary>
     internal static void Forget()
     {
-        _fbo = 0; _resolveFbo = 0; _col = 0; _dep = 0; _progSeed = 0; _progDepth = 0;
-        _w = 0; _h = 0; _samples = 0; _maxSamples = 0;
+        _gl = new CoverageState();
         _down.Forget();
     }
 
@@ -63,25 +66,25 @@ internal static unsafe class CoverageLayer
         if (want < 2 || _down.Failed || w <= 0 || h <= 0) return false;
         if (Gl.TextureStorage2DMultisample == null || Gl.BlitFramebuffer == null)
             return _down.Fail(_log, "glTextureStorage2DMultisample is missing", "NWN_ALPHA_MODE 2 parts draw as cutouts");
-        if (_maxSamples == 0) { int m = 0; Gl.GetIntegerv(Gl.MAX_SAMPLES, &m); _maxSamples = m; }
+        if (_gl.MaxSamples == 0) { int m = 0; Gl.GetIntegerv(Gl.MAX_SAMPLES, &m); _gl.MaxSamples = m; }
         int samples = want;
-        while (samples > _maxSamples && samples > 2) samples >>= 1;
-        if (samples > _maxSamples)
+        while (samples > _gl.MaxSamples && samples > 2) samples >>= 1;
+        if (samples > _gl.MaxSamples)
             return _down.Fail(_log, "the driver has no multisampled targets", "NWN_ALPHA_MODE 2 parts draw as cutouts");
         int fw = viewport[0] + viewport[2], fh = viewport[1] + viewport[3];
         if (!EnsureTargets(fw, fh, samples) || !EnsurePrograms()) return false;
         Masked = Renderer.A2cMask.V && Programs.EnsureMaskProgram();
 
-        _rx = x; _ry = y; _rw = w; _rh = h; _idle = 0;
-        _msWas = Gl.IsEnabled(Gl.MULTISAMPLE) != 0; _cullWas = Gl.IsEnabled(Gl.CULL_FACE) != 0;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        _gl.Rx = x; _gl.Ry = y; _gl.Rw = w; _gl.Rh = h; _gl.Idling = 0;
+        _gl.MsWas = Gl.IsEnabled(Gl.MULTISAMPLE) != 0; _gl.CullWas = Gl.IsEnabled(Gl.CULL_FACE) != 0;
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         Gl.Enable(Gl.SCISSOR_TEST);
         Gl.Scissor(x, y, w, h);
-        Gl.UseProgram(_progSeed);
+        Gl.UseProgram(_gl.ProgSeed);
         Gl.BindTextureUnit(TextureSlots.CoverSeed, PostChain.HdrTex);
         Gl.BindTextureUnit(TextureSlots.CoverSeedDepth, PostChain.DepthTex);
-        Gl.Uniform1i(_uSeedHdr, (int)TextureSlots.CoverSeed);
-        Gl.Uniform1i(_uSeedDepth, (int)TextureSlots.CoverSeedDepth);
+        Gl.Uniform1i(_gl.USeedHdr, (int)TextureSlots.CoverSeed);
+        Gl.Uniform1i(_gl.USeedDepth, (int)TextureSlots.CoverSeedDepth);
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.ALWAYS); Gl.DepthMask(1);
         Gl.Disable(Gl.BLEND); Gl.Disable(Gl.CULL_FACE);
         Gl.BindVertexArray(PostChain.FullscreenVao);
@@ -97,20 +100,22 @@ internal static unsafe class CoverageLayer
     }
 
     /// <summary>Close the layer: colour box-resolved into the HDR target, depth written back where the layer
-    /// covered half a pixel or more, and the frame's framebuffer bound again with the depth test at LEQUAL.</summary>
+    /// covered half a pixel or more, and the frame's framebuffer bound again with the depth test at LEQUAL.
+    /// The G-buffer, light record and SSR record under such a pixel are still the BACKGROUND's; each reader
+    /// drops a record whose view depth no longer matches the frame's.</summary>
     internal static void End(int* viewport)
     {
         Gl.Disable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
-        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
-        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _resolveFbo);
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _gl.Fbo);
+        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _gl.ResolveFbo);
         // the HDR target is re-made on a resize, and this layer may not be
         Gl.FramebufferTexture2D(Gl.DRAW_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, PostChain.HdrTex, 0);
-        Gl.BlitFramebuffer(_rx, _ry, _rx + _rw, _ry + _rh, _rx, _ry, _rx + _rw, _ry + _rh, Gl.COLOR_BUFFER_BIT, Gl.NEAREST);
+        Gl.BlitFramebuffer(_gl.Rx, _gl.Ry, _gl.Rx + _gl.Rw, _gl.Ry + _gl.Rh, _gl.Rx, _gl.Ry, _gl.Rx + _gl.Rw, _gl.Ry + _gl.Rh, Gl.COLOR_BUFFER_BIT, Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, PostChain.Fbo);
-        Gl.UseProgram(_progDepth);
-        Gl.BindTextureUnit(TextureSlots.CoverSeedDepth, _dep);
-        Gl.Uniform1i(_uDepthMs, (int)TextureSlots.CoverSeedDepth);
-        Gl.Uniform1i(_uDepthN, _samples);
+        Gl.UseProgram(_gl.ProgDepth);
+        Gl.BindTextureUnit(TextureSlots.CoverSeedDepth, _gl.Dep);
+        Gl.Uniform1i(_gl.UDepthMs, (int)TextureSlots.CoverSeedDepth);
+        Gl.Uniform1i(_gl.UDepthN, _gl.Samples);
         Gl.ColorMask(0, 0, 0, 0);
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.LESS); Gl.DepthMask(1);
         Gl.Disable(Gl.CULL_FACE);
@@ -120,8 +125,8 @@ internal static unsafe class CoverageLayer
         Gl.ColorMask(1, 1, 1, 1);
         Gl.DepthFunc(Gl.LEQUAL);
         Gl.Disable(Gl.SCISSOR_TEST);
-        if (!_msWas) Gl.Disable(Gl.MULTISAMPLE);
-        if (_cullWas) Gl.Enable(Gl.CULL_FACE);
+        if (!_gl.MsWas) Gl.Disable(Gl.MULTISAMPLE);
+        if (_gl.CullWas) Gl.Enable(Gl.CULL_FACE);
         Gl.BindTextureUnit(TextureSlots.CoverSeedDepth, 0);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }
@@ -129,34 +134,34 @@ internal static unsafe class CoverageLayer
     /// <summary>A frame with no coverage content: after <see cref="IdleFrames"/> of them the targets go.</summary>
     internal static void Idle()
     {
-        if (_col == 0 || ++_idle < IdleFrames) return;
+        if (_gl.Col == 0 || ++_gl.Idling < IdleFrames) return;
         Release();
         _released++;
     }
 
     private static void Release()
     {
-        if (_col != 0) { uint c = _col; Gl.DeleteTextures(1, &c); }
-        if (_dep != 0) { uint d = _dep; Gl.DeleteTextures(1, &d); }
-        _col = 0; _dep = 0; _w = 0; _h = 0; _samples = 0; _idle = 0;
+        if (_gl.Col != 0) { uint c = _gl.Col; Gl.DeleteTextures(1, &c); }
+        if (_gl.Dep != 0) { uint d = _gl.Dep; Gl.DeleteTextures(1, &d); }
+        _gl.Col = 0; _gl.Dep = 0; _gl.W = 0; _gl.H = 0; _gl.Samples = 0; _gl.Idling = 0;
     }
 
     private static bool EnsureTargets(int w, int h, int samples)
     {
-        if (_col != 0 && w == _w && h == _h && samples == _samples) return true;
+        if (_gl.Col != 0 && w == _gl.W && h == _gl.H && samples == _gl.Samples) return true;
         Release();
-        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; Gl.GenFramebuffers(1, &f); _resolveFbo = f; }
+        if (_gl.Fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f; Gl.GenFramebuffers(1, &f); _gl.ResolveFbo = f; }
         uint t;
-        Gl.CreateTextures(Gl.TEXTURE_2D_MULTISAMPLE, 1, &t); _col = t;
-        Gl.TextureStorage2DMultisample(_col, samples, Gl.RGBA16F, w, h, 1);
-        Gl.CreateTextures(Gl.TEXTURE_2D_MULTISAMPLE, 1, &t); _dep = t;
+        Gl.CreateTextures(Gl.TEXTURE_2D_MULTISAMPLE, 1, &t); _gl.Col = t;
+        Gl.TextureStorage2DMultisample(_gl.Col, samples, Gl.RGBA16F, w, h, 1);
+        Gl.CreateTextures(Gl.TEXTURE_2D_MULTISAMPLE, 1, &t); _gl.Dep = t;
         // 32F holds the seeded D24 value exactly, so the write-back's GL_LESS fails on an untouched pixel
-        Gl.TextureStorage2DMultisample(_dep, samples, Gl.DEPTH_COMPONENT32F, w, h, 1);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D_MULTISAMPLE, _col, 0);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D_MULTISAMPLE, _dep, 0);
+        Gl.TextureStorage2DMultisample(_gl.Dep, samples, Gl.DEPTH_COMPONENT32F, w, h, 1);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D_MULTISAMPLE, _gl.Col, 0);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D_MULTISAMPLE, _gl.Dep, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _resolveFbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.ResolveFbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, PostChain.HdrTex, 0);
         uint resolve = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, PostChain.Fbo);
@@ -166,25 +171,25 @@ internal static unsafe class CoverageLayer
             Release();
             return _down.Fail(_log, "the multisampled layer is incomplete", "NWN_ALPHA_MODE 2 parts draw as cutouts");
         }
-        _w = w; _h = h; _samples = samples;
+        _gl.W = w; _gl.H = h; _gl.Samples = samples;
         _log?.Info($"CoverageLayer: {samples}x RGBA16F + D32F at {w}x{h} ({(long)w * h * samples * 12 / (1024 * 1024)} MB)");
         return true;
     }
 
     private static bool EnsurePrograms()
     {
-        if (_progSeed != 0) return true;
-        _progSeed = GlProgram.Graphics(PostChain.FullscreenVs, ShaderSource.Get("cx_a2cseed_f.glsl"), _log, "CoverageLayer seed");
-        _progDepth = GlProgram.Graphics(PostChain.FullscreenVs, ShaderSource.Get("cx_a2cdepth_f.glsl"), _log, "CoverageLayer depth");
-        if (_progSeed == 0 || _progDepth == 0)
+        if (_gl.ProgSeed != 0) return true;
+        _gl.ProgSeed = GlProgram.Graphics(PostChain.FullscreenVs, ShaderSource.Get("cx_a2cseed_f.glsl"), _log, "CoverageLayer seed");
+        _gl.ProgDepth = GlProgram.Graphics(PostChain.FullscreenVs, ShaderSource.Get("cx_a2cdepth_f.glsl"), _log, "CoverageLayer depth");
+        if (_gl.ProgSeed == 0 || _gl.ProgDepth == 0)
         {
-            if (_progSeed != 0) Gl.DeleteProgram(_progSeed);
-            if (_progDepth != 0) Gl.DeleteProgram(_progDepth);
-            _progSeed = 0; _progDepth = 0;
+            if (_gl.ProgSeed != 0) Gl.DeleteProgram(_gl.ProgSeed);
+            if (_gl.ProgDepth != 0) Gl.DeleteProgram(_gl.ProgDepth);
+            _gl.ProgSeed = 0; _gl.ProgDepth = 0;
             return _down.Fail(_log, "a layer program did not build", "NWN_ALPHA_MODE 2 parts draw as cutouts");
         }
-        _uSeedHdr = GlProgram.Loc(_progSeed, "uHdr"); _uSeedDepth = GlProgram.Loc(_progSeed, "uDepth");
-        _uDepthMs = GlProgram.Loc(_progDepth, "uDepthMs"); _uDepthN = GlProgram.Loc(_progDepth, "uSamples");
+        _gl.USeedHdr = GlProgram.Loc(_gl.ProgSeed, "uHdr"); _gl.USeedDepth = GlProgram.Loc(_gl.ProgSeed, "uDepth");
+        _gl.UDepthMs = GlProgram.Loc(_gl.ProgDepth, "uDepthMs"); _gl.UDepthN = GlProgram.Loc(_gl.ProgDepth, "uSamples");
         return true;
     }
 
@@ -194,7 +199,7 @@ internal static unsafe class CoverageLayer
         _runs = 0; _pixels = 0; _frameArea = 0; _released = 0;
         if (_down.Failed) return $"a2c STOOD DOWN ({_down.Reason})";
         if (n == 0) return Renderer.A2c.V < 2 ? "a2c off" : rel > 0 ? "a2c idle, targets released" : "a2c idle";
-        return $"a2c {(float)n / System.Math.Max(frames, 1):F2} runs/frame, {_samples}x{(Masked ? " masked" : "")}, " +
+        return $"a2c {(float)n / System.Math.Max(frames, 1):F2} runs/frame, {_gl.Samples}x{(Masked ? " masked" : "")}, " +
                $"scissor {100.0 * px / System.Math.Max(area, 1):F1}% of the frame";
     }
 }

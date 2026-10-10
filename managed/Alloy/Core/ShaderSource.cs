@@ -6,18 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#707: the embedded GLSL. Every Alloy stage and library is a <c>.glsl</c> file under
-/// <c>managed/Alloy/Shaders/</c>, embedded in the image (ADR 0012 -- shipped inside the extender, never as
-/// content), and this is the one reader. A file composes others by naming them on a line of their own:
-/// <c>#include "Other.glsl"</c>, spliced here, so a stage's composition is written in GLSL rather than in C#
-/// string concatenation. Anything else -- the engine's own <c>#include "inc_common"</c> inside a stand-in,
-/// a line inside a comment block -- is left exactly as it stands: only a <c>.glsl</c> name that resolves to
-/// an embedded file is expanded.
-/// <para>Every file is named by a <c>cx_*</c> resref of at most 16 characters, because that is all a hak or
-/// NWSync entry can carry: a spliced library is bracketed by <see cref="LibMark"/> / <see cref="EndMark"/>
-/// comment lines, and <see cref="Content"/> swaps a <c>&lt;resref&gt;.shd</c> from the resource chain into its
-/// bracket at program build. Everything else -- the contract audits, the self-checks, the dump -- reads the
-/// embedded text.</para></summary>
+/// <summary>The embedded GLSL: every Alloy stage and library is a <c>.glsl</c> file under
+/// <c>managed/Alloy/Shaders/</c>, embedded in the image (ADR 0012), and this is the one reader. A file
+/// composes others with <c>#include "Other.glsl"</c> on a line of its own, spliced here; anything else stands
+/// as written. A spliced library is bracketed, which is what lets <see cref="Content"/> swap a .shd into it.</summary>
 internal static class ShaderSource
 {
     /// <summary>Opens a spliced library: the line is this plus its resref.</summary>
@@ -31,9 +23,8 @@ internal static class ShaderSource
 
     /// <summary>One embedded stage or library, its includes spliced. Returns "" (logged) for a name no
     /// resource answers -- the program built from it then fails to compile, which is the loud failure.
-    /// <para>ponytail: re-reads and re-expands per call. Cold by construction -- program builds, the
-    /// shader dump and the SelfCheck suites -- so no cache; add one keyed by name if a per-frame caller
-    /// ever appears.</para></summary>
+    /// ponytail: re-reads and re-expands per call, cold by construction; add a cache keyed by name if a
+    /// per-frame caller ever appears.</summary>
     internal static string Get(string name) => Get(name, 0);
 
     private static string Get(string name, int depth)
@@ -82,11 +73,9 @@ internal static class ShaderSource
     internal static bool HasLibs(string src) => src.Contains(LibMark, StringComparison.Ordinal);
 
     /// <summary><paramref name="src"/> with every bracketed library the resource chain supplies as
-    /// <c>&lt;resref&gt;.shd</c> swapped in; the rest stays embedded. An override's own <c>#include</c>s are
-    /// expanded (and themselves overridable). Returns <paramref name="src"/> itself when nothing was swapped,
-    /// so a caller can tell. Cold: program builds only.
-    /// <para>ponytail: one resman ask per bracket, not per resref -- a library spliced into three stages is
-    /// looked up three times. Cache by resref if build time ever shows it.</para></summary>
+    /// <c>&lt;resref&gt;.shd</c> swapped in; the rest stays embedded, and an override's own <c>#include</c>s
+    /// are expanded (and themselves overridable). Returns <paramref name="src"/> itself when nothing was
+    /// swapped. ponytail: one resman ask per bracket, not per resref -- cache if build time ever shows it.</summary>
     internal static string Content(string src, ExtenderLog? log)
         => HasLibs(src) ? Content(src, r => ShaderResource.Override(r, log), 0) : src;
 

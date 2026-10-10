@@ -2,20 +2,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-54 step 0: where an area load's resources are actually read from. Every outermost
-/// <c>CExoResMan::Demand</c> is filed by the container its <c>CRes</c> names, split texture restypes against
-/// the rest, and the tally is printed once on the <see cref="TexStream"/> <c>[load]</c> line.
-/// <para>The container is the first int of the 16-byte <c>RESID</c> the <c>CRes(RESID, CExoString const&amp;)</c>
-/// constructor copies to <c>+0x0c</c> (<see cref="EngineLayout.CResSourceKind"/>). <c>Demand</c> dispatches on
-/// exactly that int -- Linux @0x53ae70 and Windows RVA 0x18ef90 both read <c>*(int*)(pRes + 0xc)</c> and
-/// branch 1 / 2 / 3 / 5 to <c>ServiceFromResFile</c> / <c>ServiceFromEncapsulated</c> /
-/// <c>ServiceFromDirectory</c> / <c>ServiceFromManifest</c>, and return at once on 0.</para>
-/// <para>Why it is worth counting: only KEY, ERF and loose files can be read on a worker with our own file
-/// handle. NWSync is a two-database SQLite join the engine writes to from its own task threads, so the NWSync
-/// share of an area load is the part of the read a worker cannot take -- it caps what CX-54 steps 1-2 can win
-/// on a server that ships its content that way.</para>
-/// <para>Hot: <see cref="Note"/> is one bucket map and one array add, no allocation. The string is built once
-/// per area transition.</para></summary>
+/// <summary>
+/// Where an area load's resources are actually read from: every outermost <c>CExoResMan::Demand</c> is filed by
+/// the container its <c>CRes</c> names -- the kind int at <see cref="EngineLayout.CResSourceKind"/>, the one the
+/// engine's own dispatch branches on -- split texture restypes against the rest and printed once on the
+/// <see cref="TexStream"/> <c>[load]</c> line. Hot: one bucket map and one array add, no allocation.
+/// </summary>
 internal static class ResSources
 {
     /// <summary>The buckets, in report order. <see cref="Other"/> catches a <c>RESID</c> kind the engine's
@@ -78,7 +70,7 @@ internal static class ResSources
         check.Expect(Bucket(4) == (int)Src.Other && Bucket(-1) == (int)Src.Other && Bucket(99) == (int)Src.Other,
                      "a kind the engine does not dispatch on is not filed as Other");
         Reset();
-        check.Expect(Line().Length == 0, "an empty tally still prints a clause");
+        check.Expect(Line().Length == 0, "an empty tally prints nothing at all");
         Note(KindKey, true); Note(KindKey, false); Note(KindNwSync, true); Note(7, false);
         string line = Line();
         check.Expect(line.StartsWith("demands 4 (2 texture)"), $"the totals are wrong: {line}");

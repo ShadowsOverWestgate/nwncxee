@@ -5,27 +5,10 @@ using CX.Engine;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// The skating the engine cannot fix (CX-70), a <see cref="Stride"/> companion under <c>anim.stride</c>. Three
-/// things the engine's own pacing leaves sliding, and the pose-read tests that recognise them.
-/// <para><b>The combat shuffle</b> <c>cwalkf/b/l/r</c> (<see cref="IsShuffle"/>).
-/// <c>CNWCCreature::MoveCreatureToPosition</c> plays it fire-and-forget at rate 1 while it lerps the drawn
-/// position toward the desired one over the <c>correctionMs</c> countdown, and never paces it:
-/// <c>CNWCObject::AnimationStationary</c> answers "stationary" for those ids, so <c>AnimationUpdate</c> never
-/// reaches <c>WalkUpdateLocation</c> -- the one place outside <c>Gob::PlayAnimation</c> that writes a run's rate
-/// (verified in Ghidra: <c>Gob::Animate</c> only ever reads <c>AnimRun+0x8</c>). The lerp's weight is
-/// <c>remaining/(remaining+step)</c>, which leaves gap over countdown invariant, so that ratio is the ground
-/// speed exactly -- <see cref="Speed(float,uint,float)"/>.</para>
-/// <para><b>Clips the engine mis-paces.</b> The engine's assumed animation speed is <c>appearance.2da</c>'s
-/// WALKDIST/RUNDIST over the clip's length, and the stock content misses it by −16 % on <c>runfl</c>/<c>runfr</c>
-/// for every race, −8 % on the female walk and −11/−16 % on the dwarf walks
-/// (CX-147 §3.4). <see cref="Stride.Factor"/>'s range and deadband cover all of
-/// them; <see cref="SelfCheck"/> holds it to that.</para>
-/// <para><b>Poses that are not on the ground.</b> <c>animationsets.2da</c> can hide a swim, a crawl or an Arcane
-/// float behind the name <c>walk</c>, so the name decides nothing and <see cref="Bears"/> decides instead: a foot
-/// carrying the body stands still in the world, which in the model frame is travelling backward against the body
-/// at its own speed, where a foot that is swum, floated or dragged is carried along and barely moves in that
-/// frame at all. Once nothing has borne weight for <see cref="Liftoff"/>, the pacing and the foot lock both stand
-/// down -- the rate factor eased back to 1, the lock let go with its own ease.</para>
+/// The skating the engine cannot fix, a <see cref="Stride"/> companion under <c>anim.stride</c>, and the pose-read
+/// tests that recognise it: the combat shuffle the engine never paces (<see cref="IsShuffle"/>), clips whose feet miss
+/// <c>appearance.2da</c>'s assumed speed (<see cref="Paced"/>, worst −16 % on <c>runfl</c>/<c>runfr</c>), and poses not
+/// on the ground at all (<see cref="Bears"/>, <see cref="Liftoff"/>) -- <c>animationsets.2da</c> hides swims and floats behind <c>walk</c>.
 /// </summary>
 internal static unsafe class Skating
 {
@@ -43,8 +26,10 @@ internal static unsafe class Skating
     /// <summary>Milliseconds per second: <c>correctionMs</c> is a whole-millisecond countdown.</summary>
     private const float Milli = 1000f;
 
-    /// <summary>The combat shuffle's animation ids, the four <c>MoveCreatureToPosition</c> picks from by the dot
-    /// of the facing against the gap: forward, back, left, right.</summary>
+    /// <summary>The combat shuffle's animation ids, the four <c>MoveCreatureToPosition</c> picks from by the dot of
+    /// the facing against the gap: forward, back, left, right. It plays them fire-and-forget at rate 1 and never paces
+    /// them -- <c>CNWCObject::AnimationStationary</c> answers "stationary" for these ids, so <c>AnimationUpdate</c>
+    /// never reaches <c>WalkUpdateLocation</c>, the one place outside <c>Gob::PlayAnimation</c> writing a run's rate.</summary>
     internal static bool IsShuffle(int anim) => anim is >= 0x18 and <= 0x1b;  // not-an-offset: the engine's animation ids
 
     /// <summary>The ground speed (world units/s) a creature's position correction is covering: the horizontal gap
@@ -86,13 +71,10 @@ internal static unsafe class Skating
         return true;
     }
 
-    /// <summary>Runs <paramref name="frames"/> frames of a cycle through <see cref="Stride.Measure"/> with the
-    /// ankles placed by hand, and reports the rate multiplier and the ground verdict it ends on. The body travels
-    /// along model +Y at <paramref name="ground"/>; <paramref name="back"/> is the bearing foot's backward speed
-    /// at the engine's own rate (0 = the feet are carried, not planted), <paramref name="duty"/> the share of
-    /// <paramref name="cycle"/> each foot bears it for -- the rest is flight -- and <paramref name="lift"/> the
-    /// height a foot off the ground is raised to. In flight both ankles are up but not level, so what refuses the
-    /// sample is the direction the foot travels, not the height gate.</summary>
+    /// <summary>Runs <paramref name="frames"/> frames of a cycle through <see cref="Stride.Measure"/> with the ankles
+    /// placed by hand, and reports the rate multiplier and ground verdict it ends on: the body travels along model +Y
+    /// at <paramref name="ground"/>, each foot bears <paramref name="back"/> backward (0 = carried) for
+    /// <paramref name="duty"/> of <paramref name="cycle"/> and rises <paramref name="lift"/> in flight, where the foot's direction of travel, not the height gate, refuses the sample.</summary>
     private static void Cycle(float ground, float back, float duty, float lift, float cycle, int frames,
                               out float rate, out bool grounded)
     {
@@ -133,7 +115,7 @@ internal static unsafe class Skating
         if (Stride.Factor(Speed(0.25f, 512, 0f), 1.011f) != 1f || Stride.Factor(Speed(3.9f, 60, 0f), 1.011f) != 1f)
             return false;
 
-        // the clips of CX-147 §3.4, measured speed against the engine's reference
+        // the clips measured, speed against the engine's reference
         if (!Clip(4.02f, 4.80f, 4.80f / 4.02f)                  // runfl/runfr, human male: -16.2 %
             || !Clip(3.7632f, 4.80f, 4.80f / 3.7632f)           // runfl/runfr, halfling female: -21.6 %, the worst
             || !Clip(1.469f, 1.600f, 1.600f / 1.469f)           // the female walk: -8.2 %

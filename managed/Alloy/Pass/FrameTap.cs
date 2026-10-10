@@ -5,11 +5,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-374 diagnostic: <c>/alloy snap</c> writes one frame at three points -- the linear HDR target
-/// before and after the sky pass (<c>.pfm</c>, float RGB; Alloy sessions only) and the default framebuffer
-/// at present (<c>.ppm</c>, 8-bit; vanilla sessions too). One frame, then disarmed; stalls that frame.
-/// A matched set from ONE camera, so a sub-code-value fault can be bisected by pass instead of by eye;
-/// <c>tools/snap/</c> reads them.</summary>
+/// <summary>Diagnostic: <c>/alloy snap</c> writes one frame at three points -- the linear HDR target before
+/// and after the sky pass (<c>.pfm</c>, float RGB; Alloy sessions only) and the default framebuffer at
+/// present (<c>.ppm</c>, 8-bit; vanilla sessions too). One frame, then disarmed; stalls that frame. A matched
+/// set from ONE camera, so a sub-code-value fault can be bisected by pass; <c>tools/snap/</c> reads them.</summary>
 internal static unsafe class FrameTap
 {
     internal static bool Armed;

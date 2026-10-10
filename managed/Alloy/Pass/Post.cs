@@ -3,31 +3,9 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>post</c> group: the storage <see cref="PostChain"/>, <see cref="PostStack"/> and
-/// <see cref="ToonStage"/> read. No master -- the resolve IS the Alloy frame. <c>hdr</c> and the render scale
-/// are the Renderer group's (<c>alloy.hdr</c>, <c>alloy.scale</c>). Touched from
-/// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.
-/// <para>Why the defaults: <c>exposure</c> is scene-referred, one linear gain on the resolved frame (bloom
-/// included) BEFORE the tonemap, so blacks stay put and the shoulder takes what it pushes past 1 -- what
-/// makes <c>tonemap aces</c> usable at all, since the Narkowicz fit sits below NWN's radiance levels
-/// unexposed. There is no auto exposure: eye adaptation re-graded every area away from the lighting its
-/// builder chose, so the exposure is fixed. <c>acesmix</c> mixes the
-/// ACES curve in LINEAR against the shoulder: 1 is the full fit, whose toe crushes NWN's dim interiors (0.01
-/// linear comes out 2.6x darker, so only specular survives); 0.5 is the live call. <c>tonemap neutral</c> is
-/// Khronos PBR Neutral (CX-47), no knee or mix: a 0.04 offset below 0.76 whose toe darkens 0.01 linear 16x,
-/// so the dim interior is the A/B leg to watch.
-/// <c>dither</c> 1.0 is the
-/// correct value, not taste: one LSB of triangular-PDF noise is exactly what decorrelates the quantisation
-/// step. <c>taablend</c> is the current frame's share of the blend at rest (0.1 = a ten-frame history);
-/// <c>taau</c> keeps the TAA history at DISPLAY size under a render scale below 1. <c>taa</c> ships ON and is
-/// the default anti-aliaser; SMAA stands aside while it runs (<see cref="SmaaStage.Active"/>), so
-/// <c>/post taa 0</c> is the A/B back to it. <c>taasharp</c> is the unsharp mask the copy-out applies to the
-/// resolved history; 0.3 puts the resolve beside SMAA rather than behind it. <c>halfres</c> runs the
-/// screen-space ambient occlusion at half the render extent, upsampled depth-aware in the lit stage; the
-/// temporal accumulator hides the coarser estimate. <c>viz</c> shows one STAGE of the chain -- 1 the bloom, 2
-/// the HDR colour, 3 the bloom at 20x, 4 the velocity target -- and <c>clearviz</c> clears the HDR target to
-/// magenta, a value nothing else produces, so magenta in the frame is a pixel NO pass covered. <c>motion</c>
-/// arms the motion-vector pass on its own; TAA and temporal GTAO run it regardless (#388). <c>skyraw</c> is
-/// the A/B for the resolve's sky exemption: 0 exposes and tonemaps the sky like the rest (CX-374).</para></summary>
+/// <see cref="ToonStage"/> read. No master -- the resolve IS the Alloy frame; <c>hdr</c> and the render scale
+/// are the Renderer group's. There is no auto exposure: <c>exposure</c> is one fixed linear gain on the
+/// resolved frame BEFORE the tonemap, because adaptation re-grades an area away from its builder's lighting.</summary>
 internal static class Post
 {
     internal static readonly KnobGroup G;

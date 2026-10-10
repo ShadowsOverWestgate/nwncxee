@@ -9,24 +9,10 @@ using CX.Services.Chat.Core;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// The action camera's two targeting aids, and the crosshair's one engine read. Not a service: it is the
-/// action camera's, so <see cref="MouseLookService"/> owns its lifetime (<see cref="Init"/>) and its knobs are
-/// the camera mode's Mouse-look rows.
-/// <para><b>Aim assist</b> (the mode's <c>assist</c>): once per frame, with the action camera held, the area's
-/// own object list (<c>CNWCArea+0x318</c>, the list <c>HiliteAreaObjects</c> walks) is projected against the
-/// live camera and the creature / placeable / door nearest the screen centre within the mode's <c>assistpx</c>
-/// wins. Its screen point is then what <see cref="MouseLookService"/> forwards mouse events at instead of the
-/// exact centre, so the ENGINE's own pick, hover, cursor, click and targeting all run there -- we bias the
-/// question, never answer it, and a candidate behind a wall simply picks nothing, exactly as the crosshair
-/// would have. The camera is not moved.</para>
-/// <para><b>Auto-target</b> (the mode's <c>autotarget</c>): <c>CActionTarget::ActivateTargetMode</c> is the one
-/// funnel every "now pick a target" mode reaches; post-hooked, it calls <c>HandleLMouseDown</c> straight back
-/// so the feat/spell/item resolves on what the crosshair points at with no second click. A mode whose
-/// allowed-target list holds only the synthetic ground type (an AoE placement) is left up to be aimed.</para>
-/// <para><b>Readiness is split.</b> The crosshair's cursor read stands on the cursor-manager rows alone, so it
-/// survives an assist or auto-target refusal: a stood-down assist still leaves a contextual reticle.</para>
-/// <para>Per-frame and per-event work allocates nothing: the walk keeps one best candidate in locals, and the
-/// result is a single packed <see cref="long"/> so the event path reads the point without tearing.</para>
+/// The action camera's two targeting aids plus the crosshair's cursor read, owned by <see cref="MouseLookService"/>
+/// rather than discovered as a service. Aim assist (<c>assist</c>) projects the area's objects against the live
+/// camera and biases where mouse events are forwarded, so the ENGINE still does every pick; auto-target
+/// (<c>autotarget</c>) resolves a live targeting mode as a click would. Neither moves the camera.
 /// </summary>
 internal static unsafe class AimAssist
 {
@@ -124,13 +110,10 @@ internal static unsafe class AimAssist
 
     private static void Clear() { Volatile.Write(ref _target, 0); Volatile.Write(ref _point, NoPoint); }
 
-    /// <summary>One frame of aim assist: project every plausible object in the area against the live camera and
-    /// keep the best-scoring one inside the mode's <c>assistpx</c> -- screen distance from the centre plus range
-    /// at <see cref="AssistDepthPxPerM"/>, so the near candidate wins a tie. A hot tick (it runs every frame the
-    /// action camera is held) that allocates nothing: one best candidate in locals, two volatile writes out.
-    /// <para>The projection is <see cref="Projector"/>'s; the placeable's hilite flag is read through
-    /// <c>AsNWCPlaceable</c> (a null answer = not one) where every other class's sits on the CNWCObject
-    /// itself.</para></summary>
+    /// <summary>One frame of aim assist: project the area's own object list (the one <c>HiliteAreaObjects</c> walks)
+    /// against the live camera and keep the best score inside the mode's <c>assistpx</c> -- centre distance plus
+    /// range at <see cref="AssistDepthPxPerM"/>, so a near candidate wins a tie. Hot (every held frame), allocates
+    /// nothing. A placeable's hilite flag reads through <c>AsNWCPlaceable</c>, every other class's off CNWCObject.</summary>
     private static void Tick()
     {
         if (!_ready || !MouseLookService.ActionHeld || !MouseLook.Assist.V || MouseLook.AssistPx.V <= 0) { Clear(); return; }
@@ -194,17 +177,16 @@ internal static unsafe class AimAssist
 
     // ---- auto-target ----
 
-    /// <summary>Post-hook: the mode is up and registered, so resolving it now takes exactly the path a click
-    /// would. Nothing reads the CActionTarget after this returns -- every caller of ActivateTargetMode calls it
-    /// last, and HandleLMouseDown touches no member after the fire callback that may delete the subclass.
-    /// ponytail: the engine's own <c>s_bJustCastSelfTargetSpells</c>/<c>Items</c> statics would cover the
-    /// self-target case without a mode at all; they are unexported data on both builds, so they stay unread.</summary>
+    /// <summary>Post-hook: the mode is up and registered, so resolving it now takes exactly the path a click would.
+    /// Nothing reads the CActionTarget after this returns -- every caller of ActivateTargetMode calls it last, and
+    /// HandleLMouseDown touches no member after the fire callback that may delete the subclass. ponytail: the
+    /// <c>s_bJustCastSelfTargetSpells</c>/<c>Items</c> statics would skip the mode, but are unexported on both builds.</summary>
     [UnmanagedCallersOnly]
     private static void OnActivateTargetMode(IntPtr self)
     {
         _activateOrig(self);
         if (!_ready || self == IntPtr.Zero) return;
-        // Tab-target's cast mode supersedes the auto-target toggle while it is on (CX-636 D3).
+        // Tab-target's cast mode supersedes the auto-target toggle while it is on.
         if (TabTargetService.OnActivate(self)) return;
         if (!MouseLook.AutoTarget.V || !MouseLookService.ActionHeld) return;
         uint hovered = HoveredOid();
@@ -247,11 +229,10 @@ internal static unsafe class AimAssist
         : FormattableString.Invariant($"assist {(MouseLook.Assist.V ? $"{MouseLook.AssistPx.V}px" : "off")}, {_hits} hit(s) over {_scanned} object(s); auto-target {(MouseLook.AutoTarget.V ? "on" : "off")}, {_fires} fire(s)");
 }
 
-/// <summary>The live camera's screen projection, read once per walk off the Camera object: the stored
-/// quaternion is (w, x, y, z) and is the view-&gt;world rotation, so eye space looks down -Z exactly as Alloy's
-/// FrameRead reads it, and the projection is the engine's own SetPerspectiveTransform terms -- never
-/// <c>Camera::MapToScreen</c>, whose by-value Vector return is the sret order that diverges between the two ABIs
-/// (#456). Shared by the aim assist and the tab-target cycle (CX-636).</summary>
+/// <summary>The live camera's screen projection, read once per walk off the Camera object: the stored quaternion is
+/// (w, x, y, z) and rotates view-&gt;world, so eye space looks down -Z, and the terms are the engine's own
+/// SetPerspectiveTransform. Never <c>Camera::MapToScreen</c> -- its by-value Vector return puts the sret argument in
+/// a different place on each ABI. Shared by the aim assist and the tab-target cycle.</summary>
 internal unsafe struct Projector
 {
     private Vector3 _eye, _fwd, _right, _up;

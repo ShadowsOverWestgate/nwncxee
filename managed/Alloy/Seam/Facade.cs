@@ -9,12 +9,10 @@ namespace CX.Alloy.Seam;
 /// <summary>Which engine class a facade's shell mirrors.</summary>
 public enum FacadeKind : byte { Object, String, Scene, Camera }
 
-/// <summary>CX-120 / ADR 0028 section 2: the native block the game layer holds for a <see cref="SceneDb"/> record.
-/// A LAYOUT-COMPATIBLE SHELL, not a bare vtable: the game writes the SafePointer back-reference list at +0x08,
-/// reads <c>Gob</c> +0x24/+0x88/+0x90/+0xa8/+0xb4/+0x450/+0x490, reaches the <c>CAurString</c> sub-object at
-/// +0x4c0 and the <c>Camera</c>'s <c>CAurObject</c> at +8 by literal offsets, and reads <c>Scene</c>
-/// +0x130/+0x138/+0x168/+0x1b8 (CX-182). The shell keeps exactly those
-/// fields current; every vtable slot resolves the record's <see cref="DbId"/> and works on columns.</summary>
+/// <summary>ADR 0028 section 2: the native block the game layer holds for a <see cref="SceneDb"/> record -- a
+/// LAYOUT-COMPATIBLE SHELL, not a bare vtable. The shell keeps current the literal offsets the game reaches
+/// (the SafePointer back-ref list at +0x08, <c>Gob</c> +0x24/+0x88/+0x90/+0xa8/+0xb4/+0x450/+0x490,
+/// <c>CAurString</c> +0x4c0, a camera's <c>CAurObject</c> +8, <c>Scene</c> +0x130/+0x138/+0x168/+0x1b8).</summary>
 public static unsafe partial class Facade
 {
     internal static ExtenderLog? Log;
@@ -39,14 +37,10 @@ public static unsafe partial class Facade
     internal static bool InSelfCheck;
     public static long AlienCalls { get; private set; }
 
-    /// <summary>The shell behind any interface pointer the game holds -- a primary pointer, a camera's
-    /// <c>CAurObject</c> at +8 or a text shell's <c>CAurString</c> at +0x4c0 -- or 0 when
-    /// <paramref name="self"/> does not carry one of our vtables. The adjustment is the Itanium offset-to-top
-    /// word written ahead of every table we build, which is why no slot needs a this-adjusting thunk.
-    /// <para>The test is EXACT, not a range: the vptr has to be one of the address points
-    /// <see cref="Build"/> recorded (<see cref="PointBit"/>). A foreign pointer whose first word merely
-    /// landed inside the block would otherwise be adjusted by whatever the word before it held and handed on
-    /// as a shell -- a wild read in the path whose job is to refuse it (review #4).</para></summary>
+    /// <summary>The shell behind any interface pointer the game holds -- a primary, a camera's
+    /// <c>CAurObject</c> at +8, a text shell's <c>CAurString</c> at +0x4c0 -- or 0 for one carrying none of our
+    /// vtables; the adjustment is the Itanium offset-to-top word ahead of every table. The vptr test is EXACT
+    /// against the recorded points (<see cref="PointBit"/>): a range would adjust a foreign pointer to a shell.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static nint Shell(nint self)
     {
@@ -65,8 +59,7 @@ public static unsafe partial class Facade
     public static DbId Resolve(nint self, int logical)
     {
         // A NULL CAurObject*/CAurScene* is a legal argument everywhere in this API -- "no object" -- and the
-        // engine's own slots test for it rather than refusing. Counting it as a foreign pointer buried the
-        // real ones (3123 "alien" calls in a ladder run, essentially all of them null).
+        // engine's own slots test for it rather than refusing, so it is not counted as a foreign pointer.
         if (self == 0) return default;
         nint shell = Shell(self);
         if (shell == 0) { Alien(self, logical); return default; }
@@ -80,15 +73,10 @@ public static unsafe partial class Facade
     public static DbId Object(nint self, int logical)
         => GobOf(self, logical, out DbId id, out _) ? id : default;
 
-    /// <summary>The record AND the <c>Gob</c>-shaped block behind a <c>CAurObject*</c> -- the pair every
-    /// object slot needs, because a <c>Camera</c> is the one shell where neither is the block
-    /// <see cref="Shell"/> normalises to.
-    /// <para>A camera's <c>CAurObject</c> is its <c>+8</c> sub-object (<c>Camera : CAurCamera, Gob</c>), so
-    /// its record is <see cref="SceneDb.CamObj"/> and its <c>Gob</c> words start
-    /// <see cref="SeamLayout.CameraGobSub"/> on from the base -- while the one handle in the shell header is
-    /// the CAMERA row's. Resolving it as an object handle instead read, and WROTE, whatever object record
-    /// happened to sit at the camera's (index, generation): with the chase behaviour's owner being exactly
-    /// that sub-object, the camera's solved eye landed in a foreign record (CX-120).</para></summary>
+    /// <summary>The record AND the <c>Gob</c>-shaped block behind a <c>CAurObject*</c>: a <c>Camera</c> is the
+    /// one shell where neither is what <see cref="Shell"/> normalises to -- its <c>CAurObject</c> is the
+    /// <c>+8</c> sub-object, its record <see cref="SceneDb.CamObj"/>, its <c>Gob</c> words
+    /// <see cref="SeamLayout.CameraGobSub"/> on, while the one header handle is the CAMERA row's.</summary>
     public static bool GobOf(nint self, int logical, out DbId id, out nint gob)
     {
         id = default;
@@ -227,10 +215,8 @@ public static unsafe partial class Facade
 
     /// <summary>What <c>SafePointerList&lt;CAurObject&gt;::~SafePointerList</c> @0x445470 does, and nothing
     /// more: for each back-reference in the list at the shell's +0x08, zero the SafePointer's target word
-    /// (+0x00) and set its index (+0x08) to -1, then release the array. Every entry in the list points at THIS
-    /// object (<c>SafePointer::operator=</c> @0x477d70 appends <c>this</c> to the new target's list), so the
-    /// engine's swap-removal of each entry from its own target is removing what we are about to drop; an entry
-    /// pointing somewhere else is a seam bug and says so rather than being quietly skipped.</summary>
+    /// (+0x00), set its index (+0x08) to -1, then release the array. Every entry points at THIS object
+    /// (<c>SafePointer::operator=</c> @0x477d70 appends <c>this</c>); one that does not is a seam bug, named.</summary>
     private static void NullSafePointers(nint shell, FacadeKind kind)
     {
         int at = SeamLayout.SafeListAt(kind);
@@ -267,16 +253,9 @@ public static unsafe partial class Facade
     // ---- the mirrored words every setter keeps current ----
 
     /// <summary>Write the object's position and orientation into both the columns and the shell words the game
-    /// reads without a vtable (<c>Gob</c> +0xa8 / +0xb4), and mark the record dirty. The one place that does
-    /// both, so a setter cannot keep half of it.
-    /// <para><b>The orientation goes in the ENGINE's order, w first</b> (<see cref="EQuat"/>, and the
-    /// <c>0x3f800000</c> <c>Gob::Gob</c> leaves at +0xb4). These two words were <c>(x,y,z,w)</c>, which
-    /// round-tripped inside CX and so looked right -- until something ELSE wrote that memory. Two things do:
-    /// <c>SeedShell</c>, and the seam's own <c>Part::GetWorld</c>, which the game calls by vtable from
-    /// <c>GuiAurAttachToObject</c> and from every cross-scene attach's <c>Control</c>. Read back swizzled, the
-    /// identity <c>(1,0,0,0)</c> became <c>Quaternion(x:1)</c> -- a 180 degree turn about X -- so every main-menu
-    /// control was mirrored about its own origin: upside-down glyphs in right-way-up lines, and panel art
-    /// turned through the GUI camera's near plane.</para></summary>
+    /// reads without a vtable (<c>Gob</c> +0xa8 / +0xb4), and mark the record dirty -- the one place that does
+    /// both, so a setter cannot keep half of it. <b>The orientation goes in the ENGINE's order, w first</b>
+    /// (<see cref="EQuat"/>, and the <c>0x3f800000</c> <c>Gob::Gob</c> leaves at +0xb4), as do all its writers.</summary>
     public static void SetXform(DbId id, nint shell, Vector3 pos, Quaternion rot)
     {
         SceneDb.ObjPos[id.Index] = pos;
@@ -383,8 +362,8 @@ public static unsafe partial class Facade
     public static int DanglingPairs { get { lock (_danglers) return _danglers.Count; } }
 
     /// <summary>A shell whose RECORD is gone -- a seam bug rather than a game-side one, so it is named -- but
-    /// named like <see cref="Alien"/>: on the powers of two, with the running count. One line per CALL was a
-    /// log flood and an interpolated string in a slot body (review #14).</summary>
+    /// named like <see cref="Alien"/>: on the powers of two, with the running count, because one line per CALL
+    /// is a log flood and an interpolated string in a slot body.</summary>
     private static void Stale(nint self, int logical)
     {
         PoisonCalls++;

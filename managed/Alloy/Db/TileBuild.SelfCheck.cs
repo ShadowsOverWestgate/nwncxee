@@ -5,8 +5,8 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-116's off-device checks: a hand-built tile model placed twice at different rotations, which is
-/// the whole perf claim stated as an assertion -- two transforms over ONE set of mesh ranges, each placement's
+/// <summary>The off-device checks: a hand-built tile model placed twice at different rotations, which is the
+/// whole perf claim stated as an assertion -- two transforms over ONE set of mesh ranges, each placement's
 /// world bounds right, the lights filed per placement, and a texture swap dirtying only the tile that swapped.
 /// Engine-free and GL-free, so <c>run-demo.sh</c> runs it in the stub host.</summary>
 public static class TileBuildCheck

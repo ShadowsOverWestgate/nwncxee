@@ -4,7 +4,7 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>CX-45: the per-frame streaming arena -- one <see cref="GpuRing"/> mapping in three fenced regions,
+/// <summary>The per-frame streaming arena -- one <see cref="GpuRing"/> mapping in three fenced regions,
 /// each sized for one push of every <see cref="Site"/>, so a slice is good only inside the frame that wrote it.
 /// There is no fallback: a push that fails is our bug, so it is logged, painted and its pass sits out.</summary>
 internal static unsafe class StreamRing

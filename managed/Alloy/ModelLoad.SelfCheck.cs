@@ -10,11 +10,9 @@ namespace CX.Alloy;
 internal static unsafe partial class ModelLoad
 {
     /// <summary>Off-device, no engine: a real <c>HAK V1.0</c> carrying a tiny BINARY model at restype 2002 is
-    /// written to a temp directory, read back through the same location reader the worker uses, and put
-    /// through the one piece of parsing this feature does -- the supermodel name at
-    /// <c>modelData+0xa8</c>. Then the three cases that are not a name: an ASCII file (first dword non-zero),
-    /// <c>"null"</c>, and a file too short to carry the field. Finally the extension test the serve gates on,
-    /// which is the engine's own (<c>GetResource</c> uppercases past a leading dot and compares four bytes).</summary>
+    /// written to a temp directory, read back through the worker's own location reader, and put through the one
+    /// piece of parsing this feature does -- the supermodel name -- plus the three cases that are not a name
+    /// (ASCII, <c>"null"</c>, too short) and the extension test the serve gates on.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         string dir = Path.Combine(Path.GetTempPath(), "cx55-" + Environment.ProcessId);

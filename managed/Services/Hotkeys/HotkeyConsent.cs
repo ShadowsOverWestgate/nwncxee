@@ -5,22 +5,11 @@ using CX.Framework;
 namespace CX.Services.Hotkeys;
 
 /// <summary>
-/// Client-owned consent gate. A server ArmSet that ADDS keys raises the engine's own native
-/// yes/no modal (CPanelOkCancel, as used by "quit to main menu"). The modal is drawn and owned
-/// by the client, so a malicious server can neither forge nor auto-confirm it -- only an OK click
-/// arms the keys; Esc/Cancel/close all deny.
+/// Client-owned consent gate: a server ArmSet that ADDS keys raises the engine's own native yes/no modal
+/// (CPanelOkCancel, as "quit to main menu" uses). The client draws and owns it, so a server can neither forge
+/// nor auto-confirm it -- only OK arms the keys, Esc/Cancel/close deny. The panel self-frees through its
+/// deleting dtor, so it MUST come from the engine's operator new (the game's own on Windows -- static CRT).
 /// </summary>
-/// <remarks>
-/// Spawn mirrors the engine's own path (decomp-verified both platforms): operator new
-/// (<see cref="EngineLayout.OkCancelSize"/>); ctor; fill the panel's own close callback
-/// (<see cref="EngineLayout.GuiPanelCloseCallback"/>); Activate(msg, OK, CANCEL).
-/// On close the engine calls callback(context, result); 1 = OK, anything else = deny. The panel then
-/// self-frees via its deleting dtor -> operator delete, so we allocate from the matching operator new
-/// (the game's own on Windows -- static CRT) or the free lands on the wrong heap. The message
-/// CExoString is by value: Itanium frees it in the caller, MSVC in the callee; FreeExoString is
-/// correct either way (see Native.NewExoString). Cold path -- both proposal and answer arrive on the
-/// main thread, so no race on _pending.
-/// </remarks>
 internal static unsafe class HotkeyConsent
 {
     // OK / Cancel button label strrefs -- the exact pair HandleQuitClick passes to Activate.
@@ -51,7 +40,7 @@ internal static unsafe class HotkeyConsent
     /// dropped, never armed: an open modal's answer lands on a null <c>_pending</c> and is ignored.</summary>
     public static void Reset() { _pending = null; _probe = false; }
 
-    /// <summary>The <c>/hotkeys consent</c> body (#418): spawn the modal with a fake key set so the whole native round
+    /// <summary>The <c>/hotkeys consent</c> body: spawn the modal with a fake key set so the whole native round
     /// trip (operator new, ctor, Activate, on-close callback, self-free) runs without a server. The answer is
     /// only logged. The one place the port touches the engine allocator, so it gets its own probe.</summary>
     public static string Probe()
@@ -91,7 +80,7 @@ internal static unsafe class HotkeyConsent
         EngineFn.OkCancelCtor(panel);                    // seeds the callback; ours overwrites it after
         CGuiCallback onClose = new CGuiPanel(panel).CloseCallback;
         onClose.Obj = panel;                             // benign non-null context; our callback ignores it
-        // Left raw: a callback pointer stored INTO an engine struct field, tied to no symbol (CX-37).
+        // Left raw: a callback pointer stored INTO an engine struct field, tied to no symbol.
         onClose.Fn = (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnAnswer;
         onClose.Adj = IntPtr.Zero;                       // Itanium invokes fn(obj + adj, ...); a no-op on MSVC
 
@@ -118,7 +107,7 @@ internal static unsafe class HotkeyConsent
     {
         var answered = _pending;
         _pending = null;
-        // The engine's modal leaves keyboard mode ON after it closes, which eats the next Enter (#418 trace);
+        // The engine's modal leaves keyboard mode ON after it closes, which eats the next Enter;
         // release it unless one of our windows is typing.
         if (!CX.Ui.UiHost.AnyKeyboardOwner) CX.Ui.UiHost.KeyboardGate?.Invoke(false);
         if (answered == null) return;

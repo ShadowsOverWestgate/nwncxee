@@ -9,18 +9,11 @@ using CX.Framework;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// Says why a NUI layout could not be solved (CX-153). Vanilla replaces the window with
-/// "The constraint can not be satisfied." and nothing more. kiwi gives up on a required rule at exactly two points, and
-/// at both the row in hand is its own proof: a weighted sum of the markers earlier rules left in the tableau, plus the
-/// new rule. <see cref="SymbolMap.KiwiCreateRow"/> returning a row of dummies with a nonzero constant is a contradiction
-/// among equalities; the artificial objective still above zero after <see cref="SymbolMap.KiwiOptimize"/> is one that
-/// needs an inequality. Each marker leads through m_cns to its rule, each rule's variables to an element and field of the
-/// failing group's tree, and <see cref="SymbolMap.NuiHandleError"/> gets the explanation as its message, with the elements
-/// named by the JSON ids from the window's id map. The same text goes to cx.log.
+/// Says why a NUI layout could not be solved, where vanilla says only "The constraint can not be satisfied." kiwi
+/// gives up at two points, each with the row in hand as its proof: <see cref="SymbolMap.KiwiCreateRow"/> returning
+/// dummies with a nonzero constant is a contradiction among equalities, an artificial objective still above zero
+/// after optimize needs an inequality. Markers lead through m_cns to rules, elements and the window's JSON ids.
 /// </summary>
-/// <remarks>The capture runs while the failing group is alive: an NuiCreate failure frees the half-built tree before
-/// HandleError, so its element pointers survive only as keys into the id map. The checks on the way are one constant
-/// per createRow and one pointer per optimize; the rest runs once, on a failure.</remarks>
 internal static unsafe class NuiLayoutErrors
 {
     /// <summary>kiwi's nearZero.</summary>
@@ -169,6 +162,9 @@ internal static unsafe class NuiLayoutErrors
         }
     }
 
+    /// <summary>Hands <see cref="SymbolMap.NuiHandleError"/> the explanation as its message (the same text goes to
+    /// cx.log). The capture it reads was taken while the failing group was alive: an NuiCreate failure frees the
+    /// half-built tree before this runs, so a captured element pointer is only a key into the id map.</summary>
     [UnmanagedCallersOnly]
     private static void OnHandleError(IntPtr self, IntPtr tag, IntPtr message)
     {
@@ -209,7 +205,7 @@ internal static unsafe class NuiLayoutErrors
     /// starts before the solver, where nothing says memory is readable, so its vptr is read by a probe.</summary>
     private static IntPtr FindGroup(IntPtr solver)
     {
-        IntPtr g = solver - EngineLayout.NuiGroupSolver;
+        IntPtr g = Nui__Layout__LayoutGroup.FromSolver(new kiwi__impl__SolverImpl(solver)).Ptr;
         return TryRead(g, out IntPtr vptr) && (vptr == _groupVptr || vptr == _singleVptr) ? g : IntPtr.Zero;
     }
 
@@ -311,7 +307,7 @@ internal static unsafe class NuiLayoutErrors
         IntPtr node = OperatingSystem.IsWindows() ? (head == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)head) : head;
         for (int i = 0; node != IntPtr.Zero && node != head && i < MaxElements; i++, node = *(IntPtr*)node)
         {
-            var (buf, len, _) = Native.StdString((byte*)(node + EngineLayout.NuiIdNodeKey));
+            var (buf, len, _) = Native.StdString((byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref new Nui__JSON__IdNode(node).Key));
             ids.TryAdd(new Nui__JSON__IdNode(node).Element, Encoding.UTF8.GetString((byte*)buf, (int)len));
         }
         return ids;
@@ -386,7 +382,7 @@ internal static unsafe class NuiLayoutErrors
 
     /// <summary>Where a rule comes from, when its shape says so for certain: <c>LayoutableJ::Construct</c> builds
     /// <c>"width": W</c> as <c>W * scale == width</c>, <c>"height"</c> likewise, and <c>"aspect": A</c> as
-    /// <c>width / A == height</c>, all at required unless a weight is given (CX-153 §4.5).</summary>
+    /// <c>width / A == height</c>, all at required unless a weight is given.</summary>
     private static string Why(Rule rule)
     {
         string strength = Math.Abs(rule.Strength - Required) < 1.0 ? "" : $"strength {Num(rule.Strength)}";
@@ -482,8 +478,8 @@ internal static unsafe class NuiLayoutErrors
                 IntPtr terms = (IntPtr)(mem + at + 256);
                 new kiwi__Term(terms).Variable = width;
                 new kiwi__Term(terms).Coefficient = 1.0;
-                *(IntPtr*)(cd.Ptr + EngineLayout.KiwiCnTerms) = terms;
-                cd.TermsEnd = terms + EngineLayout.KiwiTermStride;
+                cd.Terms = new kiwi__Term(terms);
+                cd.TermsEnd = new kiwi__Term(terms)[1].Ptr;
                 cd.Constant = constant;
                 cd.Strength = Required;
                 cd.Op = 2;
@@ -491,16 +487,18 @@ internal static unsafe class NuiLayoutErrors
             }
             IntPtr accepted = Data(0, -64), adding = Data(512, -32);
             IntPtr solver = (IntPtr)(mem + 1024), cns = (IntPtr)(mem + 1536), row = (IntPtr)(mem + 2048), cells = (IntPtr)(mem + 2304);
-            *(IntPtr*)(cns + EngineLayout.KiwiCnData) = accepted;
-            new kiwi__impl__CnPair(cns).Marker = 5;
-            *(IntPtr*)(solver + EngineLayout.KiwiCns) = cns;
-            new kiwi__impl__SolverImpl(solver).CnsEnd = cns + EngineLayout.KiwiCnStride;
+            var pair = new kiwi__impl__CnPair(cns);
+            pair.Data = new kiwi__ConstraintData(accepted);
+            pair.Marker = 5;
+            var impl = new kiwi__impl__SolverImpl(solver);
+            impl.Cns = pair;
+            impl.CnsEnd = pair[1].Ptr;
             var c = new kiwi__impl__SymbolPair(cells);
             c[0].Id = 5; c[0].Type = DummyType;
             c[1].Id = 9; c[1].Type = DummyType;
             var r = new kiwi__impl__Row(row);
             r.Cells = cells;
-            r.CellsEnd = cells + 2 * EngineLayout.KiwiPairStride;
+            r.CellsEnd = c[2].Ptr;
             r.Constant = 32;
             check.Expect(AllDummies(r), "a row of dummies is all dummies");
 

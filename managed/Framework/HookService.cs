@@ -26,7 +26,7 @@ public sealed class HookService : IDisposable
     public HookService(ExtenderLog log)
     {
         _log = log;
-        // funchook's own trace beside the log (a hook that faults at first call, #48); this first touch of General declares the group.
+        // funchook's own trace beside the log (a hook that faults at first call); this first touch of General declares the group.
         if (General.HookDebug.Boot)
             funchook_set_debug_file(Path.Combine(Native.DefaultUserDirectory(), "funchook.log"));
         _fh = funchook_create();
@@ -59,7 +59,7 @@ public sealed class HookService : IDisposable
         if (target == IntPtr.Zero) return IntPtr.Zero;
 
         // funchook does NOT detect duplicate targets: a second prepare's install overwrites the first
-        // patch and silently orphans the first handler (this killed the part-draw capture, #81). One
+        // patch and silently orphans the first handler (this once killed the part-draw capture). One
         // owner per function; co-consumers use Chain instead.
         if (_chains.ContainsKey(target) || !_prepared.TryAdd(target, linux))
         {
@@ -79,8 +79,8 @@ public sealed class HookService : IDisposable
     }
 
     /// <summary>
-    /// <see cref="Install"/> for a function that is not the engine's -- an export of a library CX ships beside
-    /// itself (CX-57: the pinned OpenAL) -- by address. <paramref name="label"/> names it in the log.
+    /// <see cref="Install"/> by ADDRESS, for a function that is not the engine's -- an export of a library CX
+    /// ships beside itself, such as the pinned OpenAL. <paramref name="label"/> names it in the log.
     /// </summary>
     public IntPtr InstallAt(IntPtr target, IntPtr handler, string label)
     {
@@ -101,12 +101,10 @@ public sealed class HookService : IDisposable
     }
 
     /// <summary>
-    /// Subscribes <paramref name="handler"/> to <paramref name="linux"/> alongside other subscribers,
-    /// highest <paramref name="priority"/> outermost. Returns a slot the caller keeps and calls through
-    /// at runtime (<c>*slot</c> = the next-lower subscriber, or the original for the bottom layer);
-    /// not calling it swallows the call for everyone below. Null if the symbol didn't resolve or the
-    /// target already has a single owner. The slot is only filled at <see cref="Commit"/> -- never
-    /// dereference it before then.
+    /// Subscribes <paramref name="handler"/> to <paramref name="linux"/> alongside other subscribers, highest
+    /// <paramref name="priority"/> outermost. Returns a slot the caller keeps and calls through at runtime
+    /// (<c>*slot</c> = the next-lower subscriber, or the original at the bottom); not calling it swallows the call
+    /// below. Null if the symbol did not resolve. The slot is filled at <see cref="Commit"/>: never deref it before.
     /// </summary>
     public unsafe IntPtr* Chain(string linux, IntPtr handler, int priority)
     {

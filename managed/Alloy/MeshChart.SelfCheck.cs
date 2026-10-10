@@ -5,11 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>Headless (#673): the charter over two fixtures and the ledger's round trip. A subdivided cube
-/// (every triangle charted, no overlap at a coarse raster, one chart per planar face, byte-identical across
-/// runs, a degenerate mesh refused rather than thrown) and one real curved placeable -- the stock
-/// <c>plc_x0_jar</c>'s <c>jar_base</c> trimesh, extracted offline from <c>xp2_models.bif</c> and embedded
-/// gzipped (<c>Alloy/ChartFixture.bin.gz</c>: verts, indices, positions, normals, ushort indices).</summary>
+/// <summary>Headless: the charter over two fixtures and the ledger's round trip. A subdivided cube (every
+/// triangle charted, no overlap, one chart per planar face, byte-identical across runs) and one real curved
+/// placeable -- <c>plc_x0_jar</c>'s <c>jar_base</c> trimesh, extracted offline and embedded gzipped as
+/// <c>Alloy/ChartFixture.bin.gz</c> (verts, indices, positions, normals, ushort indices).</summary>
 internal static partial class MeshChart
 {
     internal static bool SelfCheck(ExtenderLog log)

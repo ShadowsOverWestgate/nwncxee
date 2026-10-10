@@ -4,7 +4,7 @@ using CX.Engine;
 
 namespace CX.Framework;
 
-/// <summary>Who is playing where, for per-character persisted state (the radial layout, CX-694): the connected
+/// <summary>Who is playing where, for per-character persisted state such as the radial layout: the connected
 /// server's <c>ip:port</c> and the local creature's first + last name off its stats block -- not the display name,
 /// which a disguise (<c>SetName</c>) rewrites into the override field. Cold reads through the app object; the
 /// address call heap-allocates a CExoString, so never per frame. Empty parts when not in a game.</summary>

@@ -1,6 +1,6 @@
 // CX-88: the SKY, as an Alloy program. What is ahead of the region is the ENVIRONMENT -- the names
 // inc_common/inc_uniforms/inc_standard give a sky fragment stage, from Alloy's values, under the ENGINE's
-// names -- so the content's own sky stage (SoW's fst_sky and its ~1900 lines of cloud, star, sun and moon)
+// names -- so the content's own sky stage (e.g. a ~1900-line cloud, star, sun and moon stage)
 // drops in unedited. Between the markers is that stage, its main() renamed; the stub is a black dome.
 #version 460 core
 in vec2 vUV;

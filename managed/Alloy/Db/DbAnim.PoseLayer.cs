@@ -5,8 +5,8 @@ namespace CX.Alloy.Db;
 
 /// <summary>What the procedural pose layer (<c>CX.Services.Anim.PoseService</c>) reaches in DB mode: the two
 /// calls around a creature's queue advance, a world read that sees its own writes, the run columns and the
-/// look-at state. The layer is the same code that corrects an engine <c>Gob</c> in mode 0; only its rig
-/// access changes.</summary>
+/// look-at state. The layer's own maths is rig-agnostic (<c>PoseRig</c>); this is the scene database's half of
+/// that vocabulary.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>The pose layer's calls around one creature's queue advance: <see cref="PoseBefore"/> puts back

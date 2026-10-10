@@ -8,15 +8,10 @@ using CX.Ui;
 namespace CX.Services.Inventory;
 
 /// <summary>
-/// The CX inventory screen (CX-146). <c>CPanelInventory::SetInventoryVisible</c> is the one
-/// funnel every open and close of the player's own panel goes through -- the key, the quick button, the radial, a server
-/// push -- so it is hooked: with <c>inventory.enabled</c> on, the vanilla panel never activates and the CX window opens
-/// instead; the <c>GuiInventory_Status</c> the panel owes the server is sent from here. Someone else's inventory stays
-/// vanilla. Items arrive through the engine's own repository handler (a chain on <c>CGuiMultiPageMultiInvbox::AddItem</c>
-/// sees every page); a container the player opens stays in the hidden stock panel, which the loot pane mirrors and pages
-/// (CX-146 §11). The server streams one page of each and resends a page whole on every switch,
-/// so pages are asked for where the view rests or an action lands, one at a time (§12). Actions are the engine's own
-/// senders, each routed through <see cref="ServerPolicy"/> first (<c>inventory.&lt;action&gt;.route</c>).
+/// The CX inventory screen. <c>CPanelInventory::SetInventoryVisible</c> is the one funnel every open and close of the
+/// player's own panel goes through -- the key, the quick button, the radial, a server push -- so it is hooked: with
+/// <c>inventory.enabled</c> on the vanilla panel never activates and the CX window opens instead. Actions are the
+/// engine's own senders, each routed through <see cref="ServerPolicy"/> first (<c>inventory.&lt;action&gt;.route</c>).
 /// </summary>
 public sealed unsafe partial class InventoryService : IExtenderService
 {
@@ -133,12 +128,10 @@ public sealed unsafe partial class InventoryService : IExtenderService
         AskBag(_inv.Page, System.Diagnostics.Stopwatch.GetTimestamp());
     }
 
-    /// <summary>Ask the server for backpack page <paramref name="page"/>: <c>SelectPanel</c>, which the server answers by
-    /// resending that page whole (<c>CNWSPlayerInventoryGUI::SetPanel</c> clears what it sent) -- but only when the page
-    /// changes, so a page it may already be on is selected away and back (two messages, one resend: the server reads both
-    /// before its next update pass). That also settles a record gone stale behind an unreported close. The open itself
-    /// is only <c>Status(true)</c>: a <c>Status(false)</c> reaches <c>SetOpen(0, 1)</c>, which closes an open container --
-    /// <c>CloseInventory</c>, OnClosed script and all -- and a container's open marks the panel open server-side already.</summary>
+    /// <summary>Ask the server for backpack page <paramref name="page"/>: <c>SelectPanel</c>, which the server answers
+    /// by resending that page whole (<c>CNWSPlayerInventoryGUI::SetPanel</c> clears what it sent) -- but only when the
+    /// page changes, so a page it may already be on is selected away and back. The open itself is only
+    /// <c>Status(true)</c>: a <c>Status(false)</c> reaches <c>SetOpen(0, 1)</c>, which closes an open container.</summary>
     private static void AskBag(int page, long now)
     {
         if (page == _inv.Model.Selected || _inv.Model.Selected < 0) InventoryNative.SelectPanel(page == 0 ? 1 : 0);
@@ -147,12 +140,10 @@ public sealed unsafe partial class InventoryService : IExtenderService
         _inv.Model.Ask(page, now);
     }
 
-    /// <summary>The backpack's stream: the page asked for arrives when the server sends an item on it (the whole page comes
-    /// in one update pass) or after <see cref="QuietSec"/> of nothing, and whatever it held before that did not come again
-    /// is dropped (<see cref="InventoryNative.PruneBagPage"/>); then the next page the window wants is asked for -- a
-    /// touched page at once, a page on screen once a scrolled view rests (a tab is asked for when clicked).
-    /// ponytail: a page shows what it held when last sent (a script's change to a page not streamed waits for its next
-    /// ask, as the stock panel's pages do); a periodic re-ask if that bites.</summary>
+    /// <summary>The backpack's stream: the page asked for arrives when the server sends an item on it (the whole page
+    /// comes in one update pass) or after <see cref="QuietSec"/> of nothing, whatever it held before and did not send
+    /// again is dropped (<see cref="InventoryNative.PruneBagPage"/>), and the next page the window wants is asked for.
+    /// ponytail: a page shows what it held when last sent; a periodic re-ask if that bites.</summary>
     private static void BagStream(long now)
     {
         ItemGrid m = _inv.Model;
@@ -274,11 +265,10 @@ public sealed unsafe partial class InventoryService : IExtenderService
         for (int i = 0; i < l.Count; i++) RadialIcons.BuildModel(l.Items[i].Oid);
     }
 
-    /// <summary>The loot stream: the server streams only the container's current page and turns it a page at a time (next /
-    /// previous, wrapping), so the stock view is turned -- by its own arrow handlers, which keep the stock grid's page in
-    /// step -- the shorter way round to the page the window wants, all turns in one burst (each clears the server's record;
-    /// only the last page is written), once the page asked for last has arrived (its <c>'P'</c>). A page the server is already
-    /// on is turned away and back.</summary>
+    /// <summary>The loot stream: the server streams only the container's current page and turns it a page at a time
+    /// (next / previous, wrapping), so the stock view is turned by its own arrow handlers, which keep the stock grid's
+    /// page in step, the shorter way round to the page the window wants, all turns in one burst (only the last page is
+    /// written), once the page asked for last has arrived. A page the server is already on is turned away and back.</summary>
     private static void LootStream(IntPtr panel, long now)
     {
         LootModel m = _inv.Loot;

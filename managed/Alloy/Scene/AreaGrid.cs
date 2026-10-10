@@ -3,25 +3,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-104: <b>Alloy's own spatial index of the area</b>, in place of the enumeration hints it used to
-/// take from <c>ManageSceneBSP</c>'s buckets. An NWN area is a grid of 10-unit tiles, so a tile-aligned uniform
-/// grid is the natural index: every STATIC slot (a part with no gob, whose world box
-/// <c>ComputePartBBox</c> @0x561370 populated at tile spawn) is filed once per enrolment and never moves, and a
-/// per-pass query is one box test per occupied cell plus one append per slot it yields -- O(visible), never
-/// O(area).
-///
-/// <para><b>Why only static slots.</b> A part ON a gob is a mover by construction (its matrix is recomposed
-/// whenever its gob's inputs change) and Alloy routes every one of them each pass anyway, so filing them would
-/// buy a re-file per motion and save nothing. A part with no populated world box -- the engine zeroes
-/// <c>part+0x64..0x78</c> in the <c>PartTriMesh</c> ctor and only <c>Scene::SpawnTile</c> ever fills it -- is
-/// UNBOUNDED and always visible, which is exactly what it already was (<c>NeverCull</c>). So the index is a
-/// strict improvement with no new way to lose geometry, and <c>indexed=</c> / <c>unboxed=</c> on the period line
-/// is the number that says how much of the world it actually covers.</para>
-///
-/// <para>The grid WRAPS at <see cref="Dim"/> cells: a slot 640 units away aliases into the same cell, which
-/// costs a candidate and never a miss, because each cell carries the real AABB of everything filed in it and the
-/// query tests that. An area larger than the wrap therefore degrades into coarser cells rather than into a
-/// wrong answer.</para></summary>
+/// <summary>Alloy's spatial index of the area: a tile-aligned uniform grid holding every STATIC slot (no gob,
+/// world box filled by <c>ComputePartBBox</c> @0x561370 at tile spawn), filed once per enrolment. Parts on a gob
+/// are movers Alloy routes every pass anyway; one with no world box is UNBOUNDED and always visible. The grid
+/// WRAPS at <see cref="Dim"/> cells -- a candidate, never a miss, since each cell's AABB is real.</summary>
 internal static unsafe class AreaGrid
 {
     /// <summary>One NWN tile per cell, and a 64 x 64 grid -- 640 units, comfortably past the largest shipped
@@ -35,11 +20,9 @@ internal static unsafe class AreaGrid
     /// <summary>Per slot: the next slot in its cell's list. Sized by the ownership table, like every other
     /// per-slot column, and written only by <see cref="Add"/>.</summary>
     private static readonly int[] _next = new int[AlloyRenderer.MaxOwned];
-    /// <summary>CX-188 (diagnostic): the cell each slot was FILED under, -1 for never. The index is built
-    /// from <c>_oBox</c> once per enrolment and <c>_oBox</c> has a second writer (<c>DbWriteWorldBox</c>, from
-    /// every record rewrite), so a box that moved after its filing leaves the grid describing where the part
-    /// WAS -- and a cell whose union no longer covers it drops it from every query, which is a
-    /// <c>[vischeck]</c> miss. This is what lets the miss log say so instead of leaving it to inference.</summary>
+    /// <summary>Diagnostic: the cell each slot was FILED under, -1 for never. <c>_oBox</c> has a second writer
+    /// (<c>DbWriteWorldBox</c>, on every record rewrite), so a box that moved after its filing leaves the grid
+    /// describing where the part WAS, and a cell whose union no longer covers it drops it from every query.</summary>
     private static readonly int[] _cellOf = ResetCells(new int[AlloyRenderer.MaxOwned]);
     private static int[] ResetCells(int[] a) { for (int i = 0; i < a.Length; i++) a[i] = -1; return a; }
     private static int _filed, _occupied;
@@ -101,8 +84,7 @@ internal static unsafe class AreaGrid
     /// <summary>Append every filed slot whose cell survives <paramref name="planes"/> (six vec4s, the
     /// <see cref="CullPass.Planes"/> convention: a point is inside when <c>dot(n, p) + d &gt;= 0</c>) into
     /// <paramref name="into"/> from <paramref name="n"/>, plus every unboundable slot. <paramref name="slack"/>
-    /// grows each cell box, so a cell about to enter the view is yielded the frame before. Returns the new
-    /// count; allocation-free.</summary>
+    /// grows each cell box, so a cell about to enter the view is yielded the frame before. Allocation-free.</summary>
     internal static int Query(float* planes, float slack, int[] into, int n)
     {
         for (int k = 0; k < _unboxedN && n < into.Length; k++) into[n++] = _unboxed[k];
@@ -117,12 +99,10 @@ internal static unsafe class AreaGrid
         return n;
     }
 
-    /// <summary>CX-188 (diagnostic): does the grid still describe where <paramref name="slot"/>'s box is?
-    /// A query can only yield a slot through the cell it was filed under, and it tests that cell's UNION box
-    /// -- so a slot whose box has since left its cell's union is invisible to every query, whatever the
-    /// per-candidate trim would say. Reports the filed cell, the cell the box would be filed under now, and
-    /// whether the union still covers it. Off the hot path: asked only when the audit has already found a
-    /// miss.</summary>
+    /// <summary>Diagnostic: does the grid still describe where <paramref name="slot"/>'s box is? A query yields a
+    /// slot only through its filed cell and tests that cell's UNION box, so a box that has left the union is
+    /// invisible to every query. Reports the filed cell, the cell it would be filed under now, and whether the
+    /// union still covers it. Off the hot path -- asked only once the audit has found a miss.</summary>
     internal static bool StillFiled(int slot, float* box, out int filed, out int now, out bool covered)
     {
         filed = (uint)slot < (uint)_cellOf.Length ? _cellOf[slot] : -1;
@@ -195,16 +175,16 @@ internal static unsafe class AreaGrid
         // A query reaches a slot ONLY through the cell it was filed under, so a box that moved after the
         // filing is invisible to every query -- the property this asserts is that the test says so.
         check.Expect(StillFiled(0, near, out int cellWas, out int cellNow, out bool covered)
-                     && cellWas == cellNow && covered, "a slot whose box has not moved reads as stale");
+                     && cellWas == cellNow && covered, "a slot whose box has not moved still reads as filed where it is");
         float* moved = stackalloc float[6] { 300f, 300f, 0f, 301f, 301f, 1f };   // the far cell, not slot 0's
         check.Expect(!StillFiled(0, moved, out cellWas, out cellNow, out covered)
                      && cellWas != cellNow && !covered,
-                     "a slot whose box left its filed cell reads as agreeing with the grid");
+                     "a slot whose box left its filed cell no longer reads as filed, and names both cells");
         float* grown = stackalloc float[6] { 0f, 0f, 0f, 40f, 1f, 1f };          // same cell, past its union
         check.Expect(!StillFiled(0, grown, out cellWas, out cellNow, out covered) && !covered,
-                     "a box that outgrew its cell's union reads as covered by it");
+                     "a box that outgrew its cell's union no longer reads as covered by it");
         check.Expect(!StillFiled(7, near, out cellWas, out _, out _) && cellWas < 0,
-                     "an unfiled slot claims a cell");
+                     "an unfiled slot reads as unfiled and names no cell");
 
         Begin();
         log.Info(check.Ok ? "AreaGrid.SelfCheck: passed"

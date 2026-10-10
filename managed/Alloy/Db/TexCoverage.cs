@@ -5,9 +5,9 @@ using static CX.Alloy.DdsReader;
 namespace CX.Alloy.Db;
 
 /// <summary>What a texture's alpha channel MEANS, which is what decides whether a draw is opaque, alpha-tested
-/// or blended. Asked for by CX-120's <c>DrawRecipe</c> (feed review r1 finding 8), answered once per texture
-/// at its decode on the <c>cx-tex</c> worker, and re-asked through the registry's existing dependents edge --
-/// so a recipe that classified against <see cref="Unknown"/> is re-classified when the texture lands.</summary>
+/// or blended. Asked by <c>DrawRecipe</c>, answered once per texture at its decode on the <c>cx-tex</c> worker,
+/// and re-asked through the registry's dependents edge -- so a recipe that classified against
+/// <see cref="Unknown"/> is re-classified when the texture lands.</summary>
 internal enum TexCoverage : byte
 {
     /// <summary>Not decided yet (still loading), or the decode could not answer. A caller keeps its own
@@ -22,29 +22,16 @@ internal enum TexCoverage : byte
     Blended,
 }
 
-/// <summary>CX-117: the coverage verdict, derived from the DECODED pixels and from nothing else.
-/// <para><b>Why it has to be a decode.</b> <c>texture-coverage-is-a-decode-question</c>: three sources claim
-/// to answer "does this texture have holes" and two of them lie. The engine's <c>Material::GetIsOpaque</c>
-/// @0x4c6190 and <c>PartTriMesh::GetIsOpaque</c> @0x43cee0 short-circuit three ways and memoise verdicts
-/// nobody checked a texel for; the GL internal format is no better -- <c>tcm02_leaf01</c> uploads as DXT1
-/// with <c>TEXTURE_ALPHA_SIZE=0</c> and 48% of its blocks punchthrough-encoded, of which only 5.2% of texels
-/// are actually transparent, because encoders emit that mode for opaque black too. What the sampler returns
-/// is the only true answer, so this reads the pixels.</para>
-/// <para><b>And BC1 is the measured exception.</b> Alloy uploads <see cref="Fmt.Bc1"/> as
-/// <c>COMPRESSED_RGB_S3TC_DXT1</c> (see <see cref="GlFormat"/>) and <see cref="BcnDecode.PixelBytes"/> gives
-/// it three bytes per pixel for the same reason: there is no alpha in the sampler's answer. Measured on this
-/// driver, no DXT1-RGB texture returns sampler alpha below 1.0 -- so a BC1 texture is
-/// <see cref="TexCoverage.Opaque"/> whatever its punchthrough blocks say, and scanning them would produce a
-/// verdict about pixels nothing ever samples.</para>
-/// <para>Engine-free and GL-free: the worker calls it, and the off-device check runs it on synthetic
-/// images.</para></summary>
+/// <summary>The coverage verdict, derived from the DECODED pixels and nothing else: the engine's
+/// <c>GetIsOpaque</c> memoises verdicts nobody checked a texel for and the GL internal format lies too (DXT1
+/// encoders emit punchthrough blocks for opaque black), so only the sampler's answer counts. BC1 is the measured
+/// exception -- uploaded as <c>COMPRESSED_RGB_S3TC_DXT1</c>, its sampler alpha is never below 1.0, so Opaque.</summary>
 internal static unsafe class TexCoverageOf
 {
-    /// <summary>Alpha at or below this is "out", at or above <see cref="OpaqueAt"/> is "in", and anything
-    /// between makes the texture <see cref="TexCoverage.Blended"/>. A tolerance rather than exact 0 and 255
-    /// because a BCn alpha block's endpoint interpolation lands a nominal 255 on 254; the cost of the
-    /// tolerance is that a near-opaque texel is alpha-tested as fully opaque, which no eye resolves, while
-    /// the cost of no tolerance is calling a plain cutout blended and sorting the whole creature.</summary>
+    /// <summary>Alpha at or below this is "out", at or above <see cref="OpaqueAt"/> is "in", anything between
+    /// makes the texture <see cref="TexCoverage.Blended"/>. A tolerance rather than exact 0 and 255 because a
+    /// BCn alpha block's endpoint interpolation lands a nominal 255 on 254; the cost of no tolerance is calling
+    /// a plain cutout blended and sorting the whole creature.</summary>
     internal const int CutoutAt = 2, OpaqueAt = 253;
 
     /// <summary>The verdict for an RGBA8 image, read off the alpha channel at <paramref name="stride"/>-byte

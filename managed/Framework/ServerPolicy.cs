@@ -10,11 +10,10 @@ namespace CX.Framework;
 public enum PolicyRoute { Engine, Deny, Server }
 
 /// <summary>
-/// The session's server policy (the "directory" over the player's config; <c>docs/ui-policy-contract.md</c>). The
-/// server sends <c>key=value</c> lines; a key that names a declared knob HOLDS it (<see cref="Knob.Enforce"/>), any
-/// other key is a component property a window reads through <see cref="Bool"/> / <see cref="Float"/> /
-/// <see cref="Str"/> -- things no knob exposes (hide the gold view, relabel a slot, move a component). Everything is
-/// session state: it dies at the next login and never reaches <c>cx.cfg</c>.
+/// The session's server policy (<c>docs/ui-policy-contract.md</c>): the server sends <c>key=value</c> lines, a key
+/// naming a declared knob HOLDS it (<see cref="Knob.Enforce"/>), and any other key is a component property a window
+/// reads through <see cref="Bool"/> / <see cref="Float"/> / <see cref="Str"/>. All of it is session state: it dies
+/// at the next login and never reaches <c>cx.cfg</c>.
 /// </summary>
 public static class ServerPolicy
 {

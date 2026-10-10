@@ -5,14 +5,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>The dangly solve over DB columns: <c>Alloy/Scene/DanglyPhysics.cs</c>'s integrator, unchanged, with
-/// its setup taken from records instead of from <c>PartDanglyMesh</c> + the engine's VDO.
-/// <para>The per-vertex arithmetic is a verbatim port (same gains, same cage, same body proxy, same turbulence
-/// phase), so a cloak looks the same in both modes. What changed is everything around it: the rest positions
-/// come from the <see cref="MeshDef"/>, the writable copy is the part's own dynamic buffer rather than a VDO
-/// item, the previous pose is a column rather than <c>Part+0xc0</c>, and the per-instance phase is seeded from
-/// the part's INDEX rather than its address -- which is also what makes it stable across a relogin.</para>
-/// </summary>
+/// <summary>The dangly solve over DB columns: <c>Alloy/Scene/DanglyPhysics.cs</c>'s integrator, unchanged,
+/// with its setup taken from records. The per-vertex arithmetic is a verbatim port (same gains, cage, body
+/// proxy and turbulence phase); the rest positions come from the <see cref="MeshDef"/>, the writable copy is
+/// the part's own dynamic buffer, and the per-instance phase is seeded from the part's INDEX, not its address.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>One world unit of movement in a frame is a teleport: snap flat to rest and skip the sim.</summary>

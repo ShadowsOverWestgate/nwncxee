@@ -4,15 +4,8 @@ namespace CX.Alloy;
 
 /// <summary>
 /// What is left of the per-area skybox pass: the player's switch and the period line's counters. The sky the
-/// Alloy frame draws comes from the scene database (<c>AlloyRenderer.DbSky</c> and <c>DbSky</c>, which carry
-/// <c>Roles</c>' branch structure term for term), and <c>SkyStage</c> compiles the custom fragment stage a
-/// sky material names.
-/// <para>CX-188: the ENGINE read is gone. <c>Enroll</c> walked the three sky gobs off <c>Scene+0x40..</c>
-/// and down each one's part tree, composing a model matrix per part out of <c>Part::GetWorld</c> and
-/// <c>Gob::GetAdjustedScale</c>; it had no caller, and nor did <c>Roles</c>, <c>Count</c>, <c>At</c>,
-/// <c>Drawable</c> or <c>Unported</c>, the table it filled. <c>SkyTick</c> -- CX-87's port of
-/// <c>Scene::RenderSkyBoxes</c>' three side effects onto those same gobs -- went with it for the same
-/// reason.</para>
+/// Alloy frame draws comes from the scene database (<c>AlloyRenderer.DbSky</c>), and <c>SkyStage</c> compiles
+/// the custom fragment stage a sky material names.
 /// </summary>
 internal static class SkyBox
 {
@@ -28,7 +21,7 @@ internal static class SkyBox
     /// a healthy number long after the sky stopped being drawn, which is the opposite of the question.</summary>
     internal static void ResetPeriod() { _hosted = 0; }
 
-    /// <summary>CX-88: one part's sky program was bound this period.</summary>
+    /// <summary>One part's sky program was bound this period.</summary>
     internal static void NoteHosted() => _hosted++;
 
     internal static string Stats() => Disabled ? "sky off (/effects sky 0)"

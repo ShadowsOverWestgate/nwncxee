@@ -2,11 +2,10 @@ using CX.Framework;
 
 namespace CX.Services.Sound;
 
-/// <summary>CX-57: the <c>sound</c> group. Every row changes playback only -- no audio file is touched, and a
-/// vanilla player hears what they always did. The panel carries the output, the speaker test, walls, reverb and the
-/// per-kind faders; the repetition and loudness repairs of the stock data, and every simulation internal, are
-/// Chat-only keys (ADR 0030). Touched from <see cref="SoundService.Initialize"/> so the group declares whether or
-/// not the service arms.</summary>
+/// <summary>The <c>sound</c> group. Every row changes playback only -- no audio file is touched, and a vanilla player
+/// hears what they always did. The panel carries the output, the speaker test, walls, reverb and the per-kind faders;
+/// the repetition and loudness repairs of the stock data, and every simulation internal, are Chat-only keys (ADR 0030).
+/// Touched from <see cref="SoundService.Initialize"/>, so the group declares whether or not the service arms.</summary>
 internal static class SoundKnobs
 {
     internal static readonly KnobGroup G;
@@ -65,7 +64,7 @@ internal static class SoundKnobs
                 + "doubling of distance. Stock fades everything in a straight line from one metre.");
         Air = G.Slider("air", "Distance dulling", 0f, 4f, 0.25f, 2f, "x", Tier.ChatOnly, changed: SoundService.Push,
             help: "Far sounds lose their treble, as they do through air. 0 turns it off.");
-        // ponytail: off by default -- nothing tells a deliberate area-wide bed (SoW's rain: non-positional, volume 127,
+        // ponytail: off by default -- nothing tells a deliberate area-wide bed (e.g. rain: non-positional, volume 127,
         // the toolset's default 1/10 m) from a misplaced one; a per-area or per-resref list is the upgrade
         PlaceLoops = G.Toggle("placeloops", "Place area-wide loops", false, Tier.ChatOnly,
             help: "A looping placed sound its builder left non-positional plays everywhere in the area at one volume. "

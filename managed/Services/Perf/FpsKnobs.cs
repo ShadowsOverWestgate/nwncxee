@@ -2,9 +2,8 @@ using CX.Framework;
 
 namespace CX.Services.Perf;
 
-/// <summary>The <c>fps</c> group (spec §4.2): the master is the overlay's visibility and now persists (amends
-/// #182's session-only <c>/fps</c>); <see cref="Text"/> is the readout's own size (14 unless set; <c>fps.font</c>,
-/// which held a Chat-only typeface name before) / typeface / outline. Touched from <c>FpsOverlayService.Initialize</c>.</summary>
+/// <summary>The <c>fps</c> group: the master is the overlay's visibility and persists; <see cref="Text"/> is the
+/// readout's own size (14 unless set), typeface and outline. Touched from <c>FpsOverlayService.Initialize</c>.</summary>
 internal static class FpsKnobs
 {
     internal static readonly KnobGroup G;

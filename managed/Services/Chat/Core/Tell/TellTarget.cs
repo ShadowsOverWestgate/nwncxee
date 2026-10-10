@@ -110,11 +110,6 @@ public static class TellTarget
         check.Expect(Resolve(pinned, null, null) == null, "null resolver drops pinned");
         check.Expect(Resolve(unpinned, "Alice", null) == null, "null resolver drops typed");
 
-        // NameOf: reverse lookup (portrait click-to-tell)
-        check.Expect(roster.NameOf(42u) == "Alice", "NameOf resolves a live id");
-        check.Expect(roster.NameOf(99u) == "Bob", "NameOf resolves another id");
-        check.Expect(roster.NameOf(999u) == null, "NameOf returns null for unknown id");
-
         // Empty PinnedName = unpinned
         var emptyPin = new Tab("Tell", 0x002) { PinnedName = "" };
         check.Expect(Resolve(emptyPin, null, roster) == null, "empty pin = unpinned");

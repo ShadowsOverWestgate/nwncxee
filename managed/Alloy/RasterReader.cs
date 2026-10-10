@@ -9,21 +9,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52 step 2: Alloy's decoders of the uncompressed texture formats, proved against the engine's
-/// before either takes anything over. Where the engine decodes is where they are checked: a TGA is parsed,
-/// RLE-expanded and R/B-swapped inside <c>CRes::Demand</c> by <c>CResTGA::OnResourceServiced</c>, which mutates
-/// the resource bytes in place, so the file is decoded here first and the engine's pixels compared after; a PLT
-/// reaches the getter as raw {index, layer} pairs and is decoded by <c>ImageDecode</c>, the palette composite.
-/// <c>alloy.rasterread=1</c> runs both beside the engine on every decode, byte for byte; the engine's result
-/// stands and a disagreement is counted and logged (CX-45). <c>=2</c> is ownership: the engine's decode does not
-/// run, and Alloy leaves the <c>CResTGA</c> and the composite exactly as it would have -- in place for an
-/// uncompressed file, else in a buffer from the engine's own <c>operator new[]</c>, which the engine's
-/// <c>delete[]</c> frees as before (Windows inlines <c>OnResourceFreed</c> into the dtor, so no free is hooked).
-/// <para>Bit-identical means the engine's quirks too: the descriptor byte's top-origin bit is never honoured
-/// (no flip), types 1/2 swap bytes 0 and 2 at the pixel stride, type 3 is verbatim, RLE packets cross rows.
-/// What the engine does with memory it does not own (a truncated file, an RLE source that runs out, a 1- or
-/// 2-byte swap reaching past the pixels, a PLT layer beyond the cached rows) is not reproduced; those decodes
-/// are counted <c>unchecked</c> and, when owning, left to the engine. 4PC is left alone: <c>nwn_base.key</c> holds none.</para></summary>
+/// <summary>
+/// Alloy's decoders of the uncompressed texture formats, proved against the engine's before either takes
+/// anything over. A TGA is decoded HERE FIRST, because <c>CResTGA::OnResourceServiced</c> mutates the resource
+/// bytes in place, and the engine's pixels are compared after; a PLT reaches <c>ImageDecode</c> as raw
+/// {index, layer} pairs. <c>alloy.rasterread</c>: 1 checks beside the engine, 2 owns the decode.
+/// </summary>
 public sealed unsafe partial class RasterReader : IExtenderService
 {
     /// <summary>The <c>{pad[4]; short tag; void* owner;}</c> tail <c>CAuroraTexture::LoadTexture</c> writes past an
@@ -66,8 +57,8 @@ public sealed unsafe partial class RasterReader : IExtenderService
             ? $"tga: {_tgaAgreed} agreed, {_tgaMismatched} MISMATCHED, {_tgaUnchecked} unchecked; plt: {_pltAgreed} agreed, {_pltMismatched} MISMATCHED, {_pltUnchecked} unchecked"
             : "tga/plt: engine";
 
-    /// <summary>CX-54 step 0: a TGA's decode, whoever runs it. It sits INSIDE <c>CRes::Demand</c>, which is
-    /// where the read is timed, so the read bracket there subtracts this one.</summary>
+    /// <summary>A TGA's decode, whoever runs it. It sits INSIDE <c>CRes::Demand</c>, which is where the read is
+    /// timed, so the read bracket there subtracts this one.</summary>
     [UnmanagedCallersOnly]
     private static int OnServiced(IntPtr res)
     {
@@ -126,10 +117,10 @@ public sealed unsafe partial class RasterReader : IExtenderService
                : tga.Size == length - t.Offset && tga.Pixels == (IntPtr)(raw + t.Offset) && tga.Compressed == 0 && tga.Owned == 0
                  && tga.ColorMapped == 0);
 
-    /// <summary><c>OnResourceServiced</c>'s success, done by Alloy: the same fields written as the engine's
-    /// branch for the type would, the pixels decoded in place or into an engine <c>new[]</c>. A colour-mapped
-    /// file comes out expanded, and its header's depth says so; a greyscale RLE file is written as type 10's
-    /// branch would write it at one byte per pixel (<c>LoadTexture</c> reads only w, h and depth after).</summary>
+    /// <summary><c>OnResourceServiced</c>'s success, done by Alloy: the same fields the engine's branch for the
+    /// type writes, the pixels decoded in place or into an engine <c>new[]</c> its own <c>delete[]</c> frees. A
+    /// colour-mapped file comes out expanded and its header's depth says so; a greyscale RLE one is written as
+    /// type 10's branch would, at one byte per pixel (<c>LoadTexture</c> reads only w, h and depth after).</summary>
     private static int Own(IntPtr res, byte* raw, ReadOnlySpan<byte> bytes, Verdict v, in Tga t, string? why)
     {
         if (v != Verdict.Pixels)
@@ -161,11 +152,10 @@ public sealed unsafe partial class RasterReader : IExtenderService
         public int Bytes => W * H * Px;
     }
 
-    /// <summary>CX-54, worker-safe: a TGA decoded into a buffer of ours, shaped as <c>GetRaster</c>'s answer --
-    /// the pixels, then the <see cref="TgaTagTail"/> the release reads its tag from. Null with a reason when the
-    /// engine should read it instead: a shape this decoder does not reproduce, a colour-mapped or greyscale-RLE
-    /// file while the engine's own decode is the reference (<c>alloy.rasterread</c> below 2), or a 2-byte pixel,
-    /// which <c>ReleaseRaster</c> @0x1123180 takes for a 4PC.</summary>
+    /// <summary>Worker-safe: a TGA decoded into a buffer of ours, shaped as <c>GetRaster</c>'s answer -- the
+    /// pixels, then the <see cref="TgaTagTail"/> the release reads its tag from. Null with a reason when the engine
+    /// should read it instead: a shape this decoder does not reproduce, a colour-mapped or greyscale-RLE file while
+    /// the engine's decode is the reference, or a 2-byte pixel, which <c>ReleaseRaster</c> takes for a 4PC.</summary>
     internal static byte* PrepareTga(ReadOnlySpan<byte> raw, out Raster r, out string? why)
     {
         r = default;
@@ -179,8 +169,7 @@ public sealed unsafe partial class RasterReader : IExtenderService
         return px;
     }
 
-    /// <summary>CX-54 step 0: the PLT composite is decode from end to end -- its pixels were read with the
-    /// resource.</summary>
+    /// <summary>The PLT composite is decode from end to end -- its pixels were read with the resource.</summary>
     [UnmanagedCallersOnly]
     private static IntPtr OnDecode(byte* px, int w, int h, byte* palette, int paletteHeight, int* rows, int layers)
     {

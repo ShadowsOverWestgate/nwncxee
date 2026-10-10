@@ -6,15 +6,10 @@ using CX.Graphics;
 namespace CX.Services.Perf;
 
 /// <summary>
-/// ADR 0006 phase 0: per-frame draw-path histogram. Opt-in via <c>alloy.drawhooks=stats</c> in <c>cx.cfg</c> (off = no
-/// hooks, zero cost). Config and not a chat command (ADR 0013): it and <c>DrawFunnelService</c> hook the same
-/// symbols, so which of them arms is decided once, at install, and cannot be flipped mid-session.
-/// <para>Call-through hooks on <c>GLRender::RenderVertexData</c> (every GL draw the engine submits)
-/// and <c>Scene::RenderDrawBucket</c> (to attribute draws to bucket ids). Aggregates draws by
-/// (VDO, GL program) -- the upper bound on batch groupability; texture/param splits are phase-1's to
-/// measure -- and logs a summary + top groups every ~900 presented frames.</para>
-/// <para>Hot while enabled (~2k fires/frame): fixed-size open-address tables, no allocation; the log line
-/// is the only cold part.</para>
+/// Per-frame draw-path histogram (ADR 0006), opt-in via <c>alloy.drawhooks=stats</c> in <c>cx.cfg</c> (off = no hooks,
+/// zero cost; config and not a chat command, because it and <c>DrawFunnelService</c> hook the same symbols, so which
+/// one arms is decided once at install). Call-through hooks on <c>GLRender::RenderVertexData</c> and
+/// <c>Scene::RenderDrawBucket</c> group draws by (VDO, GL program) and log the top ones. Hot, no allocation.
 /// </summary>
 public sealed unsafe class DrawStatsService : IExtenderService
 {
@@ -44,12 +39,12 @@ public sealed unsafe class DrawStatsService : IExtenderService
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
-        // #170: ahead of the stand-down -- the host called EndFrame every frame regardless, and EndFrame
+        // ahead of the stand-down -- the host called EndFrame every frame regardless, and EndFrame
         // guards itself on Enabled. Registering after the return would silently change that.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 0, EndFrame, "DrawStatsService.endFrame", log);
         if (Alloy.Renderer.DrawHooks.Boot != Alloy.DrawFunnelService.DrawModeStats) return;
         _log = log;
-        // Chained, not Install()ed: RenderVertexData has several subscribers (#88). Lowest priority --
+        // Chained, not Install()ed: RenderVertexData has several subscribers. Lowest priority --
         // we only count what actually reached the GPU.
         _drawSlot = hooks.ChainGlRenderVertexData(&OnVdoDraw, DrawPriority);
         _origBucket = hooks.InstallRenderDrawBucket(&OnBucket);
@@ -68,7 +63,7 @@ public sealed unsafe class DrawStatsService : IExtenderService
         _bucket = prev;
     }
 
-    /// <summary>Chain priority on RenderVertexData: below the shadow cull and the draw funnels (#88).</summary>
+    /// <summary>Chain priority on RenderVertexData: below the shadow cull and the draw funnels.</summary>
     internal const int DrawPriority = 10;
     private static GlRenderVertexDataFn* _drawSlot;
 

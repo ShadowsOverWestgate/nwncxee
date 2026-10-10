@@ -3,23 +3,9 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>particles</c> group, declared on the pass itself because the pass already owns the name.
-/// <see cref="Batch"/> and <see cref="Sampler"/> are the Restart pair (the batcher shapes every group the pass
-/// builds; the sampler is a GL object it owns), read through <c>Boot</c>. Touched from
-/// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.
-/// <para>The chat-only dials: <c>diag</c> is a per-pass census by render type, blend class and model flag.
-/// <c>batch</c> off draws all three classes in the engine's capture order, merging only ADJACENT runs -- the
-/// A/B for the additive-over-blended difference. <c>soft</c> off: no depth snapshot, vanilla's hard
-/// intersections. <c>lit</c> off: the vanilla per-emitter CPU tint only (ponytail: lighting runs PER FRAGMENT
-/// on the grass template; a screen of smoke pays a cluster walk per layer, and moving it to the vertex is a
-/// shader change because the light libs sample shadow maps). <c>viz</c> 1 tints every quad by render type
-/// (<see cref="TypeNames"/>), 2 draws flat. <c>sampler</c> on samples the diffuse through an owned sampler
-/// object: the engine never binds a particle texture raw (<c>Material::BindAllStandardTextures</c> @0x4c6e30
-/// binds through the texture's vtable slot +0x108, which carries its sampler state), so the GL name straight
-/// from <c>AurTextureGetTID</c> samples through whatever the last engine pass left. <c>grid</c> off ignores the
-/// emitter's UV atlas; <c>guard</c> off samples the atlas with no containment -- <b>both are the live bisect
-/// for the OPEN stray-rays bug</b>: rays that persist with the grid off are in the texture, rays that vanish
-/// are in the UV maths. <c>sort</c> off builds the draw-order index on the CPU, unordered -- also the fallback
-/// a driver whose loader never resolved <c>glDispatchCompute</c> takes on its own (#288).</para></summary>
+/// <see cref="Batch"/> and <see cref="Sampler"/> are the Restart pair, read through <c>Boot</c>; sampler on
+/// samples the diffuse through an owned sampler object, because the engine never binds a particle texture raw
+/// -- it binds through the texture's vtable slot +0x108, which carries that texture's sampler state.</summary>
 internal static unsafe partial class Particles
 {
     internal static readonly KnobGroup G;

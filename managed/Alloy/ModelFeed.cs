@@ -6,20 +6,10 @@ using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy;
 
-/// <summary>CX-113: the session's <see cref="IModelSource"/> -- the engine half of the model cache's read.
-/// Everything engine-shaped about a model load lives here, which is what keeps <c>Alloy/Mdl/</c> (the cache and
-/// the parser) buildable and runnable with no client.
-/// <para>Both halves already exist and are reused verbatim: <see cref="ResLocate"/> turns the engine's own
-/// <c>CExoResMan::GetKeyEntry</c> lookup into a value record on the MAIN thread -- which is the engine's
-/// precedence (override, hak, NWSync, module, BIF), because it IS the engine's lookup -- and
-/// <see cref="TexLoadRead.Handles"/> / <see cref="NwSyncReader"/> read the bytes on the worker.
-/// CX's own parser then reads whatever came back, ASCII or binary, on that same
-/// worker -- deliberately NOT through <see cref="MdlCache"/>, whose payload is the engine's serialisation of
-/// a model it had already instantiated and is therefore contaminated with another session's render state.</para>
-/// <para>The one case this refuses: a RESIDENT key entry, where the engine is holding the resource in memory
-/// and a worker cannot read it (<c>CExoResMan::Malloc</c> @0x536300 frees off the to-be-freed list on every
-/// allocation, so <c>CRes+0x20</c> is not a pointer a worker may hold). That is counted and named on the
-/// period line, never read from the main thread instead.</para></summary>
+/// <summary>The session's <see cref="IModelSource"/> -- the engine half of the model cache's read, so that
+/// <c>Alloy/Mdl/</c> stays buildable with no client. <see cref="ResLocate"/> turns the engine's own
+/// <c>GetKeyEntry</c> lookup into a value record on the MAIN thread (its precedence IS the engine's) and a worker
+/// reads the bytes. A RESIDENT entry is the one refusal: its pointer is not one a worker may keep.</summary>
 internal static unsafe class ModelFeed
 {
     /// <summary>The model restype, as <c>CResHelper&lt;CResMDL, 2002&gt;</c> declares it.</summary>
@@ -195,15 +185,10 @@ internal static unsafe class ModelFeed
         return src == null ? null : ((IModelSource)src).Locate(resref, out why);
     }
 
-    /// <summary>Game thread: does the engine's own lookup hold an entry for this model? The question the seam
-    /// asks before it refuses -- "no such model" is an answer the engine gives too and every caller
-    /// null-checks, while "the entry is there and CX could not read it" is CX's own failure and must not look
-    /// like the first (CGuiObject::SetModel @0x586520 dereferences the result at +0x45 once its own
-    /// <c>GUI_empty</c> fallback is refused as well). It is the engine's own test: every engine fetch of a
-    /// resource reaches <c>CExoResMan::Get</c> / <c>GetResObject</c>, which ask this same
-    /// <c>GetKeyEntry</c> -- with <c>logMissing: false</c>, so the question is side-effect free.
-    /// <para>A lookup that cannot answer at all is NOT an absence: false here would have CX claim "no such
-    /// model" about a resource it never asked about.</para></summary>
+    /// <summary>Game thread: does the engine's own lookup hold an entry for this model? The question the seam asks
+    /// before it refuses, because "no such model" is an answer every caller null-checks while "CX could not read
+    /// it" is CX's own failure and must not look like the first. The engine's own test, asked with
+    /// <c>logMissing: false</c>; a lookup that cannot answer at all returns true, never a claimed absence.</summary>
     internal static bool Present(string resref)
     {
         if (!ResLocate.Ready && !ResLocate.Attach(out _)) return true;

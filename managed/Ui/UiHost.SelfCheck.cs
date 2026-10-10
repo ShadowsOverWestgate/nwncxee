@@ -17,7 +17,7 @@ public static partial class UiHost
         public void FireMouse(int button, int sdlMods) => FiredMouse = button;
     }
 
-    /// <summary>Off-device proof of the arbiter (AC #4): layout/z-order, focus, hit-test/cursor pick, and
+    /// <summary>Off-device proof of the arbiter: layout/z-order, focus, hit-test/cursor pick, and
     /// precedence, at two scales, leaving the static registry empty. No GL, no device.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
@@ -59,7 +59,7 @@ public static partial class UiHost
                 Focus(b);
                 check.Expect(Focused == b, "focusing another replaces the single owner");
 
-                // non-focusable overlay: skipped by focus hit-test, still drives the cursor (AC #3 / US #11)
+                // non-focusable overlay: skipped by focus hit-test, still drives the cursor
                 var overlay = new Window(150, 120, 60, 60) { Focusable = false }; created.Add(overlay);
                 overlay.Regions.Add(new HitRegion(150, 120, 60, 60, CursorKind.Link));
                 check.Expect(HitTest(160, 130) == overlay, "topmost overlay wins the cursor hit-test");
@@ -119,7 +119,7 @@ public static partial class UiHost
             Unregister(win); created.Remove(win);
             check.Expect(Focused == null && !KeyboardOwned, "unregistering the owner clears focus and drops the gate");
 
-            // ---- live routing (#64): mouse/key/text dispatch, keyboard gate, chord fall-through, focus mode ----
+            // ---- live routing: mouse/key/text dispatch, keyboard gate, chord fall-through, focus mode ----
             {
                 // Two stacked windows; each records the events it consumes. Overlay (higher z) is topmost.
                 var hits = new List<string>();

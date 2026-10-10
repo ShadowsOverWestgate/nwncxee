@@ -1,10 +1,9 @@
 namespace CX.Services.Chat.Core;
 
 /// <summary>Stable keys for the user-themeable chrome colours. Values live in the config as RGBA8
-/// (<c>0xRRGGBBAA</c>) overrides; the defaults + the mapping onto individual widgets live in
-/// <see cref="Render.WindowRenderer"/> (the look is a render concern). Only these are surfaced in the
-/// settings UI; the renderer routes every chrome colour through the palette so more can be exposed later
-/// without touching the draw code.</summary>
+/// (<c>0xRRGGBBAA</c>) overrides; the defaults and the mapping onto individual widgets live in
+/// <see cref="Render.WindowRenderer"/>, since the look is a render concern. Every chrome colour routes
+/// through the palette, so more can be surfaced in the settings UI without touching the draw code.</summary>
 public static class ChatColor
 {
     public const string Background = "bg";

@@ -4,18 +4,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>Per-face normals welded into smooth ones, once per newly enrolled gob part (#144 retry).
-/// NWN heads and many placeables ship every triangle with its own three vertices and a flat normal, so a
-/// terminator on them is a solid wedge no wrap width can soften (<c>/alloy viz 7</c> shows the wedges).
-/// The weld runs on the engine's permanent host shadow -- the bytes #260's upload funnel already pushes --
-/// so there is no GPU readback; the one GL call is a sub-data upload of the touched vertex span.
-/// <para>Crease-preserving: a vertex takes the area-weighted sum of every face at its bitwise-equal
-/// position whose normal is within <see cref="Angle"/> degrees of its own; faces past the threshold are
-/// left out, so a box corner stays a box corner. Idempotent, so a shared range welded twice is unchanged.</para>
-/// <para>Windows: no new symbol or offset -- every read is a GL query or a pool/VDO row already resolved on
-/// both platforms (#447 anchors the pool table on each). A null host is still counted refused, not skipped.</para>
-/// <para>ponytail: idempotence is exact only while a fold's face membership is stable; a shared range welded
-/// twice near the threshold can drift by one face. Track welded ranges by (vdo,item) if it ever shows.</para></summary>
+/// <summary>Per-face normals welded into smooth ones, once per newly enrolled gob part. NWN heads and many
+/// placeables ship every triangle with its own three vertices and a flat normal, so a terminator on them is a
+/// solid wedge no wrap width can soften. Crease-preserving: a vertex takes the area-weighted sum of every face at
+/// its bitwise-equal position within <see cref="Angle"/> degrees of its own, so a box corner stays a box corner.</summary>
 internal static unsafe class NormalWeld
 {
     /// <summary>Crease threshold in degrees; 0 disables. <c>/alloy weld</c>. Applies to parts enrolled after
@@ -48,8 +40,10 @@ internal static unsafe class NormalWeld
         _vertGen = new int[MaxVerts];
     }
 
-    /// <summary>Weld one part's range. <paramref name="elemHost"/>/<paramref name="vertHost"/> are the
-    /// pools' host shadows; the vertex span touched is re-uploaded to <paramref name="nrm"/>'s buffer.</summary>
+    /// <summary>Weld one part's range off the pools' permanent host shadows -- nothing is read back off the GPU,
+    /// and the one GL call is a sub-data upload of the touched span to <paramref name="nrm"/>'s buffer.
+    /// <para>ponytail: idempotence holds only while a fold's face membership is stable -- a shared range welded
+    /// twice near the threshold can drift by one face. Track welded ranges by (vdo,item) if it ever shows.</para></summary>
     internal static void Run(byte* elemHost, byte* vertHost, long first, int count, int baseVertex,
                              in VertexStream pos, in VertexStream nrm)
     {
@@ -126,13 +120,10 @@ internal static unsafe class NormalWeld
     /// <summary>Parts fed from a parsed model's own post-process, and the ones that could not be.</summary>
     internal static int ModelParts, ModelRefused;
 
-    /// <summary>CX-112's per-model source: a <c>MeshDef</c> already carries welded, smoothing-group aware
-    /// normals from the parse, so a part cut from that mesh copies them in instead of re-deriving them from the
-    /// host shadow. One mesh is parsed once however many parts instance it, which is the point; <see cref="Run"/>
-    /// stays until CX-114 deletes the per-part path.
-    /// <para>The engine's <c>GenVertices</c> emits one GPU vertex per post-processed mesh vertex in order, so
-    /// part vertex <c>i</c> is mesh vertex <c>i</c>; a part whose range outruns the mesh is refused rather than
-    /// half-written.</para></summary>
+    /// <summary>Copy welded, smoothing-group aware normals straight from a parsed <c>MeshDef</c> rather than
+    /// re-deriving them from the host shadow: one mesh is parsed once however many parts instance it.
+    /// <para>The engine's <c>GenVertices</c> emits one GPU vertex per post-processed mesh vertex in order, so part
+    /// vertex <c>i</c> is mesh vertex <c>i</c>; a part whose range outruns the mesh is refused, not half-written.</para></summary>
     internal static bool FromModel(ReadOnlySpan<System.Numerics.Vector3> normals, byte* vertHost,
                                    int baseVertex, int vertCount, in VertexStream nrm)
     {

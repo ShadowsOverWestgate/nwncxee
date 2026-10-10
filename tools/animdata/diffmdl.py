@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the same model resolved live (SoW haks) vs stock: which animations differ, and how.
+"""Compare the same model resolved live (the HAKS chain) vs stock: which animations differ, and how.
 
     ./diffmdl.py a_ba a_fa pmh0
 """

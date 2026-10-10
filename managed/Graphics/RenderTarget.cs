@@ -1,7 +1,7 @@
 namespace CX.Graphics;
 
 /// <summary>
-/// Allocating the textures an Alloy pass renders to or copies into (#174). Three passes wrote this out
+/// Allocating the textures an Alloy pass renders to or copies into. Three passes wrote this out
 /// longhand, and the depth half -- the internal-format-to-(format, type) table -- was byte-identical in two
 /// of them.
 /// </summary>
@@ -48,17 +48,10 @@ public static unsafe class RenderTarget
 
     /// <summary>(Re)create <paramref name="tex"/> as a colour target. <paramref name="hdr"/> picks RGBA16F over
     /// RGBA8, which must track what the copy SOURCE holds: an 8-bit copy of a linear HDR frame clips every
-    /// highlight, and those are exactly the pixels a reflection is made of (#139).</summary>
+    /// highlight, and those are exactly the pixels a reflection is made of.</summary>
     public static void AllocColor(ref uint tex, bool hdr, int w, int h, int filter = Gl.NEAREST)
         => Create(ref tex, hdr ? Gl.RGBA16F : Gl.RGBA8, w, h, filter);
 
-    /// <summary>The depth internal format the bound FRAMEBUFFER's depth attachment holds, 0 when it has none.
-    /// Asks the OBJECT for its format rather than the attachment for its bit widths (#129's finding): every
-    /// owned framebuffer attaches depth at DEPTH_ATTACHMENT alone, so the STENCIL_ATTACHMENT query answers
-    /// nothing and a packed D24S8 would read as a plain 24-bit one -- after which a blit mismatches and is
-    /// thrown away whole. The default framebuffer (<paramref name="fbo"/> 0) has no object to ask and answers
-    /// under GL_DEPTH/GL_STENCIL, so it falls back to the bit widths; a wrong guess there is the blit's to
-    /// catch. An absent attachment is asked only its type (<see cref="AttachmentParam"/>).</summary>
     /// <summary>One parameter of the bound FRAMEBUFFER's attachment, or 0 when nothing is attached there: any
     /// pname but OBJECT_TYPE/NAME on a NONE attachment raises INVALID_OPERATION (GL 4.6 9.2.3), which the old
     /// probe drained -- along with whatever unrelated error was queued ahead of it.</summary>
@@ -70,6 +63,10 @@ public static unsafe class RenderTarget
         return v;
     }
 
+    /// <summary>The depth internal format the bound FRAMEBUFFER's depth attachment holds, 0 when it has none.
+    /// Asks the OBJECT for its format rather than the attachment for its bit widths: an owned framebuffer
+    /// attaches depth at DEPTH_ATTACHMENT alone, so a packed D24S8 would read as a plain 24-bit one and the
+    /// blit mismatches. The default framebuffer (<paramref name="fbo"/> 0) has no object, so it falls back.</summary>
     public static uint ProbeDepthFormat(uint fbo)
     {
         int type = 0, name = 0, fmt = 0;

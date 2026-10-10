@@ -20,10 +20,24 @@ internal static class Program
     private const ushort WokResType = 2016;
     private const int CxHeaderBytes = 48;
 
-    private static string Key = "~/gry/steam/Neverwinter Nights/data/nwn_base.key";
-    private static string Ascii = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "repos/assets/content");
+    private static string Key = Path.Combine(RepoPath("NWN_DIR"), "data/nwn_base.key");
+    private static string Ascii = RepoPath("CONTENT_MODELS");
     private static string Cx = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                                             ".local/share/Neverwinter Nights/cx-models");
+    /// <summary>A per-machine path from <c>tools/paths.py</c> (environment, <c>local.env</c>, then a stock default),
+    /// found by walking up from the working directory; empty when unset.</summary>
+    private static string RepoPath(string key)
+    {
+        var dir = new DirectoryInfo(Environment.CurrentDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "tools/paths.py"))) dir = dir.Parent;
+        if (dir == null) return "";
+        var psi = new ProcessStartInfo("python3", $"tools/paths.py {key}")
+        { RedirectStandardOutput = true, WorkingDirectory = dir.FullName };
+        using Process? p = Process.Start(psi);
+        string v = p?.StandardOutput.ReadToEnd().Trim() ?? "";
+        p?.WaitForExit();
+        return p?.ExitCode == 0 ? v : "";
+    }
     private static int _verbose;
     private static int _limit = int.MaxValue;
     private static string? _only;
@@ -72,6 +86,7 @@ internal static class Program
     private static int Tree()
     {
         if (_only == null) return Fail("tree needs --only <resref>");
+        if (!Directory.Exists(Ascii)) return Fail("no content corpus: set CONTENT_MODELS or pass --ascii <dir>");
         foreach (string f in Directory.EnumerateFiles(Ascii, "*.mdl").Where(p => Path.GetFileName(p).Contains(_only, StringComparison.OrdinalIgnoreCase)))
         {
             ModelDef? m = MdlParser.Parse(File.ReadAllBytes(f), Path.GetFileNameWithoutExtension(f), out string? err);
@@ -244,6 +259,7 @@ internal static class Program
     private static int Dump()
     {
         if (_only == null) return Fail("dump needs --only <resref>");
+        if (!Directory.Exists(Ascii)) return Fail("no content corpus: set CONTENT_MODELS or pass --ascii <dir>");
         string? cached = null;
         foreach (string f in Directory.EnumerateFiles(Cx, "*.mdl"))
             if (Path.GetFileName(f).StartsWith(_only + ".", StringComparison.OrdinalIgnoreCase)) { cached = f; break; }
@@ -451,7 +467,7 @@ internal static class Program
 
     private static int AsciiCorpus()
     {
-        if (!Directory.Exists(Ascii)) { Console.WriteLine($"ascii: SKIP (no {Ascii})"); return 0; }
+        if (!Directory.Exists(Ascii)) { Console.WriteLine($"ascii: SKIP (no corpus at '{Ascii}': set CONTENT_MODELS)"); return 0; }
         List<string> files = Directory.EnumerateFiles(Ascii, "*.mdl", SearchOption.AllDirectories).ToList();
         if (_only != null) files = files.Where(f => Path.GetFileName(f).Contains(_only, StringComparison.OrdinalIgnoreCase)).ToList();
         if (files.Count > _limit) files = files.Take(_limit).ToList();

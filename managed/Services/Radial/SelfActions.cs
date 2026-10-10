@@ -6,16 +6,10 @@ using CX.Framework;
 namespace CX.Services.Radial;
 
 /// <summary>
-/// Self pins (CX-694): an action the self menu fires, shown on any root and fired exactly as the self menu would.
-/// The self root's leaves are <c>CGuiCreatureMenu</c> / <c>CClientSpellMenu</c> member functions that read only the
-/// menu's target fields, so CX builds a <b>stand-in</b> of each class -- the engine's own ctor with the local
-/// creature as the target and its position as the vector, no ring, torn down with the held root -- and invokes the
-/// leaf's handler on it under the same event-object bracket as any leaf. Which handlers may be invoked is the
-/// <see cref="Table"/>, the whole safety story on both platforms: a persisted <c>self:&lt;key&gt;</c> row names a
-/// table entry and nothing else, and an address is only ever produced by <see cref="SymbolMap.Resolve"/> of it.
-/// A spell-class handler is greyed when <c>TargetIsValid</c> refuses the spell at self (a hostile-only spell), which
-/// is the self menu's own rule. ponytail: the table is the clonability rule -- a self-menu leaf outside it (an
-/// associate command, a party action) is not offered; add a row when one is wanted.
+/// Self pins: an action the self menu fires, shown on any root and fired exactly as the self menu would. Its leaves
+/// are <c>CGuiCreatureMenu</c> / <c>CClientSpellMenu</c> member functions reading only the menu's target fields, so CX
+/// builds a <b>stand-in</b> of each class (the engine's own ctor, the local creature as target, torn down with the held
+/// root). <see cref="Table"/> is the whole safety story and the clonability rule: a <c>self:&lt;key&gt;</c> row names a table entry, resolved by <see cref="SymbolMap.Resolve"/>, and nothing else. ponytail: a leaf outside it is not offered.
 /// </summary>
 internal static unsafe class SelfActions
 {
@@ -48,7 +42,7 @@ internal static unsafe class SelfActions
     private static SpellMenuTargetIsValidFn _targetIsValid;
     // Left raw: the ctors take their Vector BY VALUE and Itanium packs it into the FIRST TWO argument slots
     // (xmm0 = x|y, xmm1 = z) while Win64 passes a pointer after `this` -- the parameter LISTS differ, so no
-    // single [Fn] signature describes either symbol (CX-37).
+    // single [Fn] signature describes either symbol.
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr> _creatureCtor;
     private static delegate* unmanaged<IntPtr, IntPtr, uint, IntPtr, int, IntPtr> _spellCtor;

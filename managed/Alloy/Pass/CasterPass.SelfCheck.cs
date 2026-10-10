@@ -38,7 +38,6 @@ public sealed unsafe partial class CasterPass
                   && CastMaskHVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
                   && CastLayerMaskHVs.Contains("vDraw = gl_BaseInstance & 0x3ffff;")
                   && CastLayerMaskHVs.Contains("uDraw[gl_BaseInstance & 0x3ffff]")
-                  && CmdBytes == 20
                   && CastVs.Contains("gl_BaseInstance") && !CastVs.Contains("gl_DrawID")
                   // ...and the masked stage indexes its record the same way, for the same M4 reason
                   && CastMaskVs.Contains("gl_BaseInstance") && !CastMaskVs.Contains("gl_DrawID")
@@ -54,7 +53,6 @@ public sealed unsafe partial class CasterPass
                   && AlloyRenderer.BoneVs.Contains($"binding = {BindBones}")
                   && CastVs.Contains("int bb = CxBoneBase(d);")
                   && CastVs.Contains("if (bb >= 0)") && AlloyRenderer.BoneVs.Contains("aBoneWeight.w > 0.0")
-                  && AlloyRenderer.BoneCount == 64
                   // #119's standing constraint: the rigid arm is the prepass's clip expression verbatim,
                   // under the invariant. A caster whose depth disagrees with the colour pass's by a bit is
                   // acne no reviewer would trace to a re-spelled multiply.
@@ -153,13 +151,24 @@ public sealed unsafe partial class CasterPass
             // and the views it stood in keeping its shadow forever. It is a frame STAMP compared against a
             // previous-frame list -- no hash, no bucket, no eviction -- so what it has to get right is that a
             // slot present in both frames does not ghost and a slot present in only the first one does.
+            int ghosts0 = _ghostCount; bool inv0 = _invalidate;
             _frameSeq = 7;
             _prevSlots[0] = 3; _prevSlots[1] = 9; _prevCount = 2;
             _liveStamp[3] = 7; _liveStamp[9] = 6;      // slot 3 collected this frame, slot 9 not
-            int ghosts = 0;
-            for (int q = 0; q < _prevCount; q++) if (_liveStamp[_prevSlots[q]] != _frameSeq) ghosts++;
-            bool sweep = ghosts == 1;
+            AlloyRenderer.SelfCheckCasterSphere(3, 1f, 2f, 3f, 4f);
+            AlloyRenderer.SelfCheckCasterSphere(9, 5f, 6f, 7f, 8f);
+            _ghostCount = 0; _invalidate = false;
+            VanishSweep();
+            bool sweep = _ghostCount == 1 && _ghostCx[0] == 5f && _ghostR[0] == 8f && !_invalidate;
+            // ...and one whose stored sphere was never written takes the blanket rather than ghosting a
+            // zero-radius sphere that would invalidate nothing.
+            AlloyRenderer.SelfCheckCasterSphere(9, 0f, 0f, 0f, 0f);
+            _ghostCount = 0;
+            VanishSweep();
+            sweep &= _ghostCount == 0 && _invalidate;
             _frameSeq = 0; _prevCount = 0; _liveStamp[3] = 0; _liveStamp[9] = 0;
+            AlloyRenderer.SelfCheckCasterSphere(3, 0f, 0f, 0f, 0f);
+            _ghostCount = ghosts0; _invalidate = inv0;
             if (!sweep)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the vanish sweep misses a caster that stopped casting (frozen shadows)"); }
         }
@@ -258,7 +267,7 @@ public sealed unsafe partial class CasterPass
                         && src[CasterGather.SrcUints] == 31
                         && src[CasterGather.SrcUints + 3] == 4101 && src[CasterGather.SrcUints + 4] == 1
                         && src[CasterGather.SrcUints + 5] == 1 && src[CasterGather.SrcUints + CasterGather.SetFlagWord] == 1
-                        && CasterGather.SrcUints == 7 && CasterGather.CmdBytes == 20 && off;
+                        && off;
             // SL1/SL2: the per-frame word rewrite, and the per-batch dynamic population it maintains. The
             // rewrite is what a frame does INSTEAD of re-reading all 37k staged draws, and the population is
             // what lets a view's set skip a batch outright -- both silent when wrong (a caster at another

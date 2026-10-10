@@ -101,7 +101,7 @@ public sealed unsafe partial class ObjectSlots
     /// <summary><c>Gob::SetLightPriority(int)</c> @0x43f760 writes the priority on every LIGHT PART under the
     /// object's root and stores nothing on the object itself. The seam keeps it as an object column and lets
     /// the light set read it, because CX's lights are records keyed on (object, part) rather than fields on a
-    /// part node (CX-116).</summary>
+    /// part node.</summary>
     [UnmanagedCallersOnly]
     private static void SetLightPriority(nint self, int priority)
     {
@@ -214,9 +214,9 @@ public sealed unsafe partial class ObjectSlots
 
     // ---- hit tests: the cast is CX-118's, the slot is the seam's ----
 
-    /// <summary>One object's cast, shared by the three hit slots. The engine restricts <c>Gob::HitCheck</c>
-    /// to this object by walking its own part tree; CX-118 casts over a scene, so the seam asks for the
-    /// object's own scene and keeps only a hit on this object -- the same answer, one pass.</summary>
+    /// <summary>One object's cast, shared by the three hit slots. The engine restricts <c>Gob::HitCheck</c> to
+    /// this object by walking its own part tree; the seam casts over the object's own scene and keeps only a
+    /// hit on this object -- the same answer, one pass.</summary>
     private static nint CastOne(DbId id, nint shell, EVec from, EVec to, EVec* at, nint info, bool boxOnly)
     {
         HitQuery q = HitQuery.Ray(SceneDb.ObjScene[id.Index], from.V, to.V);
@@ -253,9 +253,8 @@ public sealed unsafe partial class ObjectSlots
 
     /// <summary><c>Gob::HitCheckPart(CAurPart*, Vector, Vector, Vector*, CHitInfo*)</c> @0x437e10: the cast
     /// restricted to one part's subtree.
-    /// <para>SIMPLIFIED: the seam casts against the whole object and then keeps the hit only when the part
-    /// CX-118 reports is the one asked for. That is the same answer for a leaf part and a narrower one for an
-    /// interior part, whose descendants the engine would also have tested.</para></summary>
+    /// <para>SIMPLIFIED: the seam casts against the whole object and keeps the hit only when the reported part
+    /// is the one asked for -- the same answer for a leaf, narrower for an interior part.</para></summary>
     [UnmanagedCallersOnly]
     private static nint HitCheckPart(nint self, nint part, EVec from, EVec to, EVec* at, nint info)
     {

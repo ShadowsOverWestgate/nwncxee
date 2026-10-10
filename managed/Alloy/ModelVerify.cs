@@ -6,27 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-113's live check (<c>/models verify 1</c>): for every model the ENGINE has loaded, ask the
-/// ENGINE's own <c>FindAnimation</c> and <c>FindAnimScale</c> and compare their answers with
-/// <see cref="ModelCache"/>'s port of them.
-/// <para><b>The oracle is the engine, not a second copy of this walk.</b> Both functions are exported on both
-/// platforms and neither needs anything forged: <see cref="SymbolMap.FindAnimation"/> takes
-/// <c>(Model*, const char*)</c> and <see cref="SymbolMap.FindAnimScale"/> takes <c>(Model*, Animation*)</c>, so
-/// CX calls them and compares POINTERS. That matters: an earlier cut of this check walked the engine's tables
-/// with a hand-written copy of the same traversal, which a misport of the walk's ORDER would have passed.</para>
-/// <para>It drives off the engine's table rather than CX's resident set on purpose: the engine's
-/// <c>List&lt;Model*&gt; Models</c> (<see cref="SymbolMap.ModelTable"/>) holds every model the session has read,
-/// with its real supermodel chain, its real <c>setanimationscale</c> values and its real animation lists -- so
-/// the check runs against every shipped creature chain the session touched without needing CX to have parsed
-/// anything. For each engine <c>Model*</c> it mirrors the three fields the lookup reads (name, supermodel,
-/// animation scale) and one <see cref="AnimDef"/> per engine <c>Animation*</c>, remembering which pointer each
-/// mirror animation came from, then links the mirrors by the engine's own supermodel pointer.</para>
-/// <para>What that pins: <c>FindAnimation</c>'s search order up the chain, its <c>"default"</c> fallback at the
-/// TERMINAL model (not at the model asked about), which model in the chain owns the answer (implied by the
-/// pointer -- each model owns its own array), and <c>FindAnimScale</c>'s product of the scales below it.</para>
-/// <para>This is the only place CX-113 reads engine memory. The reads are the engine's two <c>(abi) list</c>
-/// offsets and the <c>Model</c> / <c>Animation</c> rows measured on both platforms
-/// (<see cref="EngineLayout.MdlcModelAnims"/> and its neighbours).</para></summary>
+/// <summary>The live animation-lookup check (<c>/models verify 1</c>): for every model the ENGINE has loaded, ask
+/// the engine's own exported <see cref="SymbolMap.FindAnimation"/> and <see cref="SymbolMap.FindAnimScale"/> and
+/// compare POINTERS with <see cref="ModelCache"/>'s port -- a hand-written copy of the same traversal would pass
+/// a misported walk ORDER. Driven off the engine's <c>List&lt;Model*&gt;</c>, the only engine memory it reads.</summary>
 internal static unsafe class ModelVerify
 {
     /// <summary>Mismatches named in the log before the check only counts them.</summary>
@@ -41,7 +24,7 @@ internal static unsafe class ModelVerify
     /// the NAMES to ask about stops rather than trusting it.</summary>
     private const int MaxChain = 64;
     /// <summary>A name no model has, so every model is also asked the question whose only right answer is the
-    /// chain's <c>"default"</c> -- or nothing.</summary>
+    /// chain's <c>"default"</c> at the TERMINAL model -- not at the model asked about -- or nothing.</summary>
     private const string Absent = "cx113_no_such_anim";
     /// <summary>Models named in the one-off sample line, per kind.</summary>
     private const int SampleCap = 6;
@@ -86,8 +69,9 @@ internal static unsafe class ModelVerify
                        + "oracle to compare against, so the check stands down for the session");
             return;
         }
-        IntPtr* items = *(IntPtr**)(_table + EngineLayout.ListItems);
-        int n = *(int*)(_table + EngineLayout.ListItemCount);
+        var table = new EngineList(_table);
+        IntPtr* items = (IntPtr*)table.Items;
+        int n = table.Count;
         if (items == null || n <= 0)
         {
             _log?.Info("[models] verify: the engine has no model loaded yet");

@@ -2,8 +2,8 @@
 # Search the client's symbols -- the recurring "what do I hook" task.
 #   ./sym.sh CNWSMessage         # demangled, readable
 #   ./sym.sh -m GLRender::SwapBuffers   # mangled, to paste into HookService.Install
-# Override the binary with NWN_BIN=/path/to/nwmain-linux
-BIN="${NWN_BIN:-~/gry/steam/Neverwinter Nights/bin/linux-x86/nwmain-linux}"
+# The binary: NWN_BIN, else tools/paths.py (local.env, then your Steam library)
+BIN="${NWN_BIN:-$(python3 "$(dirname "$0")/tools/paths.py" NWN_BIN)}"
 DEMANGLE=-C
 if [ "$1" = "-m" ]; then DEMANGLE=; shift; fi
 [ -f "$BIN" ] || { echo "client not found: $BIN  (set NWN_BIN)"; exit 1; }

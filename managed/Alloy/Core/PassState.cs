@@ -2,30 +2,19 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>An owned pass's fixed-function preamble, as a value, so "what state does this pass run in?" is
-/// a declaration rather than a sequence of <c>Gl.Enable</c>/<c>Disable</c> lines an omission can hide in
-/// (#207).
-/// <para>Deliberately dumb: <see cref="Apply"/> issues every call, every time. There is NO state cache and no
-/// redundant-call elimination behind it. The driver already shadow-caches this state and so does the engine;
-/// a third copy is a third thing that can disagree with the GL context after a vanilla draw runs between two
-/// of our passes -- which is exactly the situation every Alloy pass is in.</para>
-/// <para><c>Cull</c> is the pass's DEFAULT, not its whole answer. The world batch loops (colour and depth
-/// prepass alike) toggle face culling per batch off the material's <c>twosided</c> keyword, which is where
-/// the engine keeps the decision -- this states what a pass with no batch of its own draws in (#292).</para>
-/// <para>Particles are the one owned pass with no preamble to declare: their blend, depth-mask and cull are
-/// per-GROUP state chosen inside the draw loop (punch-through vs blended vs additive). Every pass's trailing
-/// hand-back is hand-rolled too -- this struct sets state, it does not restore it.</para>
-/// <para>It carries only what the preambles actually share. <c>glDepthFunc</c>, viewport, framebuffer and
-/// texture-unit setup stay at the call site: they are per-pass decisions, not a common preamble, and growing
-/// the struct to hold them would turn a declaration back into a sequence.</para></summary>
+/// <summary>An owned pass's fixed-function preamble as a value, so "what state does this pass run in?" is a
+/// declaration rather than a sequence of <c>Gl.Enable</c>/<c>Disable</c> lines an omission can hide in.
+/// Deliberately dumb: <see cref="Apply"/> issues every call every time, because a cache here would be a third
+/// copy to disagree with the context after a vanilla draw ran between two Alloy passes.</summary>
 internal readonly struct PassState
 {
+    /// <summary><see cref="Cull"/> is the pass's DEFAULT, not its whole answer: the world batch loops toggle
+    /// face culling per batch off the material's <c>twosided</c> keyword.</summary>
     public readonly bool Depth, DepthWrite, Blend, Cull, Scissor;
     /// <summary>Tri-state on purpose: null means "leave sRGB encoding as the caller found it". A pass that
-    /// renders into the ENGINE's target inherits that flag from the frame it was entered with (the post
-    /// chain's composite is restored to it by name, one line before it runs), so a preamble that forced it
-    /// either way would encode the frame twice or not at all -- silently, which is #132's whole failure
-    /// mode. Only a pass that owns its own target says so.</summary>
+    /// renders into the ENGINE's target inherits that flag from the frame it was entered with, so a preamble
+    /// forcing it either way would encode the frame twice or not at all, silently. Only a pass that owns its
+    /// own target says so.</summary>
     public readonly bool? Srgb;
     /// <summary>The <c>glBlendFunc</c> factors, issued only when <see cref="Blend"/> is set. The beams pass
     /// is the one caller; every other preamble disables blending.</summary>
@@ -38,7 +27,8 @@ internal readonly struct PassState
         Scissor = scissor; Srgb = srgb; BlendSrc = blendSrc; BlendDst = blendDst;
     }
 
-    /// <summary>Put the GL context into this state. Hot: called once per pass, allocates nothing.</summary>
+    /// <summary>Put the GL context into this state. Hot: called once per pass, allocates nothing. It sets
+    /// state and never restores it -- each pass hand-rolls its own hand-back.</summary>
     public unsafe void Apply()
     {
         if (Depth) Gl.Enable(Gl.DEPTH_TEST); else Gl.Disable(Gl.DEPTH_TEST);

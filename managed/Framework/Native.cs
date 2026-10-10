@@ -33,13 +33,10 @@ public static unsafe class Native
         return exo;
     }
 
-    /// <summary>The bytes the engine would hold for <paramref name="s"/>: the client never stores UTF-8, every
-    /// vanilla text field is codepage bytes via <c>Encoding::FromUTF8</c>, so typed text goes through that same
-    /// transcode (CX-50) and lands on the wire as vanilla would have sent it. An engine string read Latin1
-    /// (char == byte) round-trips unchanged, since every codepoint below 0x100 maps to its own byte -- unless a
-    /// module <c>encoding.2da</c> is loaded, whose reverse table can miss the 0x80-0x9f range.
-    /// ponytail: decoding engine text with <c>Encoding::ToUTF8</c> on ingest (the CX-50 display half) removes that
-    /// byte-space entirely. Falls back to raw UTF-8 when the engine symbols are absent (stub host).</summary>
+    /// <summary>The bytes the engine would hold for <paramref name="s"/>: the client stores codepage bytes, never
+    /// UTF-8, so typed text goes through the same <c>Encoding::FromUTF8</c> transcode and lands on the wire as
+    /// vanilla would have sent it. A module <c>encoding.2da</c>'s reverse table can miss 0x80-0x9f; ponytail:
+    /// decoding engine text with <c>Encoding::ToUTF8</c> on ingest removes that byte-space entirely.</summary>
     public static byte[] EngineBytes(string s)
     {
         byte[] utf8 = Encoding.UTF8.GetBytes(s);
@@ -61,9 +58,8 @@ public static unsafe class Native
 
     /// <summary>Read a by-value <c>std::string</c> the engine returned. libstdc++: <c>{ptr@0, len@8, sso@0x10}</c>,
     /// heap iff ptr is not the inline buffer; MSVC: <c>{sso|ptr@0, len@0x10, cap@0x18}</c>, heap iff cap >= 16.
-    /// <c>Buf</c> is the data; <c>Heap</c> is the block to hand <see cref="SymbolMap.OperatorDelete"/>, which on
-    /// MSVC differs from the data for blocks of 4096+ bytes (<c>_Allocate_manually_vector_aligned</c> parks the
-    /// raw pointer at <c>ptr[-1]</c>).</summary>
+    /// <c>Heap</c> is the block for <see cref="SymbolMap.OperatorDelete"/>, which on MSVC differs from
+    /// <c>Buf</c> at 4096+ bytes: the raw pointer is parked at <c>ptr[-1]</c> there.</summary>
     internal static (IntPtr Buf, uint Len, IntPtr Heap) StdString(byte* s)
     {
         if (OperatingSystem.IsWindows())
@@ -81,8 +77,8 @@ public static unsafe class Native
     private const uint MaxExoLen = 4096;
 
     /// <summary>Decode a <c>CExoString</c> {char* buf@0; uint len@8} to a string: Latin1 keeps colour bytes intact.
-    /// Copies out immediately, never holds the engine char* (cf. #33). Allocates: COLD paths only.
-    /// A Win64 by-value arg must be read BEFORE forwarding, the callee destroys it (#456).</summary>
+    /// Copies out immediately, never holds the engine char*. Allocates, so COLD paths only. A Win64 by-value arg
+    /// must be read BEFORE forwarding -- the callee destroys it.</summary>
     public static string ReadExo(IntPtr exo)
     {
         if (exo == IntPtr.Zero) return "";
@@ -128,7 +124,7 @@ public static unsafe class Native
     }
 
     /// <summary>Run the engine's CExoString dtor on a string the ENGINE allocated (frees the buffer, leaves the
-    /// 16-byte shell). For a Win64 by-value arg a skipped callee would otherwise leak (#419).</summary>
+    /// 16-byte shell). For a Win64 by-value arg a skipped callee would otherwise leak.</summary>
     public static void DestroyExoString(IntPtr exo)
     {
         if (exo == IntPtr.Zero || EngineFn.ExoStringDtor == null) return;
@@ -147,11 +143,10 @@ public static unsafe class Native
     private static string? _userDir;
 
     /// <summary>
-    /// The client's own resolved user directory (e.g. <c>~/.local/share/Neverwinter Nights</c>) --
-    /// whatever <c>SetUpUserDirectory</c> produced, so it honours <c>-userdirectory</c>, per-OS rules and
-    /// the <c>.N</c> instance suffix for free. Read live from <c>g_pExoBase -> CExoString (<see cref="EngineLayout.ExoBaseUserDir"/>)</c>; null
-    /// before the engine sets that up (our loader runs pre-main) or headless (run-demo has no g_pExoBase).
-    /// Cached on first success; the engine char* is copied out immediately, never held (cf. #33).
+    /// The client's own resolved user directory -- whatever <c>SetUpUserDirectory</c> produced, so it honours
+    /// <c>-userdirectory</c>, per-OS rules and the <c>.N</c> instance suffix for free. Read live from
+    /// <c>g_pExoBase</c> (<see cref="EngineLayout.ExoBaseUserDir"/>), null before the engine sets that up (our
+    /// loader runs pre-main) or headless. Cached on first success; the engine char* is never held.
     /// </summary>
     public static string? UserDirectory()
     {
@@ -176,15 +171,10 @@ public static unsafe class Native
 
     /// <summary>
     /// Where the client would put its user directory with no <c>-userdirectory</c> override: SDL's pref path,
-    /// <c>$XDG_DATA_HOME</c> or <c>~/.local/share</c>, plus the app name. Read off the client binary's own SDL
-    /// block (<c>/.local/share/</c>, <c>XDG_DATA_HOME</c>, "neither XDG_DATA_HOME nor HOME environment is set")
-    /// rather than assumed, so it agrees with <see cref="UserDirectory"/> in the ordinary case.
+    /// <c>$XDG_DATA_HOME</c> or <c>~/.local/share</c>, plus the app name -- read off the client's own SDL block
+    /// rather than assumed, so it agrees with <see cref="UserDirectory"/>. This is the PRE-MAIN answer every boot
+    /// knob is read through, and the launch line is askable there, so <c>-userdirectory</c> still wins.
     /// </summary>
-    /// <remarks>
-    /// This is the pre-main answer, and boot config (ADR 0013 bucket 2) is read through it -- before the
-    /// engine exists there is nothing else to ask. The launch LINE is askable pre-main, though, so
-    /// <c>-userdirectory</c> is honoured here as well (<see cref="LaunchUserDirectory"/>).
-    /// </remarks>
     public static string DefaultUserDirectory()
     {
         string? launched = LaunchUserDirectory();
@@ -198,14 +188,10 @@ public static unsafe class Native
         return System.IO.Path.Combine(data, "Neverwinter Nights");
     }
 
-    /// <summary>The <c>-userdirectory</c> the client was launched with, or null. Read from the command line
-    /// because that is the one thing available before the engine has resolved anything: without it a client
-    /// launched with the switch read its BOOT knobs (<c>alloy.enabled</c> among them) from the default
-    /// directory and wrote <c>cx.log</c> there, while the engine -- and the per-feature cfgs, which load
-    /// after <see cref="UserDirectory"/> can answer -- used the directory it was given. The Windows harness
-    /// found this the hard way: every knob it seeded went unread.
-    /// <para>The engine's own parse (<c>SetUpUserDirectory</c>) is case-insensitive and takes the LAST
-    /// occurrence, so this is too; a switch with no value after it is ignored, as there it is.</para></summary>
+    /// <summary>The <c>-userdirectory</c> the client was launched with, or null. Read from the command line, the one
+    /// thing available before the engine has resolved anything: without it a client launched with the switch reads
+    /// its BOOT knobs from the default directory while the engine uses the one it was given. Case-insensitive and
+    /// LAST occurrence wins, as the engine's own <c>SetUpUserDirectory</c> parse is; a valueless switch is ignored.</summary>
     private static string? LaunchUserDirectory()
     {
         if (_launchDirTried) return _launchDir;

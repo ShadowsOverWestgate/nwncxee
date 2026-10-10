@@ -29,7 +29,9 @@ public static partial class WindowRenderer
         if (portraits.Count == 1)
         {
             PortraitQuad q = portraits[0];
-            float ph = atlas.LineHeight / PortraitAspect;   // portrait grown to the real aspect
+            // 20 rows at NWN's 0.64 portrait aspect is 31.25 tall, written out rather than recomputed from
+            // the constant the layout under test reads.
+            const float ph = 31.25f;
             check.Expect(q.Resref == "po_x", "quad carries the line's resref");
             check.Expect(q.X == ChatWindow.Pad, "quad sits in the left gutter (bx + Pad)");
             check.Expect(q.W == atlas.LineHeight, "quad keeps the gutter width");
@@ -40,7 +42,7 @@ public static partial class WindowRenderer
 
         // MeasureBlock (the ingest slide/hold distance): a portrait line is padded up to the portrait height;
         // a plain one-row line is one line high. Both drive the exact per-line compensation on ingest.
-        float phh = atlas.LineHeight / PortraitAspect;
+        const float phh = 31.25f;
         var pLine = new ChatLine(1u, "", 0, "po_x", new[] { new ColorRun("hi", 1, 1, 1) }, System.DateTime.UtcNow, "hi");
         var tLine = new ChatLine(1u, "", 0, "", new[] { new ColorRun("plain", 1, 1, 1) }, System.DateTime.UtcNow, "plain");
         check.Expect(System.Math.Abs(MeasureBlock(win, pLine, atlas) - phh) < 1e-3, "MeasureBlock pads a portrait line to the portrait height");
@@ -56,6 +58,7 @@ public static partial class WindowRenderer
         // Right-aligned: portrait flips to the right edge of the text area.
         win.Align = TextAlign.Right;
         var rPortraits = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Portraits;
+        check.Expect(rPortraits.Count == 1, "right alignment still emits exactly one portrait quad");
         if (rPortraits.Count == 1)
         {
             float mtw = win.W - 2 * ChatWindow.Pad - ChatWindow.ScrollbarW;
@@ -71,7 +74,7 @@ public static partial class WindowRenderer
 
         // Row alignment moved to RowAlign (its own SelfCheck).
 
-        // Layout cache (#53): second build with unchanged content is a cache hit; verts match cold build.
+        // Layout cache: second build with unchanged content is a cache hit; verts match cold build.
         win.Toggles = ChatToggle.Timestamp | ChatToggle.MessageBody | ChatToggle.Portrait;
         win.WrapCache = null;
         var cold = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false);

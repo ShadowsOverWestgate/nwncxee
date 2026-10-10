@@ -6,23 +6,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>CX-120 (seam-scene): the one engine fact the CX tile build cannot derive -- the area's HEIGHT
-/// STEP -- taken at the moment the area's tileset is resolved and handed to <see cref="TileBuild.SetTileset"/>
-/// before any tile spawns.
-///
-/// <para><b>Why a hook and not a read at spawn time.</b> <c>Scene::SpawnTile</c> is handed a model name and a
-/// grid position and nothing that names the tileset, so by the time the first tile arrives there is no object
-/// to ask. <c>CNWTileSetManager::GetTileSet</c> is where the area names its tileset, and
-/// <c>CNWCArea::LoadArea</c> calls it before the spawn loop -- so chaining it puts the step in hand exactly
-/// one step ahead of the first tile that needs it.</para>
-///
-/// <para><b>Chained, not installed.</b> <c>ModelLoad</c> already owns a subscriber on this symbol
-/// (<c>funchook-collision-funnels</c>: a second <c>Install</c> would silently orphan the first), so this goes
-/// on the same chain at its own priority and only reads.</para>
-///
-/// <para>The step itself is a FIELD, not the call: <c>CNWTileSet::GetHeightTransition</c> @0x5e10c0 is one
-/// load, and the two builds disagree about where (<see cref="EngineLayout.TileSetHeightTransition"/>), which
-/// is why it is an <c>EngineLayout</c> row with both offsets rather than a signature.</para></summary>
+/// <summary>The area's HEIGHT STEP, the one engine fact the CX tile build cannot derive, read as a FIELD
+/// (<see cref="EngineLayout.TileSetHeightTransition"/>, per-build) where the area names its tileset --
+/// <c>CNWTileSetManager::GetTileSet</c>, which <c>CNWCArea::LoadArea</c> calls before the spawn loop, since
+/// <c>Scene::SpawnTile</c> names no tileset. Chained read-only: <c>ModelLoad</c> owns the symbol.</summary>
 internal static unsafe class TileSetSeam
 {
     private static ExtenderLog? _log;
@@ -55,7 +42,7 @@ internal static unsafe class TileSetSeam
         IntPtr tileset = (*_slot)(mgr, resref);
         if (tileset != IntPtr.Zero && Renderer.On)
         {
-            float step = *(float*)(tileset + EngineLayout.TileSetHeightTransition);
+            float step = new CNWTileSet(tileset).HeightTransition;
             if (step != _last)
             {
                 _last = step;

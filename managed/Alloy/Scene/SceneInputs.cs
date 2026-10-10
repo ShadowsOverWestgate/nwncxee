@@ -8,16 +8,9 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// What feeds the Alloy shadow pipeline. It renders nothing -- <see cref="CasterPass"/> is the ONE shadow
-/// system (#98 cutover), owning the sun cascades and the local-light cubes in the #80 4.6 context on its own
-/// submission path. What lives here is the shared per-frame shadow focus (published as
-/// <c>FrameInputs.Focus</c>), the departed-light fade the engine has no edge for, and the engine reads the
-/// scene database has no column for (the current <c>CNWCArea</c>, the engine's light-attenuation constants).
-/// <para>CX-188: the light WALK is gone. It read the engine's own <c>Scene</c>/<c>PartLight</c> chain from
-/// <c>SceneInputs.FrameStart</c>, which hung off <c>RspShim</c> -- the engine's <c>RenderSinglePass</c>,
-/// which does not run at all when CX owns the scene graph. The database walks its own lights
-/// (<c>DbLights.Walk</c>) and closes the walk through <see cref="FinishWalk"/>; the shadow half of the frame
-/// anchor is <see cref="DbShadowSlot"/>.</para>
+/// What feeds the Alloy shadow pipeline; it renders nothing -- <see cref="CasterPass"/> is the ONE shadow
+/// system. Here live the shared per-frame shadow focus (published as <c>FrameInputs.Focus</c>), the
+/// departed-light fade the engine has no edge for, and the engine reads the database has no column for.
 /// </summary>
 /// <remarks>Hot: the shadow slot runs once a frame and allocates nothing.</remarks>
 public sealed unsafe class SceneInputs : IExtenderService
@@ -26,8 +19,8 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static float _focusDist => Shadows.FocusDist.V;
     private static ExtenderLog? _log;
     private static bool _enabled;
-    /// <summary>#404: how far <see cref="DbShadowSlot"/> runs, for one-restart bisection on radeonsi.
-    /// 2 = focus only, 3 = + cube bind, 4 = + caster bake (full). <c>shadow.stage</c>, Boot.</summary>
+    /// <summary>How far <see cref="DbShadowSlot"/> runs, for one-restart bisection on radeonsi. 2 = focus
+    /// only, 3 = + cube bind, 4 = + caster bake (full). <c>shadow.stage</c>, Boot.</summary>
     private static int _stage = 4;
 
     private static bool _localLoggedOnce;   // slice 6: one-shot log of the first frame that records point lights
@@ -101,9 +94,9 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static readonly int[] _ghostLeft = new int[MaxGhosts];
     private static int _ghostN;
 
-    /// <summary>#336: the fade bookkeeping, headless. It is a set difference over two flat arrays with a
+    /// <summary>The fade bookkeeping, headless. It is a set difference over two flat arrays with a
     /// swap-remove in the middle, and every way it can go wrong is silent -- a ghost that never retires is a
-    /// light that never goes out, a leaver that is missed is the pop this exists to remove.</summary>
+    /// light that never goes out, a missed leaver is the pop this exists to remove.</summary>
     internal static void FadeSelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "SceneInputs.FadeSelfCheck");
@@ -211,11 +204,10 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
     private static RiGetGlobalShaderParamfFn _getGspF;
 
-    /// <summary>#140: latch the two constants the engine's point-light attenuation is built from, out of the
+    /// <summary>Latch the two constants the engine's point-light attenuation is built from, out of the
     /// global-param array the radius multiplier comes from (<c>GLRender::SetUniforms</c> @0x4cd341 reads
-    /// 0x12/0x13/0x14 and derives lightFalloffFactor and lightMaxIntensityInv from exactly these). Read on
-    /// every walk -- they are graphics settings the player can change -- and by the area key at
-    /// <c>LoadArea</c>'s return, which on the login load runs before any walk. Returns the radius multiplier.</summary>
+    /// 0x12/0x13/0x14). Read on every walk -- they are player-changeable graphics settings -- and by the area
+    /// key at <c>LoadArea</c>'s return, which on the login load runs before any walk. Returns the multiplier.</summary>
     internal static float LatchAtten()
     {
         float radiusMult = _getGspF != null ? _getGspF(0x12) : 1f;
@@ -225,8 +217,8 @@ public sealed unsafe class SceneInputs : IExtenderService
         return radiusMult;
     }
     /// <summary>The light walk's tail: the departure fade, the bake's static-set close, and the count the
-    /// settle checks read. CX-120: DB mode walks a different SOURCE but must close the walk identically, so
-    /// the three live here rather than inline in one walk's body.</summary>
+    /// settle checks read. They live here rather than inline in one walk's body so that any light SOURCE
+    /// closes the walk identically.</summary>
     internal static void FinishWalk()
     {
         FadeDepartedLights();
@@ -235,7 +227,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>CPU-side light-&gt;cube bind: cube slot per AREA light (-1 = no cube), the one thing that tells
     /// the Alloy lit stage which cube layer a light's shadow lives in. Driven from the pass slot AFTER the
-    /// bake (#118), so the mapping and the cube contents describe the same frame.</summary>
+    /// bake, so the mapping and the cube contents describe the same frame.</summary>
     private static void BindLightCubes()
     {
         int bound = 0;
@@ -247,11 +239,10 @@ public sealed unsafe class SceneInputs : IExtenderService
         FrameInputs.LightsWithCube = bound;
     }
 
-    /// <summary>The map centre for this frame -- computed once and reused by both the re-walk and every depth-pass
-    /// sub-frame so they align. Prefers the camera-follow target (the real PC, camera-independent); falls back to
-    /// the LAST known PC position (sticky, so a momentary non-follow subframe doesn't snap the map to the camera
-    /// and shimmer); camera-ground only until the PC is ever seen. Logs source TRANSITIONS with the frame count
-    /// held, so any fallback shows in the log instead of being hidden by a one-shot. Reset each presented frame.</summary>
+    /// <summary>The map centre for this frame -- computed once and reused by the re-walk and every depth-pass
+    /// sub-frame so they align. Prefers the camera-follow target (the real PC, camera-independent), falls back
+    /// to the LAST known PC position (sticky, so a non-follow subframe does not snap the map and shimmer),
+    /// camera-ground only until the PC is ever seen. Source TRANSITIONS are logged. Reset each frame.</summary>
     private static Vector3 ShadowFocus()
     {
         if (!_haveFocus)

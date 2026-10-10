@@ -5,18 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-120 seam-feed: <b>the world view's draw in DB mode</b> -- what <c>SeamDraw.Pass</c> calls, and
-/// the last hole between the scene database and a drawn frame.
-/// <para>It is deliberately THIN, and that is the result rather than a shortcut: once the ownership table is
-/// fed from the database, every step after it is the one Alloy already runs. The order is the same four-digit
-/// radix (<c>RebuildOrder</c>), the visibility is the same area index and the same record spheres, the route
-/// and staging walks are the same walks with their DB branches taken, and the colour frame is
-/// <c>DrawOwned</c> unchanged. What the mode replaces is where the records come FROM, not what is done with
-/// them -- which is the whole argument of ADR 0028, and if this file were long that argument would be
-/// wrong.</para>
-/// <para>Rebuilding the order is gated on <see cref="DbSetGen"/>, the DB-mode equivalent of an enrolment
-/// edge: a frame in which nothing was created or destroyed re-sorts nothing, which is what keeps the
-/// change-driven claim true all the way to the draw.</para></summary>
+/// <summary><b>The world view's draw</b> -- what <c>SeamDraw.Pass</c> calls. Thin on purpose: once the
+/// ownership table is fed from the database, the four-digit radix order (<c>RebuildOrder</c>), the visibility,
+/// the route and staging walks and <c>DrawOwned</c> are the ones Alloy already runs -- the argument of
+/// ADR 0028. Re-sorting is gated on <see cref="DbSetGen"/>: nothing created or destroyed, nothing re-sorted.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     private static bool _dbPassArmed;
@@ -26,13 +18,12 @@ public sealed unsafe partial class AlloyRenderer
     private static nint _dbCamBeh;
     private static uint _dbCamFollow;
 
-    /// <summary>The scene the last DB world pass drew. The post-process passes run after it in the same
-    /// frame and have no scene argument of their own; in engine mode they read <c>_enrollScene</c>, and this
-    /// is its DB-mode counterpart.</summary>
+    /// <summary>The scene the last world pass drew: what the post-process passes read, having no scene
+    /// argument of their own.</summary>
     internal static DbId DbPassScene;
 
-    /// <summary>Register the DB-mode world pass. Called at Initialize, after the mode is latched; a no-op in
-    /// engine mode, where <c>RenderSinglePass</c> drives the frame instead.</summary>
+    /// <summary>Register the world pass with <c>SeamDraw</c>. Called at Initialize; a no-op when Alloy is
+    /// switched off at boot.</summary>
     internal static void DbArmPass(ExtenderLog log)
     {
         if (!Renderer.On || _dbPassArmed) return;
@@ -50,8 +41,8 @@ public sealed unsafe partial class AlloyRenderer
         if (!AlloyGate.Alloy) return;
         _dbPasses++;
         DbPassScene = scene;
-        // CX-120: the camera chain, once. The world camera sits at the origin and five separate things could
-        // put it there; this names which, in one run, instead of one run per hypothesis.
+        // The camera chain, once: five separate things can leave the world camera at the origin, and this
+        // names which.
         if (!_saidCam)
         {
             _saidCam = true;
@@ -89,10 +80,9 @@ public sealed unsafe partial class AlloyRenderer
         // The light rig, from the database. Before the draw and after the order, exactly where the engine
         // walk sat in the engine path: the passes read FrameInputs' light set, and a frame that gathered after
         // them would light with the previous frame's rig.
-        // CX-120: the keyhole column, before the lights and the draw. Mode 0 asks the engine's camera per
-        // part; DB mode reads SceneDb.PartDissolve, and until now nothing wrote it -- so the inn's roof never
-        // opened and the PC sat under it. Order: after DbOrder (it walks the order) and before the stage that
-        // reads the column into the record.
+        // CX-120: the keyhole column, before the lights and the draw. The route gate reads
+        // SceneDb.PartDissolve, and until this wrote it the inn's roof never opened and the PC sat under it.
+        // Order: after DbOrder (it walks the order) and before the stage that reads the column into the record.
         long tKeyhole = FrameZones.Now;
         DbKeyhole.Write(SceneDb.Cameras.Valid(camera) ? SceneDb.CamFacade[camera.Index] : 0, _order, _orderCount, _oDbPart, camera);
         FrameZones.Add(FrameZones.Zone.Keyhole, tKeyhole);
@@ -103,10 +93,10 @@ public sealed unsafe partial class AlloyRenderer
         // Admit and the bake) -- reads of memory the game thread simulates, done from whichever thread draws.
         DbLights.Walk(scene, in h);
         FrameZones.Add(FrameZones.Zone.Lwalk, tLights);
-        // CX-120: the shadow half of the frame anchor. Mode 0 reaches it through RspShim -> FrameAnchor ->
-        // SceneInputs.FrameStart, and RspShim is the engine's RenderSinglePass, which does not run here -- so
-        // the sun cascades were never baked and [zones] Shadow read 0,0. Same position as mode 0: after the
-        // light rig, before anything draws.
+        // CX-120: the shadow half of the frame anchor. SceneInputs.FrameStart used to be reached through
+        // RspShim, which is the engine's RenderSinglePass and does not run -- so without this call the sun
+        // cascades were never baked and [zones] Shadow read 0,0. Position: after the light rig, before
+        // anything draws.
         long tShadow = FrameZones.Now;
         SceneInputs.DbShadowSlot(camera);
         FrameZones.Add(FrameZones.Zone.Shadow, tShadow);

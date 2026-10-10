@@ -3,12 +3,10 @@ using System.Numerics;
 
 namespace CX.Alloy;
 
-/// <summary>#617: the rain occlusion map -- one orthographic depth view of the still casters, looking along
-/// the precipitation vector, baked the way a sun cascade is and held the same way: the texel-snapped fit
-/// matrix is the key, so the map re-bakes on a focus latch, a wind change or a blanket invalidate and on no
-/// other frame. It lives as the layer past the cascades in the sun array, so the lit stage samples it through
-/// <c>uSunShadow</c> with no texture unit of its own (the lit bracket has none left, <see cref="TextureSlots"/>).
-/// Published as <see cref="CoverVp"/> + <see cref="CoverLayer"/>; <see cref="CoverFresh"/> gates every read.</summary>
+/// <summary>The rain occlusion map -- one orthographic depth view of the still casters along the
+/// precipitation vector, baked the way a sun cascade is and held the same way: the texel-snapped fit matrix
+/// is the key, so it re-bakes on a focus latch, a wind change or an invalidate and on no other frame. It is
+/// the layer past the cascades in the sun array, sampled through <c>uSunShadow</c> with no unit of its own.</summary>
 public sealed unsafe partial class CasterPass
 {
     /// <summary>Extra layers the sun array carries past the cascades: the cover map.</summary>

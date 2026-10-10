@@ -10,27 +10,10 @@ using CX.Framework;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Action-camera head tracking: while the mode's <c>action</c> is held, the local player's creature turns its
-/// HEAD toward the camera axis -- under the action camera, the crosshair -- with the body left to the engine.
-/// Nothing is invented: NWN already ships clamped yaw/pitch head tracking (the <c>LookAtAnimation</c> every
-/// creature runs when the server sends it a look-at target), so this retargets that machinery.
-/// <para><b>Two seams.</b> <c>CNWCCreature::UpdateLookAt</c> is the engine's per-frame target chooser; for
-/// the player creature it is skipped and <c>Gob::BeginLookAtAnimate</c> is called directly with the gob as its
-/// own target, which builds the animation the engine would have built (its 0.25 s ease, its clamp and its
-/// teardown); the target only feeds the distance check and the SafePointer. Then
-/// <c>LookAtAnimation::Control</c> is chained: the original does the keyframe bookkeeping, and the four floats
-/// it wrote at <c>+0x58</c> are overwritten with the camera aim, clamped to the mode's
-/// <c>headyaw</c>/<c>headpitch</c>. Everything downstream -- the blend, <c>AnimateHierarchy</c>, the skinned
-/// bone matrices Alloy reads, the shadow casters -- is the engine's own path.</para>
-/// <para><b>Aim.</b> The rendered camera pose (<see cref="CameraService.Rendered"/>), not a pick ray, which
-/// would snap the head every time it crossed a near wall. The yaw is measured the engine's way -- the arc from
-/// the head's world forward (local <b>+Y</b>) onto the aim, composed onto the head's own local rotation -- so
-/// the clamp is relative to the body's facing; the pitch is the aim's elevation.</para>
-/// <para><b>Hot.</b> <c>Control</c> runs inside <c>Gob::Animate</c> and <c>UpdateLookAt</c> once per creature
-/// per frame: static state, pointer reads, float math, no allocation. The quaternion maths is ported, never
-/// called -- the engine's <c>RotationArc</c>/<c>Yaw</c>/<c>YawPitchRoll</c> return a class by value, the sret
-/// trap (#456).</para>
-/// <para>Client-only: relaying the aim to other players is a wire contract of its own, a follow-up.</para>
+/// Action-camera head tracking: the local player's creature turns its HEAD toward the camera axis, body left to
+/// the engine, by retargeting NWN's own clamped <c>LookAtAnimation</c>. <c>UpdateLookAt</c> is replaced for the
+/// player with a <c>BeginLookAtAnimate</c> on itself and <c>LookAtAnimation::Control</c> chained, so the four
+/// floats at <c>+0x58</c> become the camera aim. Allocates nothing; the quaternion maths is ported (sret), not called.
 /// </summary>
 public sealed unsafe class HeadTrackService : IExtenderService
 {
@@ -42,12 +25,10 @@ public sealed unsafe class HeadTrackService : IExtenderService
     /// <inheritdoc cref="_begin"/>
     private static PartGetWorldFn _getWorld;
 
-    /// <summary>The head node name handed to <c>FindPart</c>, preallocated: the hook is not allowed to allocate,
-    /// and the engine keeps no copy (it reads it inside the call). <c>head_g</c> is what vanilla looks for when
-    /// <c>appearance.2da</c> names none. ponytail: the per-row HEAD_NAME is not read, so a race whose head node
-    /// is named otherwise simply does not track -- <c>BeginLookAtAnimate</c> returns silently on a missed
-    /// <c>FindPart</c>, which the write count shows; the upgrade path is the creature's appearance id indexed
-    /// into <c>appearance.2da</c>'s HEAD_NAME column, taking this name only as the fallback.</summary>
+    /// <summary>The head node name handed to <c>FindPart</c>, preallocated: the hook is not allowed to allocate, and
+    /// the engine keeps no copy. <c>head_g</c> is what vanilla looks for when <c>appearance.2da</c> names none.
+    /// ponytail: the per-row HEAD_NAME is not read, so a race whose head node is named otherwise simply does not
+    /// track (<c>BeginLookAtAnimate</c> returns silently); the upgrade path is that column, this name the fallback.</summary>
     private static byte* _headNode;
 
     /// <summary>The gob we drove this frame, and the key <see cref="OnControl"/> matches an animation by
@@ -167,14 +148,10 @@ public sealed unsafe class HeadTrackService : IExtenderService
         _writes++;
     }
 
-    /// <summary>Control's own maths with one substitution: the direction is the camera axis rather than the
-    /// vector to a target object. Yaw is the arc from the head's world forward onto it, composed onto the
-    /// head's local rotation (so the clamp is measured from the body's facing); pitch is the aim's elevation,
-    /// which is what the engine's <c>Pitch(qX(asin(dir.z)))</c> reduces to. The camera sits at focus + dist *
-    /// Forward and looks back at the focus, so the axis aimed at is -Forward.
-    /// <para>Past the yaw limit by <see cref="ReleaseOver"/> the head lets go and settles level rather than
-    /// straining at the clamp, and re-engages a hysteresis band below that. The release is yaw-only: pitch keeps
-    /// its own clamp either way, and a <c>headyaw</c> of 0 never releases -- the yaw is simply 0.</para></summary>
+    /// <summary>Control's own maths with one substitution: the direction is the camera axis rather than the vector
+    /// to a target object. Yaw is the arc from the head's world forward (local +Y) onto it, composed onto the head's
+    /// local rotation, so the clamp is measured from the body's facing; pitch is the aim's elevation. The camera
+    /// looks back at its focus, so the axis aimed at is -Forward. Past the yaw limit the head lets go (yaw only).</summary>
     private static void Aim(Part head, float* key)
     {
         CameraService.Rendered(out _, out float camYaw, out float camPitch, out _);

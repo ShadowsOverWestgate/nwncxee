@@ -8,17 +8,10 @@ using CX.Ui;
 namespace CX.Services.Quickbar;
 
 /// <summary>
-/// Quickbar chrome service: replaces the native <c>CPanelQuickBar::Reposition</c> to fix centering,
-/// suppress the buggy <c>GUI_QBAR_ENDS</c> model, and draw configurable full-width background bars
-/// via the existing GL pipeline. Its settings are the <c>quickbar</c> group (<see cref="QuickbarKnobs"/>)
-/// on the settings panel; the window-snapping knobs it applies each tick are the <c>ui</c> group's.
-/// Produces <see cref="RenderFrame"/>s consumed by <see cref="ChatService"/> alongside chat windows -- no
-/// second SwapBuffers hook.
-/// <para><c>quickbar.enabled</c> is live both ways (#591): off, <see cref="Place"/> keeps REPLACING the engine's
-/// Reposition with its own centre formula <c>((vpW-800)/2, 0)</c> and the chrome and compass rows are inert
-/// (the stock HUD: no bars, compass shown). Forwarding was rejected (spec §4.2): the engine body attaches
-/// <c>GUI_QBAR_ENDS</c> on its first run past 800 px and the flag it sets is never cleared, so a re-enable
-/// could not detach it until relog.</para>
+/// Quickbar chrome: replaces <c>CPanelQuickBar::Reposition</c> to fix centring, suppress the buggy
+/// <c>GUI_QBAR_ENDS</c> model and draw full-width background bars, emitting <see cref="RenderFrame"/>s that
+/// <see cref="ChatService"/> draws alongside chat -- no second SwapBuffers hook. The replacement stands even with
+/// <c>quickbar.enabled</c> off: the engine body attaches <c>GUI_QBAR_ENDS</c> past 800 px and never clears the flag.
 /// </summary>
 public sealed unsafe class QuickbarService : IExtenderService
 {
@@ -54,7 +47,7 @@ public sealed unsafe class QuickbarService : IExtenderService
     {
         _log = log;
         UiCategory.Declare();   // the UI groups declare in panel order whether or not the hook arms
-        // Stand down as a UNIT, #48's rule: every knob here ends in one of these three symbols, so a build
+        // Stand down as a UNIT: every knob here ends in one of these three symbols, so a build
         // that resolves none of them would offer rows whose every control silently does nothing.
         // Not OS-gated -- gated on the symbols, so the Windows anchors landing is all it takes to switch on.
         QuickbarRepositionFn tramp = hooks.InstallQuickbarReposition(&OnReposition);

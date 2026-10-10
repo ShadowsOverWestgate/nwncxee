@@ -23,7 +23,7 @@ public static class ServiceHost
                      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
                      .InformationalVersion ?? "unknown"));
         log.Info($"host: GC server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} cpus={Environment.ProcessorCount}");
-        // #457: the one rot gate, and the whole extender is behind it -- both platforms, ahead of DISCOVERY
+        // the one rot gate, and the whole extender is behind it -- both platforms, ahead of DISCOVERY
         // rather than ahead of Initialize, because constructing a service runs its type initializer and a
         // type initializer is enough to latch engine state. Nothing constructed, nothing hooked, so no
         // feature can half-fire against a client these offsets were never measured against. The build key is
@@ -57,28 +57,28 @@ public static class ServiceHost
             .Select(t => (IExtenderService)Activator.CreateInstance(t)!)
             .ToList();
 
-        // #456: nothing is filtered here any more. Alloy was the last Linux-only namespace and it came off
+        // nothing is filtered here any more. Alloy was the last Linux-only namespace and it came off
         // with the stand-down lift; its Windows refusal, if any, is EngineLayout.Require inside AlloyGate.
         log.Info($"host: {all.Count} service(s) discovered");
         // Shared engine accessors, before any service can reach for one. AurTex is the only real init-time
         // dependency in this host so far -- four services call it and none of them owns it.
         AurTex.Attach(log);
         AurTex.SelfCheck(log);
-        Native.SelfCheck(log);   // CX-50: the std::string readback behind the outbound codepage transcode
+        Native.SelfCheck(log);   // the std::string readback behind the outbound codepage transcode
         CommandRegistry.Global.Log = log;
-        CommandRegistry.SelfCheck(log);   // #165: registration/dispatch/enumeration proof, off-device
-        ConfigFile.SelfCheck(log);   // #164: the shared line walker, proven at the host
+        CommandRegistry.SelfCheck(log);   // registration/dispatch/enumeration proof, off-device
+        ConfigFile.SelfCheck(log);   // the shared line walker, proven at the host
         ExtenderLog.SelfCheck(log);   // the disabled log evaluates nothing, the enabled one reaches the file
-        Settings.SelfCheck(log);   // #183: the prefixed read leaves no probe behind
+        Settings.SelfCheck(log);   // the prefixed read leaves no probe behind
         KnobSurface.Register();
-        EngineLayout.SelfCheck(log);   // #432: the three resolution forms, the counter, and a probe that fires
+        EngineLayout.SelfCheck(log);   // the three resolution forms, the counter, and a probe that fires
         EngineLayout.Register();
         SymbolMap.Register();
         ClientBuilds.SelfCheck(log);   // every build file names real rows and symbols, and covers every RVA
-        FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
-        CX.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
+        FrameRegistry.SelfCheck(log);   // walk order, post-seal refusal, and the zero-alloc AC
+        CX.Ui.AtlasSheet.SelfCheck(log);   // pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
         CX.Ui.TextStyle.SelfCheck(log);   // per-element text rows + the batch's halos-under-bodies run
-        CX.Ui.LoadScreen.SelfCheck(log);   // CX-100: the two load sources as one monotonic bar
+        CX.Ui.LoadScreen.SelfCheck(log);   // the two load sources as one monotonic bar
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }
@@ -91,7 +91,7 @@ public static class ServiceHost
         TextList.SelfCheck(log);
         KnobFile.SelfCheck(log);
 
-        // #170: the frame walk must be immutable before the present hook can fire. Sealing here is the
+        // the frame walk must be immutable before the present hook can fire. Sealing here is the
         // happens-before -- a registration after this point is refused, not silently dropped.
         FrameRegistry.Global.Seal();
         foreach (FramePhase p in new[] { FramePhase.Start, FramePhase.PrePresent, FramePhase.PostPresent })

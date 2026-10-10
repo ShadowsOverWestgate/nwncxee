@@ -4,18 +4,11 @@ using System.IO;
 namespace CX.Framework;
 
 /// <summary>
-/// The CX <c>*.cfg</c> read helpers (#164): the pre-main deferral rule (<see cref="Ready"/>), the
-/// <c>sowx</c>-stem read fallback (<see cref="ReadPath"/>), the ungated read (<see cref="ReadTextNow"/>) and
-/// the flat <c>key=value</c> line walk (<see cref="ForEachPair"/>). The per-feature load/save half went with
-/// the per-feature cfgs (ADR 0025): <see cref="KnobFile"/> writes the one file.
+/// The CX <c>*.cfg</c> read helpers: the pre-main deferral rule (<see cref="Ready"/>), the <c>sowx</c>-stem read
+/// fallback (<see cref="ReadPath"/>), the ungated read (<see cref="ReadTextNow"/>) and the flat <c>key=value</c>
+/// walk (<see cref="ForEachPair"/>). Our loader runs BEFORE the engine's entry point, when
+/// <see cref="Native.UserDirectory"/> is still null, so no resolved path is cached: every read resolves per use.
 /// </summary>
-/// <remarks>
-/// The deferral rule: our loader runs BEFORE the engine's entry point, so <see cref="Native.UserDirectory"/>
-/// is null then and a config path resolved at that moment would latch the pre-main fallback rather than
-/// whatever the engine resolved. A caller that must wait consults <see cref="Ready"/> from a site that runs
-/// repeatedly (a frame, a cursor update); never from Initialize. For the same reason no resolved path is ever
-/// cached here: <see cref="ReadPath"/> resolves per use.
-/// </remarks>
 public static class ConfigFile
 {
     /// <summary>True when the engine user dir is resolvable, i.e. when a deferred config read may latch. The
@@ -32,10 +25,10 @@ public static class ConfigFile
         catch (Exception e) { log?.Info($"config: {fileName} unreadable -- {e.Message}"); return ""; }
     }
 
-    /// <summary>The stem every cfg carried before #530; a pre-rename install has its files under it.</summary>
+    /// <summary>The stem every cfg carried before the CX rename; a pre-rename install has its files under it.</summary>
     private const string LegacyStem = "sowx";
 
-    /// <summary>The path a READ takes (#530): the <c>cx</c> file when it exists, else the <c>sowx</c>-stem
+    /// <summary>The path a READ takes: the <c>cx</c> file when it exists, else the <c>sowx</c>-stem
     /// sibling a pre-rename install left, else the <c>cx</c> path (absent). Saves never come here, so the
     /// first write lands under the new stem and the legacy file stops being consulted -- one read-fallback,
     /// not a copy step.</summary>

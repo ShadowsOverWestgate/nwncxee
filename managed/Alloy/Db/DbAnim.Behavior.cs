@@ -16,21 +16,10 @@ internal enum DbBehaviorKind
     CameraOnAStick,
 }
 
-/// <summary>The behaviour solve in DB mode, and the DISPATCH POINT the engine had inside
-/// <c>Gob::Animate</c> @0x49d8c0: <c>behavior->Control(dt)</c> through the behaviour's own vtable slot
-/// (<c>CAurBehavior</c> +0x20 Linux / +0x18 Windows), at the very top of the per-object step and before any
-/// pose work, with the object's death re-checked the moment it returns.
-/// <para><b>A <c>CAurBehavior</c> stays a real engine-layout object</b> (ADR 0028 section 2): the GAME
-/// constructs them, subclasses them and writes their fields directly -- <c>GuiAurAttachToObject</c> @0x68b050
-/// allocates 0x88/0x90 bytes, runs the engine's <c>CAurBehaviorAttach</c> constructor and then overwrites the
-/// vptr with a game vtable, and <c>CNWCModule</c>'s camera control writes behaviour fields +0x48..+0x8c. So
-/// this reads their fields through the same <c>EngineLayout</c> views the mode-0 solvers use, and the only
-/// thing that changes is where the ANSWER goes: object record columns instead of <c>Gob+0xa8/+0xb4</c>.</para>
-/// <para><b>What CX solves and what it dispatches.</b> A vptr whose <c>Control</c> is one of the engine's own
-/// is solved here over columns. Anything else is game-side code (the cross-scene attach and the subwindow
-/// viewport live at 0x68b5d0 / 0x68b720, in the game layer) and is CALLED through its own vtable exactly where
-/// the engine called it -- after which the object's placement is read back out of the facade shell, because
-/// that code writes <c>Gob+0xa8/+0xb4</c> by interior address through <c>Part::GetWorld</c>.</para></summary>
+/// <summary>The behaviour solve, at the DISPATCH POINT the engine had inside <c>Gob::Animate</c> @0x49d8c0:
+/// <c>Control(dt)</c> through the behaviour's own vtable slot (<c>CAurBehavior</c> +0x20 Linux / +0x18
+/// Windows), before any pose work, the object's death re-checked on return. A behaviour stays a real
+/// engine-layout object (ADR 0028 section 2), read through <c>EngineLayout</c> views; only the answer moves.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>The behaviour the game gave each object (<c>Gob+0x450</c>, <c>Gob::SetBehavior</c>). A facade
@@ -112,29 +101,23 @@ public static unsafe partial class DbAnim
     private static DbBehaviorKind Kind(nint beh)
     {
         ResolveControls();
-        nint vtbl = *(nint*)beh;
-        if (vtbl == 0) return DbBehaviorKind.Unknown;
-        nint ctl = *(nint*)(vtbl + EngineLayout.BehaviorControlSlot);
+        if (*(nint*)beh == 0) return DbBehaviorKind.Unknown;
+        nint ctl = new CAurBehavior((IntPtr)beh).ControlFn;
         for (int i = 0; i < _control.Length; i++)
             if (_control[i] != 0 && _control[i] == ctl) return (DbBehaviorKind)i;
         return DbBehaviorKind.Unknown;
     }
 
-    /// <summary>The dispatch point. False = the object died under the solve and nothing more may touch it.</summary>
     /// <summary>Has this object's behaviour ever actually solved? <c>DbXform.Attach.cs</c>'s snap stands down
-    /// on a behaviour that is PLACING the object, and "installed" is not the same thing: a GUI panel whose
-    /// scene has its animations disabled is never stepped, so its controls' behaviours never run, and a snap
-    /// that stood down on the mere presence of one would leave every control at its scene's origin.
-    /// <para>A latch and not a time window, deliberately. <see cref="_frame"/> counts ANIMATE PASSES, not
-    /// frames -- three panel scenes and an external animate are four bumps of one frame -- so a window of
-    /// "this frame or the last" let the snap run again between passes and overwrite the offset a
-    /// <c>WithOffset</c> subclass had just applied. Once a behaviour has solved it keeps solving, and when it
-    /// is replaced or removed <see cref="SetBehavior"/> clears this.</para></summary>
+    /// on a behaviour that is PLACING the object, and "installed" is not the same thing: a GUI panel scene
+    /// with its animations disabled never steps, so its controls' behaviours never run. A latch and not a time
+    /// window, because <see cref="_frame"/> counts ANIMATE PASSES; <see cref="SetBehavior"/> clears it.</summary>
     private static readonly bool[] _behaveRan = new bool[SceneDb.MaxObjects];
 
     /// <summary>Is a behaviour placing this object? One is installed and has solved at least once.</summary>
     internal static bool BehaviourPlacing(int i) => _behavior[i] != 0 && _behaveRan[i];
 
+    /// <summary>The dispatch point. False = the object died under the solve and nothing more may touch it.</summary>
     private static bool BehaviorControl(DbId obj, float dt, int depth)
     {
         nint beh = _behavior[obj.Index];
@@ -177,18 +160,19 @@ public static unsafe partial class DbAnim
         _dispatched++;
         nint vtbl = *(nint*)beh;
         if (vtbl == 0) return true;
-        var fn = (delegate* unmanaged<nint, float, int>)*(nint*)(vtbl + EngineLayout.BehaviorControlSlot);
-        if (fn == null) return true;
-        fn(beh, dt);
+        var b = new CAurBehavior((IntPtr)beh);
+        if (b.ControlFn == IntPtr.Zero) return true;
+        b.Control(dt);
         if (!SceneDb.Objects.Valid(obj)) return false;
         if (CX.Alloy.Renderer.HitCheck.Boot && _dispSaid[obj.Index] < DispSayMax && ShellPoseSync != null)
         {
             _dispSaid[obj.Index]++;
             nint sh = SceneDb.ObjFacade[obj.Index];
             float* w = sh == 0 ? null : (float*)(sh + Seam.SeamLayout.GobPos);
-            // CAurBehaviorCrossSceneAttach::Control @0x68b5d0's inputs: the child's +0x450 must be this behaviour,
-            // the target (+0x20) live, and the part (+0x30) the one GetWorld is asked for.
-            nint target = *(nint*)(beh + 0x20), part = *(nint*)(beh + 0x30);   // not-an-offset: diagnostic read of the decompiled fields
+            // CAurBehaviorCrossSceneAttach::Control's inputs: the child's own behaviour word must be this
+            // behaviour, the target live, and the part the one GetWorld is asked for.
+            nint target = new CAurBehavior((IntPtr)beh).Target.Ptr;
+            nint part = new CAurBehaviorAttach((IntPtr)beh).Part;
             string pw = "-";
             if (part != 0 && Seam.PartShell.Resolve(part, out DbId po, out int pi))
                 pw = $"o={po.Index}/p={pi} \"{SceneDb.ObjModel[po.Index]?.Name ?? "-"}\" world={SceneDb.PartWorld[pi].Translation}";
@@ -236,14 +220,10 @@ public static unsafe partial class DbAnim
         return _behavior[obj.Index] == beh ? 1 : 0;
     }
 
-    /// <summary>
-    /// <c>CAurBehaviorAttach::Control</c> @0x4a2810 and its four subclasses: snap the owner's placement to the
-    /// parent part's WORLD transform, then apply the subclass's own offset. <paramref name="variant"/> is 0
-    /// attach, 1 translate, 2 rotate, 3 no-orientation, 4 GUI scale.
-    /// <para>The snap is a raw column write, as the engine's raw field write is: <c>Part::GetWorld</c> is handed
-    /// <c>&amp;owner-&gt;position</c>, so a <c>SetPosition</c> override is deliberately not consulted for it.
-    /// The subclass offsets go through the columns too, which is the same thing here.</para>
-    /// </summary>
+    /// <summary><c>CAurBehaviorAttach::Control</c> @0x4a2810 and its four subclasses: snap the owner's
+    /// placement to the parent part's WORLD transform, then apply the subclass's own offset.
+    /// <paramref name="variant"/> is 0 attach, 1 translate, 2 rotate, 3 no-orientation, 4 GUI scale. The snap
+    /// is a raw column write, as the engine's is -- a <c>SetPosition</c> override is not consulted.</summary>
     private static bool Attach(nint beh, DbId obj, float dt, int depth, int variant)
     {
         int o = obj.Index;
@@ -392,7 +372,7 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary><c>CAurBehaviorCameraOnAStick::Control</c> @0x4a0c70 -- a 2-D spring in XY at a fixed height.
-    /// ponytail: UNVERIFIABLE, exactly as the mode-0 port says -- nothing in this client constructs the class,
+    /// ponytail: UNVERIFIABLE -- nothing in this client constructs the class,
     /// so neither version can be compared against the engine. The period line's <c>onastick</c> count is what
     /// would say it ever fired.</summary>
     private static bool OnAStick(nint beh, DbId obj, float dt, int depth)
@@ -425,18 +405,10 @@ public static unsafe partial class DbAnim
         return true;
     }
 
-    /// <summary>
-    /// The parent's DEATH EDGE, raised from <see cref="DbAnim.ObjectRetired"/> while the record is still
-    /// readable -- the DB form of <c>Gob::~Gob</c> @0x444140, whose SECOND statement (after re-pointing its
-    /// own vptr) is <c>DoEvent("Dying", nullptr)</c>. That event has exactly one sender in the whole client,
-    /// and it is the only thing that may take an attached child with it.
-    /// <para>Two halves, in the engine's order. The event itself goes out first, because the game registers
-    /// its own listeners and <c>UpdateScenesAttach</c> @0x49fc70 -- the wildcard the attach constructor puts
-    /// on the PARENT -- is one of them: it deletes the owner through its own deleting destructor when the
-    /// behaviour's <c>DieWithoutParent</c> is set. Then CX does the same walk itself over the attach links,
-    /// because whether that engine callback is in our list depends on whose constructor ran, and a child that
-    /// outlives its parent is a use-after-free waiting for the game to re-attach it.</para>
-    /// </summary>
+    /// <summary>The parent's DEATH EDGE, raised from <see cref="DbAnim.ObjectRetired"/> while the record is
+    /// still readable -- the edge <c>Gob::~Gob</c> @0x444140 raises with <c>DoEvent("Dying", nullptr)</c>. The
+    /// event goes out FIRST: the game's <c>UpdateScenesAttach</c> @0x49fc70 listener deletes the owner when
+    /// <c>DieWithoutParent</c> is set. CX then walks the attach links itself, lest a child outlive its parent.</summary>
     internal static void ObjectDying(DbId obj)
     {
         if (!SceneDb.Objects.Valid(obj)) return;
@@ -534,19 +506,16 @@ public static unsafe partial class DbAnim
     private static Quaternion N(Quat q) => new(q.X, q.Y, q.Z, q.W);
 }
 
-/// <summary>CX-120 seam-anim: the camera half of the animation step, folded in from seam-scene's
-/// <c>Db/DbAnim.Stub2.cs</c> (now deleted). A camera has no animations of its own -- its
+/// <summary>The camera half of the animation step. A camera has no animations of its own -- its
 /// <c>PlayAnimation</c> slot is <c>return 0</c> in the engine too -- so its <c>Animate</c> is exactly its
-/// BEHAVIOUR's solve, which is what moves a chase camera, plus the compose that makes the view matrix
-/// current for the <c>RenderScene</c> that follows in the same frame.</summary>
+/// BEHAVIOUR's solve, which is what moves a chase camera, plus the compose that makes the view matrix current
+/// for the <c>RenderScene</c> that follows in the same frame.</summary>
 public static unsafe class DbAnimCamera
 {
     /// <summary>The camera-feel layer's two edges around the follow solve, installed by
-    /// <c>CX.Services.Camera.CameraService</c> in DB mode. Mode 0 gets the same two halves by chaining on
-    /// <c>CAurBehaviorCameraFollow::Control</c>; funchook patches a function ENTRY, so in DB mode -- where
-    /// nothing calls that function -- the chain is replaced by these, at the same two points in the frame.
-    /// Both are called with the behaviour, read before the solve so a solve that detaches it cannot free the
-    /// pointer under the second edge.</summary>
+    /// <c>CX.Services.Camera.CameraService</c>. They stand in for a funchook chain on
+    /// <c>CAurBehaviorCameraFollow::Control</c>, which nothing calls. Both take the behaviour, read before the
+    /// solve so a solve that detaches it cannot free the pointer under the second edge.</summary>
     public static delegate*<IntPtr, float, void> FeelBefore, FeelAfter;
 
     /// <summary>Advance camera <paramref name="cam"/> by <paramref name="dt"/>: solve the behaviour on the

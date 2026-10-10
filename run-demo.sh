@@ -61,7 +61,10 @@ fi
 if grep -q 'init threw' "$LOG"; then
   echo ">> FAIL: a service's Initialize threw:"; grep 'init threw' "$LOG"; exit 1
 fi
-echo ">> $(grep -c 'SelfCheck' "$LOG") SelfCheck lines, none failed."
+# A suite that stood down is neither a pass nor a failure, and it is named here so "none failed" cannot
+# be read as "all ran" (CX-200: every skip goes through Checker.Skip and says SKIPPED).
+echo ">> $(grep -c 'SelfCheck' "$LOG") SelfCheck lines, none failed, $(grep -c 'SelfCheck.*SKIPPED' "$LOG") SKIPPED."
+grep -E 'SelfCheck.*SKIPPED' "$LOG" | sed 's/^/>>   /' || true
 
 # The other half of #457: the refusal itself, run for real rather than asserted in a unit. A copy of sh IS
 # the rot case -- a host the offsets were never measured against -- so the gate must discover nothing.

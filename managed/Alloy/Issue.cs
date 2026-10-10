@@ -8,21 +8,14 @@ using static CX.Alloy.AlloyRenderer;
 
 namespace CX.Alloy;
 
-/// <summary>#173: BATCH ISSUE. Uploading the staged per-draw records and bone snapshots, then submitting the built groups as one multidraw per (program, VDO, texture, primitive) cut -- and the blended and water variants that ride the same records under different GL state. Hot: nothing on this path allocates.
-/// <para>An ADR 0014 module, not a partial (CX-699): it reaches the renderer's tables and state through
-/// <c>using static</c>, a compile-time alias that emits the same static load the same-class read did.</para></summary>
+/// <summary>BATCH ISSUE: upload the staged per-draw records and bone snapshots, then submit the built groups
+/// as one multidraw per (program, VDO, texture, primitive) cut -- plus the blended and water variants that
+/// ride the same records under different GL state. Hot: nothing on this path allocates. An ADR 0014 module,
+/// not a partial: it reaches the renderer's tables through <c>using static</c>, the same static load.</summary>
 internal static unsafe class Issue
 {
-    /// <summary>#153: forget every cached handle. Called at each enrollment -- the cadence at which the
-    /// tids themselves are re-harvested -- and on release. Handles stay resident until their textures die;
-    /// the cache only ever answers for tids the current enrollment produced.</summary>
-    /// <summary>#220: forget every cached handle. Only meaningful while the cache holds ENGINE names --
-    /// those get recycled behind us and the wipe is the only heal. With <c>ownedtex</c> armed the names are
-    /// Alloy's own, invalidated precisely by <c>OwnedTextures.Drain</c> -&gt; <see cref="DropHandle"/>, and
-    /// wiping here would only make the next mint re-resident an already-resident handle (GL_INVALID_
-    /// OPERATION -- the error burst #220 recorded on transitions).</summary>
-    /// <summary>#220: the 4.6 context is gone, so every handle went with it. Cleared unconditionally, and
-    /// nothing is made non-resident -- that would be a call into a dead context.</summary>
+    /// <summary>Forget every cached handle, the 4.6 context having gone and taken them with it. Cleared
+    /// unconditionally, and nothing is made non-resident -- that would be a call into a dead context.</summary>
     internal static void ForgetHandles()
     {
         InvalidateRecords();   // #242: the persistent records hold the handles this forgets
@@ -31,6 +24,10 @@ internal static unsafe class Issue
         Array.Clear(_hRes, 0, _hRes.Length);
     }
 
+    /// <summary>Forget the cached handles at an enrollment. Only meaningful while the cache holds ENGINE names,
+    /// which get recycled behind us; with <c>ownedtex</c> armed the names are Alloy's own and are invalidated
+    /// precisely by <c>OwnedTextures.Drain</c> -&gt; <see cref="DropHandle"/>, so a wipe here would only make
+    /// the next mint re-resident an already-resident handle (GL_INVALID_OPERATION).</summary>
     internal static void WipeHandles()
     {
         if (OwnedTextures.Armed) return;
@@ -76,18 +73,10 @@ internal static unsafe class Issue
         return ok;
     }
 
-    /// <summary>#242: push the records that MOVED into the persistent per-draw SSBO, then the small
-    /// draw-to-slot index array this pass's order needs. The records are indexed by ownership slot and
-    /// survive the frame, so what goes up is the mover set -- a walking creature, an animated texture, a
-    /// fading tile -- rather than the whole owned table.
-    /// <para>Past a quarter of the table, naming slots costs more than sending everything, so the frame is
-    /// promoted to one wholesale upload. That is also what a reallocation and a dirty-list overflow take.
-    /// </para>
-    /// <para>No orphan any more, and that is the trade this makes: a bare <c>BufferSubData</c> over a buffer
-    /// the GPU may still be reading can make the driver sync, which is the stall #84's orphan was avoiding.
-    /// Orphaning is not available to a persistent buffer -- the whole point is that last frame's contents are
-    /// still there, which is also why the records are not on <see cref="StreamRing"/> (CX-45).</para>
-    /// <para>False = the slot array did not stream and the colour frame sits out.</para></summary>
+    /// <summary>Push the records that MOVED into the persistent per-draw SSBO, then stream the draw-to-slot
+    /// index array this pass's order needs. Past a quarter of the table a wholesale upload is cheaper, as a
+    /// reallocation or a dirty-list overflow also are. A persistent buffer cannot orphan, so a SubData over a
+    /// buffer the GPU may still be reading can sync. False = the slot array did not stream, frame sits out.</summary>
     internal static bool UploadDraws()
     {
         int cap = _recOwnCap + MaxSkyDraws;
@@ -127,7 +116,7 @@ internal static unsafe class Issue
     /// capacity into a buffer the GPU may still be reading.</summary>
     internal static long WholeUploads, WholeBytes;
 
-    /// <summary>CX-45: the staged draw-to-slot array's ring slice, for <see cref="BindStagedSlots"/>.</summary>
+    /// <summary>The staged draw-to-slot array's ring slice, for <see cref="BindStagedSlots"/>.</summary>
     internal static StreamRing.Range _slotRange;
 
     /// <summary>The handle table alone. Its capacity is tracked apart from the draw records' so the bake can
@@ -166,15 +155,14 @@ internal static unsafe class Issue
         BakeHandleUploads++;
     }
 
-    /// <summary>#243: put the CPU-staged per-draw index array back on <see cref="BindDrawIdx"/>. The cull
-    /// binds its own compacted one for the passes it drives; every other pass reads the staged order.</summary>
+    /// <summary>Put the CPU-staged per-draw index array back on <see cref="BindDrawIdx"/>. The cull binds its
+    /// own compacted one for the passes it drives; every other pass reads the staged order.</summary>
     internal static bool BindStagedSlots() => StreamRing.Rebind(StreamRing.Site.DrawSlots, BindDrawIdx, in _slotRange);
 
-    /// <summary>#137: push this pass's bone snapshots into the bone block. Orphan-then-fill for
-    /// <see cref="UploadDraws"/>'s reason. Nothing to upload is the common case (no skinmesh on screen), and
-    /// the block stays bound empty rather than unbound -- a stage that declares it must find something there
-    /// even on a frame where no draw reads it.
-    /// <para>Not on <see cref="StreamRing"/>: the next frame's caster bake reads it when the shadow bracket did not pose (#308).</para></summary>
+    /// <summary>Push this pass's bone snapshots into the bone block. Nothing to upload is the common case (no
+    /// skinmesh on screen), and the block stays bound EMPTY rather than unbound -- a stage that declares it
+    /// must find something there even on a frame where no draw reads it. Not on <see cref="StreamRing"/>: the
+    /// next frame's caster bake reads it when the shadow bracket did not pose.</summary>
     internal static void UploadBones()
     {
         if (_skinning) UploadBoneBlock(ref _boneBuf, _boneStage, BindBones);
@@ -193,25 +181,21 @@ internal static unsafe class Issue
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, binding, buf);
     }
 
-    /// <summary>Phase B: one bind set + one glMultiDrawElementsBaseVertex per batch. uDrawBase is re-sent for
-    /// every batch (and it is a DIFFERENT location per program, so the program switch cannot leave a stale
-    /// one behind) -- the shaders read record uDrawBase + gl_DrawID, which is what carries the per-part model
-    /// matrix, texture rotation and material colours that used to be per-part uniforms.</summary>
-    /// <summary>#290: one colour-bracket range, from the cull's compacted list where the cull ran. Bound
-    /// around the range rather than for the whole bracket -- the sky, grass, beam and particle passes bind
-    /// buffers of their own in between, and finding an indirect buffer still bound under one of them is a
-    /// class of bug that shows up as a wrong batch rather than as an error.</summary>
     /// <summary>The blended pass's per-creature filter: when set, only batches tagged with this run gob
     /// issue; when zero, only UNTAGGED ones. Zero-valued and unset (<see cref="_onlyGobSet"/> false) issues
     /// everything, which is every other pass.</summary>
     internal static IntPtr _onlyGob;
     internal static bool _onlyGobSet;
 
-    /// <summary>CX-10: the program the last issue loop left bound (-1 none). <see cref="_holdProg"/> lets the
-    /// next loop start from it instead of re-sending the rig; set only when nothing binds between the two.</summary>
+    /// <summary>The program the last issue loop left bound (-1 none). <see cref="_holdProg"/> lets the next
+    /// loop start from it instead of re-sending the rig; set only when nothing binds between the two.</summary>
     internal static int _heldProg = -1;
     internal static bool _holdProg;
 
+    /// <summary>One colour-bracket range, from the cull's compacted list where the cull ran. The indirect
+    /// buffer is bound around the RANGE, not the whole bracket: the sky, grass, beam and particle passes bind
+    /// buffers of their own in between, and one left bound under them shows up as a wrong batch, not an
+    /// error.</summary>
     internal static void IssueColour(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
     {
         bool indirect = CullPass.Active;
@@ -228,12 +212,10 @@ internal static unsafe class Issue
         finally { FrameZones.Add(FrameZones.Zone.Issue, tIssue); }
     }
 
-    /// <summary>Did batch <paramref name="g"/> write the depth <see cref="SsaoPass"/> read, and if not, WHICH
-    /// of the prepass's three exclusions caught it? The prepass walks the opaque range and skips the cutout
-    /// class and every out-of-prepass feature, so those three are the same three here -- a batch outside them
-    /// must not consume the visibility buffer at all. The reason travels to the lit stage as the sign of
-    /// <c>uSsaoOn</c> (which tests <c>&gt; 0</c>) so <c>/alloy viz 35</c> can name it on the pixel, rather than
-    /// leaving "the door has no AO" and "the door CANNOT have AO" the same picture.</summary>
+    /// <summary>Did a batch write the depth <see cref="SsaoPass"/> read, and if not, WHICH of the prepass's
+    /// exclusions caught it? A batch the prepass skipped must not consume the visibility buffer at all. The
+    /// reason travels to the lit stage as the SIGN of <c>uSsaoOn</c> (which tests <c>&gt; 0</c>), so
+    /// <c>/alloy viz 35</c> can tell "has no AO" from "CANNOT have AO" on the pixel.</summary>
     internal const int AoIn = 1, AoCutout = -1, AoOutOfPrepass = -2, AoBlended = -3, AoKeyhole = -4;
 
     /// <summary>Membership is MEASURED (<see cref="_gPrepassed"/>, written by the prepass as it walks); only
@@ -247,6 +229,10 @@ internal static unsafe class Issue
          : _gDis[g] ? AoKeyhole
          : AoOutOfPrepass;
 
+    /// <summary>Phase B: one bind set + one <c>glMultiDrawElementsBaseVertex</c> per batch. uDrawBase is
+    /// re-sent for every batch, and it is a DIFFERENT location per program, so a program switch cannot leave a
+    /// stale one behind; the stages read record uDrawBase + gl_DrawID for the per-part model matrix, texture
+    /// rotation and material colours.</summary>
     internal static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                           bool indirect)
     {
@@ -311,7 +297,7 @@ internal static unsafe class Issue
             // undefined (NaN, which the resolve and the bloom then spread as white patches and blue blotches).
             // Those batches sit the accumulation out and draw after the resolve the plain-blend way.
             // ...and so does any pair that is not SrcAlpha/OneMinusSrcAlpha: weighted blending can represent
-            // only that one. SoW's veil (a modulating fog dome around the player) fed through it composites
+            // only that one. A content veil (a modulating fog dome around the player) fed through it composites
             // the veil's colour over the whole view instead of darkening by it.
             bool oitOut = hosted || _gSrc[g] != AuroraSrcAlpha || _gDst[g] != AuroraOneMinusSrcAlpha;
             if (_oitOn && oitOut) { _oitDeferred++; continue; }
@@ -385,9 +371,8 @@ internal static unsafe class Issue
                     Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, L.WxEdge, L.WxRun, L.WxCache, _capturing);
                     Weather.BindEsm(L.CoverEsm, _oitOn || lists);
                     Weather.UploadMap(L.WxMapXf, L.WxMapP, _capturing);
-                    // CX-117: the master PLT palette on its own unit. Only a DB-mode record can carry the
-                    // PLT flag cx_plt.glsl branches on, so in engine mode the declared sampler is never read.
-                    Db.PltPalettes.Bind();   // CX-117: no-op until a master palette exists, which is DB mode only
+                    // The master PLT palette on its own unit; a no-op until a master palette exists.
+                    Db.PltPalettes.Bind();
                     litBase = L.Base; litCut = L.Cut; litOitGob = L.OitGob; boundOitGob = -1;
                     litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
                     boundSsao = -1;
@@ -484,7 +469,7 @@ internal static unsafe class Issue
             // cull moves WHICH draws are in the batch, never what state they draw under), and the record
             // lookup is unchanged too -- uDrawBase is still this batch's start, because the cull compacts
             // each batch into its own source region rather than into one global run.
-            if (_drawCap > 0 && drawn++ >= _drawCap) break;
+            if (Ablation.DrawCap > 0 && drawn++ >= Ablation.DrawCap) break;
             if (BlendProfile.Recording) BlendProfile.Stamp(g, boundProg);
             uint prim = _gMode[g];
             if (indirect) CullPass.Draw(prim, g, s, _gLen[g]);
@@ -509,23 +494,23 @@ internal static unsafe class Issue
     }
 
     /// <summary>The uniform locations of one of the five lit programs, keyed by the issue loop's
-    /// <c>wantProg</c>: 1 plain, 3 hosted (#350), 4 the OIT-lists twin (#490), 5 the deferred twin (CX-188),
-    /// 6 the A2C mask variant (CX-189). One place, because two sites in the loop pick from the same five.</summary>
+    /// <c>wantProg</c>: 1 plain, 3 hosted, 4 the OIT-lists twin, 5 the deferred twin, 6 the A2C mask variant.
+    /// One place, because two sites in the loop pick from the same five.</summary>
     private static ref LitLoc LitLocOf(int which)
         => ref (which == 3 ? ref Programs._litH
               : ref (which == 4 ? ref Programs._litL
                    : ref (which == 5 ? ref Programs._litD
                         : ref (which == 6 ? ref Programs._litM : ref Programs._lit))));
 
-    /// <summary>CX-189: the batches being issued are <see cref="CoverageLayer"/>'s, cut at the layer's threshold
-    /// rather than the class's (and through the mask variant when it is on). Set around the layer's one issue call.</summary>
+    /// <summary>The batches being issued are <see cref="CoverageLayer"/>'s, cut at the layer's threshold rather
+    /// than the class's (and through the mask variant when it is on). Set around the layer's one issue call.</summary>
     internal static bool _coverPass;
-    /// <summary>CX-189: the batches draw after the deferred pass (the coverage tail, layered or not), so never through
+    /// <summary>The batches draw after the deferred pass (the coverage tail, layered or not), so never through
     /// the deferred twin -- its point lights would go to a G-buffer nobody reads any more.</summary>
     internal static bool _forwardOnly;
 
-    /// <summary>CX-188: the blended class's lit fragments may take the deferred pass's light record (set by the
-    /// frame around the blended pass only, with the record bound on <see cref="TextureSlots.LightRec"/>).</summary>
+    /// <summary>The blended class's lit fragments may take the deferred pass's light record (set by the frame
+    /// around the blended pass only, with the record bound on <see cref="TextureSlots.LightRec"/>).</summary>
     internal static bool _lightRec;
 
     /// <summary>Arm <see cref="_lightRec"/> for the blended pass when this frame's deferred pass wrote the record;
@@ -545,10 +530,6 @@ internal static unsafe class Issue
         _lightRec = false;
         _holdProg = false;
     }
-
-    /// <summary>/alloy bench: the issue loop stops after this many batches that actually DRAW (0 = all) -- the
-    /// blended ladder's first-group rung, which must not land on a batch the OIT bracket steps over.</summary>
-    internal static int _drawCap;
 
     /// <summary>Polygon offset for wash batches (see the wash note in the issue loop).</summary>
     private const float WashOffsetFactor = -1f, WashOffsetUnits = -2f;
@@ -577,20 +558,10 @@ internal static unsafe class Issue
     /// <summary>Aurora blend-mode indices (see <see cref="BlendGl"/>) of the one pair OIT accumulates.</summary>
     private const byte AuroraSrcAlpha = 0, AuroraOneMinusSrcAlpha = 1;
 
-    /// <summary>The blending classes (ADR 0011 steps 4 and 7, #126). Blended draws sorted back-to-front with
-    /// the depth mask OFF -- what makes grass's punch-through structurally impossible, since nothing
-    /// alpha-blended can write depth -- and additive follows it unsorted, because addition commutes and the
-    /// engine leaves its own depth mask off there too (<c>Material::SetBlendingMode</c> @0x4c5c50 turns it
-    /// off for exactly that one blend pair). Depth TESTING stays on, against the opaque set's depth. The
-    /// per-batch <c>glBlendFunc</c> comes off the material, in <see cref="IssueBatches"/>.
-    /// <para>The CUTOUT class draws back in the opaque pass: its graded texels blend, so they composite
-    /// against whatever the framebuffer already holds, and depth-write over it. The upgrade that removes the
-    /// ordering dependency is alpha-to-coverage (ADR 0011 names it beside the alpha test), which needs a
-    /// multisampled target.</para></summary>
-    /// <para><paramref name="depthWrite"/>: the engine's own rule, <c>Material::SetBlendingMode</c> @0x4c5c50 --
-    /// depth writes ON for every blend pair but additive (src 0 / dst 2), OFF for additive. The blended class
-    /// therefore writes depth: a translucent creature's back parts are rejected by its front ones instead of
-    /// compositing N times, and the outline mask has a depth to match at <c>GL_EQUAL</c>.</para>
+    /// <summary>The blending classes (ADR 0011): blended draws sorted back-to-front, then additive unsorted,
+    /// because addition commutes. Depth TESTING stays on against the opaque set's depth, and the per-batch
+    /// <c>glBlendFunc</c> comes off the material in <see cref="IssueBatches"/>. <paramref name="depthWrite"/>
+    /// is the engine's rule (<c>Material::SetBlendingMode</c> @0x4c5c50): on for every pair but additive.</summary>
     internal static void TransparentPass(int from, int to, Matrix4x4* vp, int* viewport, float near, float far,
                                         bool depthWrite = false)
     {
@@ -599,21 +570,16 @@ internal static unsafe class Issue
         _passDepthMask = depthWrite ? (byte)1 : (byte)0;
         Gl.DepthMask(_passDepthMask);
         Gl.Enable(Gl.BLEND); _blendOn = true;
-        // #290: the same compacted list the opaque pass drew from, whose batches in THIS range were placed
-        // by the sort dispatch -- back-to-front from this pass's eye, measured on the GPU.
+        // The same compacted list the opaque pass drew from, whose batches in THIS range were placed by the
+        // sort dispatch -- back-to-front from this pass's eye, measured on the GPU.
         IssueColour(from, to, vp, viewport, near, far);
         _passDepthMask = 1;
     }
 
-    /// <summary>ADR 0011 <see cref="PassId.WaterOwned"/> (#129): the water class, drawn from the one
-    /// framebuffer copy taken immediately before it.
-    /// <para>Depth writes go back ON, which is the one piece of state that separates this pass from the
-    /// blended one and the reason it can be here at all: additive draws after water and has to be able to
-    /// stand in FRONT of it. That is vanilla's arrangement -- effects are invisible to the reflection and are
-    /// not painted over by the surface -- and the ticket keeps it deliberately.</para>
-    /// <para>Stands down whole whenever the copy could not be taken (<see cref="FrameSnapshot.Ready"/> false) or
-    /// the program did not build. Nothing partial: <see cref="BucketGate"/>'s bucket-6 gate reads the
-    /// same flag, so water is simply NOT DRAWN on exactly the passes this one does not take (#285).</para></summary>
+    /// <summary>ADR 0011 <see cref="PassId.WaterOwned"/>: the water class, drawn from the one framebuffer copy
+    /// taken immediately before it. Depth writes go back ON -- the one piece of state separating this pass
+    /// from the blended one, and what lets additive draw after water and stand in FRONT of it, as vanilla
+    /// arranges it. Stands down whole when the copy was refused or the program did not build.</summary>
     internal static void WaterOwnedPass(int from, int to, Matrix4x4* vp, float* view, float* proj,
                                        int* viewport, float near, float far)
     {
@@ -639,8 +605,8 @@ internal static unsafe class Issue
         3 => GlZero,
         4 => GlDstColor,
         5 => GlSrcColor,
-        // #125 review: the table's entry 6 is 0x0305, ONE_MINUS_DST_ALPHA -- read out of
-        // blendTranslationTable @0x12f5040 rather than inferred from the name beside it.
+        // Entry 6 is 0x0305, ONE_MINUS_DST_ALPHA -- read out of blendTranslationTable @0x12f5040 rather than
+        // inferred from the name beside it.
         6 => GlOneMinusDstAlpha,
         _ => GlSrcAlpha,
     };

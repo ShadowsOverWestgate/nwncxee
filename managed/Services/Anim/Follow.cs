@@ -6,22 +6,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Follow-through, a <see cref="PoseService"/> module (<c>anim.follow</c>): the arms trail what turns and carries the
-/// torso, then swing through and settle, and the neck steadies the head. Each arm is a pendulum on an underdamped
-/// spring: a change in the torso's spin turns the torso out from under it and drags its shoulder round, and the body's
-/// acceleration -- setting off, stopping, the pull of a bend -- swings it. A steady walk, run or turn changes nothing,
-/// so nothing trails and the authored swing is left as it was.
-/// <para><b>The head</b> is not a pendulum: a neck holds it steady against what the chest does
-/// (<see cref="Steady"/>). Its orientation in the character's heading frame follows the pose's through a critically
-/// damped spring, and <see cref="SteadyShare"/> of the difference is shown, so every jolt the torso takes -- the
-/// cycle's own sway, a lean, a dip, a flinch -- reaches the head softened and a moment late, while the facing
-/// itself (a turn, the camera) passes straight through. Driving a pendulum off the measured yaw rate's change, as
-/// this did before, shook it on every step of the millisecond clock (live feedback, 2026-09-29).</para>
-/// <para>The torso's spin is the body's yaw rate plus the rate of whatever the other modules turned the torso by (lean,
-/// aim, flinch, look share, the diagonal's chest share), measured off the animation layer's pose after they wrote
-/// (<see cref="Measure"/>): authored torso motion already carries the arms as the animator meant and drives nothing.
-/// Only while standing, turning on the spot, walking or running (<see cref="Transition.Movement"/>); any other action
-/// -- an attack, a cast, an emote -- eases it out, so authored arms land where they were put.</para>
+/// Follow-through, a <see cref="PoseService"/> module (<c>anim.follow</c>): each arm is an underdamped pendulum that
+/// trails what turns and carries the torso, swings through and settles, while a neck spring steadies the head against
+/// what the chest does (<see cref="Steady"/>). The driving spin is measured off the animation layer's pose after the
+/// other modules wrote (<see cref="Measure"/>), so authored torso motion drives nothing; any non-locomotion action eases it out.
 /// </summary>
 internal static unsafe class Follow
 {
@@ -50,8 +38,7 @@ internal static unsafe class Follow
     /// <summary>Radians of lag under which nothing is written.</summary>
     private const float MinLag = 1e-3f;
     /// <summary>Radians of shown lag past which a body counts as trailing in the stats line: half a degree, the
-    /// least anyone could see. Counting every lag at all (<see cref="MinLag"/>, 0.057 deg) made the clause read
-    /// "every creature, every frame" whatever was happening (CX-66 §2).</summary>
+    /// least anyone could see.</summary>
     private const float ShownLag = 0.5f * Deg;
     /// <summary>Longest step the springs integrate in one go, and the substeps past which a hitch-sized dt lets them
     /// rest instead (as <see cref="PoseMath.Wobble"/>).</summary>
@@ -60,7 +47,7 @@ internal static unsafe class Follow
     /// <summary><c>torso_g</c>'s index in <see cref="PoseService.BoneIndex"/> order.</summary>
     private const int TorsoBone = 6;
 
-    /// <summary>The pendulums, a_ba's rig in model units off <c>torso_g</c> (CX-160):
+    /// <summary>The pendulums, a_ba's rig in model units off <c>torso_g</c>:
     /// each shoulder, and the reach from it to the centre of swing, two thirds down an arm. ponytail: every humanoid
     /// swings as a_ba; per-model geometry is the parts' own positions.</summary>
     private static readonly Vector3 ShoulderR = new(0.201f, -0.079f, 0.35f), ShoulderL = new(-0.201f, -0.079f, 0.35f),
@@ -222,10 +209,9 @@ internal static unsafe class Follow
     private static IntPtr Parent(IntPtr part) => PoseRig.Parent(part);
 
     /// <summary>A turn on the spot (6 rad/s for a second, measured as <see cref="PoseService.Motion"/> does) swings the
-    /// arms behind -- the leading shoulder's hand forward, the trailing one's back; through the turn the spring
-    /// overshoots by under a third of that; at the stop they swing through. A walk that stops swings the arms forward.
-    /// Either settles to a tenth of its swing within 1.2 s; no lag passes the cap, even at an instant about-face, and an
-    /// action starting mid-swing eases it out. The neck (<see cref="SteadyCheck"/>) keeps a shake off the head.</summary>
+    /// arms behind, overshooting by under a third through the turn and swinging through at the stop; a walk that stops
+    /// swings them forward. Either settles to a tenth within 1.2 s, no lag passes the cap even at an instant about-face,
+    /// an action starting mid-swing eases it out, and the neck (<see cref="SteadyCheck"/>) keeps a shake off the head.</summary>
     internal static bool SelfCheck()
     {
         const float dt = 1f / 60f;

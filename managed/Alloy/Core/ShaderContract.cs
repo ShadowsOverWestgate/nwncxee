@@ -7,14 +7,10 @@ namespace CX.Alloy;
 
 using static AlloyRenderer;
 
-/// <summary>#173: the Alloy pass's shader-contract predicates, lifted clear of the render service. Every one
-/// is pure string-to-bool over the embedded GLSL -- no GL, no frame state, no engine pointer -- so this is
-/// callable and checkable off-device by anything, which is exactly what a contract suite should be.
-/// <para>These are assertions over the embedded contract: the per-draw SSBO binding and stride against
-/// <see cref="AlloyRenderer.DrawBufDecl"/>'s literal GLSL, the alpha cutout spelling, the per-draw alpha
-/// reaching the framebuffer, the clip expression under its invariant, the bindless rewrite -- each of which
-/// fails SILENTLY as a misrender rather than an error, which is why the suite gates arming instead of only
-/// logging.</para></summary>
+/// <summary>The Alloy pass's shader-contract predicates: pure string-to-bool over the embedded GLSL -- no GL,
+/// no frame state, no engine pointer -- so the suite is callable and checkable off-device. Each assertion
+/// covers a desync that fails SILENTLY as a misrender rather than an error (the per-draw SSBO binding and
+/// stride, the cutout spelling, the clip expression, the bindless rewrite), which is why it gates arming.</summary>
 internal static class ShaderContract
 {
     /// <summary>A vertex stage whose depth the prepass may re-test: it computes <see cref="ClipExpr"/> and
@@ -24,24 +20,14 @@ internal static class ShaderContract
         => vs.Contains(ClipExpr) && vs.Contains("invariant gl_Position;");
 
     /// <summary>Does this stage's text declare the per-draw record the CPU is staging? The layout is a
-    /// contract between <see cref="AlloyRenderer.DrawFloats"/> and whatever GLSL actually compiled -- and a content
-    /// override (#92) is a copy of that GLSL held somewhere else, so it goes stale the moment the record
-    /// grows. #120 grew it from four vec4s to six: a stage still declaring four reads every draw's model
-    /// matrix and material colours out of its NEIGHBOUR's record, which renders as a black, streaked world
-    /// with nothing at all in the log. <see cref="SelfCheck"/> cannot catch it -- it only sees the embedded
-    /// text. Counted rather than matched character-for-character, so an override may still reformat or
-    /// rename the fields.</summary>
+    /// contract between <see cref="AlloyRenderer.DrawFloats"/> and whatever GLSL actually compiled, and a
+    /// content override is a copy of that GLSL that goes stale the moment the record grows: a short
+    /// declaration reads each draw's matrix and colours out of its NEIGHBOUR's record. Counted, not matched.</summary>
     public static bool RecordSafe(string src) => RecordSafe(src, "CxDraw", AlloyRenderer.DrawFloats);
 
-    /// <summary>#161: the same count, for any per-draw record a C# stride stages.
-    /// <para>#302 retired its second caller. The caster pass staged a <c>CxCaster</c> of its own -- a
-    /// parallel record carrying a second copy of the model matrix, the bone base and the cutout -- and this
-    /// overload existed to police a stride that could silently desync from it. The shadow bake reads
-    /// <c>CxDraw</c> now, so there is one stride and one guard; what is left of CxCaster is bounds and a
-    /// slot index, with nothing an override can misread into a neighbour's material.</para>
-    /// <para><paramref name="floats"/> is the whole stride. #392 appended a second <c>mat4</c> (the
-    /// previous model matrix), so the count is by FIELD SIZE now -- a vec4-only count was blind to exactly
-    /// that growth, and a pre-#392 override would have read a 44-float stride against a 60-float buffer.</para></summary>
+    /// <summary>The same count, for any per-draw record a C# stride stages. <paramref name="floats"/> is the
+    /// whole stride, counted by FIELD SIZE: a vec4-only count is blind to an appended <c>mat4</c>, and a stale
+    /// override then reads a 44-float stride against a 60-float buffer.</summary>
     public static bool RecordSafe(string src, string structName, int floats)
     {
         int at = src.IndexOf("struct " + structName, StringComparison.Ordinal);
@@ -51,15 +37,10 @@ internal static class ShaderContract
         return 16 * (decl.Split("mat4").Length - 1) + 4 * (decl.Split("vec4").Length - 1) == floats;
     }
 
-    /// <summary>#126: does this stage pair carry the cutout and the per-draw alpha? A content override (#92)
-    /// replaces the stage wholesale, and one written before #126 links CLEANLY without them --
-    /// <see cref="RecordSafe"/> passes (the record did not grow), <see cref="DepthSafe"/> passes (the clip
-    /// expression did not change), and <c>glUniform1f</c> on the missing uniform's -1 location is a legal
-    /// no-op. What ships is then a world with no alpha discard and a constant 1.0 alpha: grass and fences
-    /// render as opaque quads and windows as walls, silently. So it is checked on the source that actually
-    /// compiled, and a stage that lacks it is rebuilt from the embedded text.
-    /// <para>Named terms rather than the whole line, so an override may still restyle everything around
-    /// them -- what it may not do is drop them.</para></summary>
+    /// <summary>Does this stage pair carry the cutout and the per-draw alpha? An override without them links
+    /// CLEANLY -- the record did not grow, the clip expression did not change, and <c>glUniform1f</c> on a -1
+    /// location is a legal no-op -- and ships a world with no alpha discard and a constant 1.0 alpha: grass as
+    /// opaque quads, windows as walls. Named terms, so an override may restyle around them, not drop them.</summary>
     public static bool CutoutSafe(string vs, string fs)
         // The probe is a SUBSTRING of the whole stage text, COMMENTS INCLUDED: a stage that merely mentions
         // e.g. CasterPass's env threshold by name takes the vAlpha arm on the strength of the comment and
@@ -67,62 +48,39 @@ internal static class ShaderContract
         // identifier, anywhere inside a stage string.
         => fs.Contains("uAlphaCut") && (fs.Contains("vAlpha") ? vs.Contains("vAlpha") : fs.Contains("rot.w"));
 
-    /// <summary>#350: <see cref="VanillaShader.HostText"/> over a two-line stage, for the assertions above.
+    /// <summary><see cref="VanillaShader.HostText"/> over a two-line stage, for the assertions above.
     /// Null only if the rewrite found no main, which the assertions then trip on.</summary>
     private static string HostSample => VanillaShader.HostText(
         "#define LIGHTING 1\n#define FOO 2\nuniform sampler2D texUnit6;\nvoid main ()\n{\n    gl_FragColor = FragmentColor;\n}\n",
         "x", null, "selfcheck", new System.Collections.Generic.List<string>()) ?? "";
 
-    /// <summary>#137: does this VERTEX stage carry the skinning branch? Same shape, same reason, as
-    /// <see cref="CutoutSafe"/> -- and the same trap. A <c>cx_*_vs</c> written before #137 links
-    /// perfectly: <see cref="RecordSafe"/> passes (the record did not grow, the bone base rides in
-    /// <c>feat.y</c>), <see cref="DepthSafe"/> passes (the clip expression did not change), and the missing
-    /// bone attributes are simply disabled. What ships is then a skinned draw taking
-    /// <c>!CxDisplaces(8)</c> -- the literal clip expression -- and rendering the robe in its BIND POSE at
-    /// the node matrix, silently.
-    /// <para>Not academic, and not only a developer's problem: on a server the HAK wins over a local
-    /// override directory, so a HAK that has not caught up with the extender is exactly this case on live
-    /// content while a singleplayer test looks right. Checked only while the class is armed -- an override
-    /// predating #137 is perfectly correct when nothing skins.</para></summary>
+    /// <summary>Does this VERTEX stage carry the skinning branch? Same trap as <see cref="CutoutSafe"/>: an
+    /// override without it links perfectly (the bone base rides in <c>feat.y</c>, the missing bone attributes
+    /// are simply disabled) and renders every skinned robe in its BIND POSE, silently. On a server the HAK
+    /// wins over a local override directory, so it is live content that breaks. Checked only when armed.</summary>
     public static bool SkinSafe(string vs, bool skinning) => !skinning || vs.Contains("CX_FEAT_SKIN");
 
-    /// <summary>#132: does this FRAGMENT stage write LINEAR? Same shape and same trap as
-    /// <see cref="CutoutSafe"/> and <see cref="SkinSafe"/>, and the one with the widest blast radius yet: a
-    /// <c>cx_*_fs</c> written before #132 ends in <c>CxRevert(...)</c>, links perfectly (the record did
-    /// not grow, the clip expression did not change, <c>uSoftClip</c> at -1 is a legal no-op) and writes
-    /// display-space values into a target the resolve then encodes a SECOND time. The frame is washed out,
-    /// end to end, and nothing says so.
-    /// <para>On a server the HAK wins over a local override directory, so a HAK that has not caught up with
-    /// the extender is exactly this case on live content while a singleplayer test looks right -- which is
-    /// why the answer is to rebuild from the embedded text rather than to log and carry on.</para></summary>
+    /// <summary>Does this FRAGMENT stage write LINEAR? One ending in <c>CxRevert(...)</c> links perfectly and
+    /// writes display-space values into a target the resolve then encodes a SECOND time -- the frame is washed
+    /// out end to end and nothing says so. The answer is to rebuild from the embedded text rather than log and
+    /// carry on, because on a server the HAK wins over a local override directory.</summary>
     public static bool LinearSafe(string fs) => !fs.Contains("CxRevert") && !fs.Contains("CxSoftClip");
 
-    /// <summary>#132's guard from the other end, for the ONE stage that encodes: the resolve. Every other
-    /// Alloy fragment stage must not encode (<see cref="LinearSafe"/>); this one must, and must not decode
-    /// first. A pre-#132 resolve override opens with <c>CxLinear</c> on a target that is already linear and
-    /// comes out a gamma dark; one that dropped the encode leaves the whole frame linear and comes out washed
-    /// out. Both link cleanly and say nothing, so both rebuild from the embedded text.
-    /// <para>Named terms, like every other guard here -- an override may restyle the tonemap and the dither
-    /// around them, but not the colour-space decision the rest of the pipeline is built on.</para></summary>
+    /// <summary>The same guard from the other end, for the ONE stage that encodes: the resolve. It must encode
+    /// and must not decode first -- an override opening with <c>CxLinear</c> on an already-linear target comes
+    /// out a gamma dark, one that dropped the encode comes out washed out, and both link cleanly and say
+    /// nothing. Named terms: the tonemap and the dither may be restyled, the colour-space decision may not.</summary>
     public static bool ResolveSafe(string fs) => !fs.Contains("CxLinear") && fs.Contains("CxEncode");
 
-    /// <summary>#375: the guard for a <see cref="PostStack"/> stage, which runs AFTER the resolve on a
+    /// <summary>The guard for a <see cref="PostStack"/> stage, which runs AFTER the resolve on a
     /// display-space image and hands one on: it must neither encode (a second encode, a gamma too bright) nor
     /// decode (the frame goes linear and a gamma dark). Named terms, like the two above.</summary>
     public static bool DisplaySafe(string fs) => !fs.Contains("CxLinear") && !fs.Contains("CxEncode");
 
-    /// <summary>#208: does this FRAGMENT stage still declare the samplers the C# side binds units to? Same
-    /// shape and same trap as <see cref="CutoutSafe"/>: <see cref="TextureSlots.Check"/> polices the EMBEDDED
-    /// text, but a content override (#92) replaces the stage wholesale, and one that renamed or dropped a
-    /// sampler links perfectly -- <c>glUniform1i</c> on the missing uniform's -1 location is a legal no-op.
-    /// What ships is then a sampler left on unit 0 beside the diffuse. Two samplers of one type read each
-    /// other's texture (a normal map shaded as albedo); two of DIFFERENT types on one unit is
-    /// <c>INVALID_OPERATION</c>, and every lit draw is dropped with nothing at all in the log.
-    /// <para>Bound samplers only, so it is meaningless under the #153 bindless rewrite -- that path deletes
-    /// these declarations on purpose. The lit caller gates on <c>_bindless</c>.</para>
-    /// <para>The expected names are the CALLER's, passed in. A per-program table here would be the slot
-    /// manager #208 declined to build, and it would sit one indirection away from the guard that reads it --
-    /// each program already knows which samplers it binds.</para></summary>
+    /// <summary>Does this FRAGMENT stage still declare the samplers the C# side binds units to? An override
+    /// that renamed or dropped one links perfectly and leaves that sampler on unit 0 beside the diffuse: two
+    /// of one type read each other's texture, two of DIFFERENT types are <c>INVALID_OPERATION</c> and every
+    /// lit draw is dropped. Bound samplers only (meaningless under bindless); the names are the CALLER's.</summary>
     public static bool SlotSafe(string fs, params string[] samplers)
     {
         foreach (string s in samplers)
@@ -131,30 +89,23 @@ internal static class ShaderContract
         return true;
     }
 
-    /// <summary>#242: a stage that derives a draw index must reach its record THROUGH the slot map. The
-    /// records are persistent and indexed by ownership slot now, and the draw order is not that order -- so a
-    /// stage still spelling <c>uDraw[uDrawBase + gl_DrawID]</c> reads a NEIGHBOUR's model matrix, and (under
-    /// bindless, where the same index feeds <c>uTexH</c>) a neighbour's textures. It links cleanly, declares
-    /// the right record, passes every other guard here, and renders a scrambled world with nothing in the log.
-    /// <para>Which is precisely a pre-#242 content override: the record layout did not change, so
-    /// <see cref="RecordSafe"/> cannot see the difference. Stages with no <c>gl_DrawID</c> at all -- every
-    /// fragment stage, which receives the resolved slot in <c>vDraw</c> -- pass trivially.</para></summary>
+    /// <summary>A stage that derives a draw index must reach its record THROUGH the slot map: the records are
+    /// indexed by ownership slot and the draw order is not that order, so a stage still spelling
+    /// <c>uDraw[uDrawBase + gl_DrawID]</c> reads a NEIGHBOUR's model matrix and textures while passing every
+    /// other guard here. Stages with no <c>gl_DrawID</c> -- every fragment stage -- pass trivially.</summary>
     public static bool SlotIndexSafe(string src)
         => !src.Contains("gl_DrawID") || src.Contains("CxSlot(uDrawBase + gl_DrawID)");
 
-    /// <summary>#674: a fragment stage reading the chart UV needs a vertex stage that forwards it -- a
-    /// pre-#674 <c>cx_ownlit_vs</c> override beside the embedded fragment stage would leave <c>vChart</c>
-    /// unwritten (a link error on strict drivers, undefined reads on the rest). A fragment override that
-    /// never reads it is fine either way: it simply never reads the lightmap.</summary>
+    /// <summary>A fragment stage reading the chart UV needs a vertex stage that forwards it -- a stale
+    /// <c>cx_ownlit_vs</c> override beside the embedded fragment stage leaves <c>vChart</c> unwritten (a link
+    /// error on strict drivers, undefined reads on the rest). A fragment override that never reads it is fine
+    /// either way: it simply never reads the lightmap.</summary>
     public static bool ChartSafe(string vs, string fs) => !fs.Contains("vChart") || vs.Contains("vChart");
 
-    /// <summary>CX-43: does a stage that reads the pass terms read them from the <c>CxPass</c> block
-    /// <see cref="AlloyRenderer.BindPass"/> fills? Same trap as <see cref="CutoutSafe"/>: an override written
-    /// before the block -- a dumped stage, or every library of one -- still declares
-    /// <c>uniform vec4 uLocalLight[64];</c>, links cleanly, and reads zeros, because nothing uploads a loose
-    /// copy any more: a world with no local shadows and nothing in the log. One declaring a block that has since
-    /// grown reads every member after the change from the wrong offset. So the member list must match the
-    /// embedded one; comments and whitespace are free, the layout is not.</summary>
+    /// <summary>Does a stage that reads the pass terms read them from the <c>CxPass</c> block
+    /// <see cref="AlloyRenderer.BindPass"/> fills? An override still declaring
+    /// <c>uniform vec4 uLocalLight[64];</c> links cleanly and reads zeros -- a world with no local shadows and
+    /// nothing in the log -- and one declaring a stale block reads every later member at the wrong offset.</summary>
     public static bool PassSafe(string src)
     {
         string? got = PassMembers(src);
@@ -177,8 +128,8 @@ internal static class ShaderContract
 
     private static bool IsIdent(char c) => char.IsLetterOrDigit(c) || c == '_';
 
-    /// <summary>CX-188 step 5 (ADR 0029): every stage head that sets <c>CX_LIGHT_LITE</c> -- the forward
-    /// consumers of the point-light walk, vertex and fragment both.</summary>
+    /// <summary>Every stage head that sets <c>CX_LIGHT_LITE</c> (ADR 0029) -- the forward consumers of the
+    /// point-light walk, vertex and fragment both.</summary>
     private static readonly string[] LightLiteHeads =
     {
         "cx_grass_vhead.glsl", "cx_grass_fhead.glsl", "cx_gblade_vhead.glsl", "cx_gblade_fhead.glsl",
@@ -205,7 +156,7 @@ internal static class ShaderContract
         return sb.ToString();
     }
 
-    /// <summary>CX-43: the <c>CxPass</c> contract, off-device. <see cref="AlloyRenderer"/>'s <c>Pb*</c> offsets
+    /// <summary>The <c>CxPass</c> contract, off-device. <see cref="AlloyRenderer"/>'s <c>Pb*</c> offsets
     /// against a std140 layout computed from the GLSL declaration itself -- a member moved in the file and not
     /// in C# stages every term after it into its neighbour, silently -- then every embedded stage through
     /// <see cref="PassSafe"/>, and the predicate against a stale override, a reordered block and a restyled one.</summary>
@@ -284,15 +235,10 @@ internal static class ShaderContract
     public static bool LitSlotSafe(string fs)
         => SlotSafe(fs, "uTex") && SlotSafe(fs, TextureSlots.MapSamplers) && SlotSafe(fs, "uProbe");
 
-    /// <summary>Headless check of the one #84 desync that fails SILENTLY: the per-draw SSBO's binding point
-    /// and record stride live twice -- once as C# constants driving the staging writes and the upload, once as
-    /// literal GLSL in <see cref="AlloyRenderer.DrawBufDecl"/>. Bind to the wrong point or stage the wrong stride and the
-    /// shaders read zeros or a neighbour's record, which renders as black/misplaced geometry rather than an
-    /// error. Verified against glslang reflection: model@0 rot@64 amb@80 dif@96 emi@112 pbr@128 spc@144,
-    /// array stride 160.
-    /// <para>False = do not arm. A check that only logs would let exactly the misrender it predicts ship, with
-    /// one easily-missed line as the signal -- and because the iterator would still suppress the engine's own
-    /// draws, the world goes black rather than merely unaccelerated. Standing down is the honest failure.</para></summary>
+    /// <summary>Headless check of the one desync that fails SILENTLY: the per-draw SSBO's binding point and
+    /// record stride live twice, as C# constants driving the staging writes and as literal GLSL in
+    /// <see cref="AlloyRenderer.DrawBufDecl"/>. Verified against glslang reflection: model@0 rot@64 amb@80
+    /// dif@96 emi@112 pbr@128 spc@144, array stride 160. False = do not arm; a log line would ship it.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         // #208: run FIRST and unconditionally -- it names the slot that disagreed, which the && chain below
@@ -300,7 +246,7 @@ internal static class ShaderContract
         bool slots = TextureSlots.Check(log);
         bool pass = PassCheck(log);
         // the record's field list, counted by field size: the 288-byte stride staged above (#392 and ADR 0026 grew it)
-        bool ok = slots && pass && DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 288
+        bool ok = slots && pass && DrawBufDecl.Contains($"binding = {BindDraw}")
                   && RecordSafe(DrawBufDecl) && DrawBufDecl.Contains("vec4 feat; mat4 prev; vec4 ext0; vec4 ext1; vec4 ext2; }")
                   && DrawBufDecl.Contains("vec4 emi") && DrawBufDecl.Contains("vec4 spc")
                   && DrawBufDecl.Contains("vec4 feat")

@@ -3,19 +3,14 @@ using CX.Framework;
 namespace CX.Services.Hotkeys;
 
 /// <summary>
-/// The wire contract between this client extender and the SoW server (sow-codebase).
-/// ALL opcodes are PLACEHOLDERS -- they must be agreed with, and matched by, the server.
-/// Payloads are ASCII on purpose (no endianness, trivially debuggable).
+/// The wire contract with a server that implements hotkeys. ALL opcodes are PLACEHOLDERS the server must match;
+/// payloads are ASCII on purpose (no endianness, trivially debuggable). Client -> server: KeyPress (code),
+/// OpenUi (none), Revoke (CSV), GrantToken (<c>hex;CSV</c>), AbuseContact (email, once on login). Server ->
+/// client: ArmSet (CSV) and PresentToken (hex proof of prior consent -- a server holding none restores none).
 /// </summary>
-/// <remarks>
-/// client -> server: KeyPress (VK), OpenUi (none), Revoke (CSV of VKs),
-/// GrantToken ("&lt;hex&gt;;&lt;CSV&gt;"), AbuseContact (email, sent once on login). server -> client: ArmSet (CSV of VKs),
-/// PresentToken (hex proof of prior consent -- a server holding no token can restore none,
-/// so it cannot inherit consent it was never granted).
-/// </remarks>
 internal static class HotkeyProtocol
 {
-    /// <summary>The hotkey unit (#419): every symbol the four Hotkey* services cannot run without. Each service
+    /// <summary>The hotkey unit: every symbol the four Hotkey* services cannot run without. Each service
     /// checks it first, so one unresolved member stands the whole feature down. Optional members are NOT here:
     /// OnGainFocus/OnLostFocus (stuck-key clear), g_pNuklear (NUI typing gate), the chat-prompt handlers
     /// (the vanilla-prompt typing observer, chat master off).</summary>
@@ -45,13 +40,13 @@ internal static class HotkeyProtocol
 
     /// <summary>
     /// Mouse button N rides the KeyPress channel as MouseBase + N. Bit 28 keeps these clear
-    /// of every SDLK (ASCII &lt; 128, scancode mask bit 30). MUST match sow-codebase byte for byte.
+    /// of every SDLK (ASCII &lt; 128, scancode mask bit 30). MUST match the server end byte for byte.
     /// </summary>
     public const int MouseBase = 1 << 28;
 
     // Modifier bits OR'd onto a base code to make a combo (Ctrl+F) a distinct opaque code.
     // Bits 25/26/27 are free of every base (ASCII 0-6, scancode +30, mouse +28). Matching is
-    // EXACT -- Ctrl+F never fires F. MUST match sow-codebase byte for byte.
+    // EXACT -- Ctrl+F never fires F. MUST match the server end byte for byte.
     public const int ModCtrl  = 1 << 25;
     public const int ModShift = 1 << 26;
     public const int ModAlt   = 1 << 27;

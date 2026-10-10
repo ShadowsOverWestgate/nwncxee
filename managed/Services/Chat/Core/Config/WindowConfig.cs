@@ -17,7 +17,7 @@ public sealed class WindowConfig
     public bool? AnimEnabled;
     public float? HoldSec, FadeSec, TauMs;
     public int? Outline;
-    /// <summary>Per-window font (CX-683): absent = follow the UI knobs.</summary>
+    /// <summary>Per-window font: absent = follow the UI knobs.</summary>
     public int? FontPx;
     public string? Typeface;
     public int? TimeFormat, TimeSource;

@@ -10,28 +10,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Lean, aim and hit reactions, a <see cref="PoseService"/> module. All three are small rotations of
-/// <c>torso_g</c> (a child of the root, so the legs and foot placement are untouched), summed as one
-/// axis-angle vector in the character's frame: <c>R</c> = radians about the character's right (positive tips
-/// the top back), <c>F</c> = about its forward (positive tips it right). <c>neck_g</c> takes back half the lean,
-/// so the head stays nearer level, and adds a share of a hit, so it whips.
-/// <para><b>Look-at</b>: the engine's look-at turns <c>head_g</c> alone (up to <c>HEAD_ARC_H</c>, 60 degrees
-/// for playable races). The turn past a small deadzone is shared down the spine -- a fifth to the torso, three
-/// tenths to the neck -- and the head's local rewritten so its world rotation is exactly the engine's: the gaze
-/// is untouched, the body joins it. Whatever drives the head (a conversation, the action camera's head
-/// tracking) gets the same.</para>
-/// <para><b>Lean</b>: centripetal acceleration (speed times yaw rate) tips into a turn, forward acceleration
-/// pitches, and a climb pitches into the slope, each clamped and eased. The forward acceleration is the one
-/// <see cref="Weight"/> hands over -- the engine's own on a path, a drawn profile at a driven start or stop --
-/// and the turn and the slope are still measured.</para>
-/// <para><b>Aim</b> (CX-158): while the creature's current animation is an
-/// attack (<see cref="IsAttack"/>), its upper body pitches by the elevation from its own root part to its lock
-/// target's (<c>CNWCCreature+0x3c8</c>) -- root to root, so equal creatures on equal ground measure 0. Ranged
-/// attacks take all of it, melee <see cref="MeleeAim"/>.</para>
-/// <para><b>Hits</b> come from <c>CNWCCreature::SpawnHitVisuals</c>, the one funnel a landed melee swing and a
-/// projectile impact both go through, chained cold. The kick is an angular velocity on an underdamped spring,
-/// away from the blow: a melee call's vector points at the attacker, a projectile's along its flight (the
-/// projectile's attack data carries no attacker, which is how the two are told apart).</para>
+/// Lean, aim, look-at sharing and hit reactions, a <see cref="PoseService"/> module. Every one is a small rotation of
+/// <c>torso_g</c> (a child of the root, so the legs and foot placement are untouched), summed as one axis-angle vector
+/// in the character's frame: <c>R</c> = radians about the character's right (positive tips the top back), <c>F</c> =
+/// about its forward (positive tips it right). <c>neck_g</c> takes back half the lean and adds a share of a hit.
 /// </summary>
 internal static unsafe class UpperBody
 {
@@ -85,6 +67,9 @@ internal static unsafe class UpperBody
                                   : "Pose: chained CNWCCreature::SpawnHitVisuals (hit reactions)");
     }
 
+    /// <summary>The one funnel a landed melee swing and a projectile impact both go through: the kick is away from
+    /// the blow -- a melee call's vector points at the attacker, a projectile's along its flight -- and only a
+    /// projectile's attack data carries no attacker, which is how the two are told apart.</summary>
     [UnmanagedCallersOnly]
     private static void OnSpawnHitVisuals(IntPtr creature, byte flag, IntPtr ad, VectorArg vec, IntPtr text)
     {
@@ -232,9 +217,10 @@ internal static unsafe class UpperBody
 
     private static float Excess(float a) => MathF.Abs(a) <= LookDeadzone ? 0f : a - MathF.CopySign(LookDeadzone, a);
 
-    /// <summary>Hands <see cref="TorsoYaw"/>/<see cref="NeckYaw"/> of the head's turn to the torso and neck
-    /// (about the neck's own up and right axes) and rewrites the head's local so its world rotation -- where it
-    /// looks -- is unchanged. Runs before <see cref="Write"/>, which the head then follows as a child.</summary>
+    /// <summary>Hands <see cref="TorsoYaw"/>/<see cref="NeckYaw"/> of the head's turn to the torso and neck (about the
+    /// neck's own up and right axes) and rewrites the head's local so its world rotation -- where it looks -- is
+    /// unchanged: the engine's own look-at turns <c>head_g</c> alone, up to <c>HEAD_ARC_H</c> (60° for playable races).
+    /// Runs before <see cref="Write"/>, which the head then follows as a child.</summary>
     internal static void ShareLook(in PoseService.Bones b, float yaw, float pitch)
     {
         IntPtr parent = PoseRig.Parent(b.Torso);

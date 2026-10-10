@@ -5,16 +5,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>Animation-and-LOD distance work over DB objects: the level each object shows, from the engine's own
-/// two thresholds plus CX's hysteresis (<see cref="ChooseLod"/>).
-/// <para><b>Nearly all of CX-105 disappears here.</b> The engine's <c>Gob::SetLODModel</c> @0x43e6a0 ROTATED
-/// three part-tree roots and three <c>Model*</c> so the chosen pair sat at <c>+0x90</c>/<c>+0x68</c>, announced
-/// nothing, and forced the scene walk to enumerate all three trees -- which is why mode 0 needs a registered
-/// want, a readiness test over every part of every root, a deferred commit and a stuck-swap timeout, all to
-/// avoid a frame where the gob is undrawn. In DB mode every alternate's parts are already records in ONE part
-/// range tagged with <see cref="SceneDb.PartLodTree"/>, so the swap is a byte: both sides' records are live at
-/// the instant it flips, and there is no frame to lose. The hysteresis is kept, because popping on a boundary
-/// is the thing vanilla gets wrong.</para></summary>
+/// <summary>Animation-and-LOD distance work over DB objects: the level each object shows, from the engine's
+/// own two thresholds plus CX's hysteresis (<see cref="ChooseLod"/>). Every alternate's parts are already
+/// records in ONE part range tagged with <see cref="SceneDb.PartLodTree"/>, so a swap is a byte and both sides
+/// are live at the instant it flips. The hysteresis is kept, because popping on a boundary is vanilla's bug.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>Per object: the two LOD distances the game set (<c>Gob+0x444</c>/<c>+0x448</c>) and whether its
@@ -27,13 +21,10 @@ public static unsafe partial class DbAnim
     private static bool _lodResolved;
     private static int _lodSwaps, _lodHeld, _lodSettled;
 
-    /// <summary>CX-188: bumped on every LOD swap, monotonically. A swap changes which of an object's two live
+    /// <summary>Bumped on every LOD swap, monotonically. A swap changes which of an object's two live
     /// alternates the renderer draws, so it can change which seated slot the draw order carries -- and it is
-    /// not a slot-set edge (both records stay live, the swap only marks <see cref="Dirty.Tree"/>), so
-    /// <c>AlloyRenderer.DbSetGen</c> and the order COUNT can both stand still across one. A reader keyed on
-    /// the ordered set has to have this in its key (<c>DbKeyhole.Write</c>).
-    /// <para>Period-reset counters cannot serve: <see cref="_lodSwaps"/> is cleared every period, so a reader
-    /// comparing it would see its own key go backwards.</para></summary>
+    /// not a slot-set edge (both records stay live), so <c>DbSetGen</c> and the order COUNT can both stand
+    /// still across one. A reader keyed on the ordered set needs this in its key, not a period counter.</summary>
     internal static int LodGen;
 
     /// <summary>How many objects have an alternate at all. Zero means the whole choice is skipped, which is
@@ -85,17 +76,17 @@ public static unsafe partial class DbAnim
     /// option is a player toggle for a feature nobody wants off, so only <c>alloy.authoredlod</c> in cx.cfg stands it down.</summary>
     internal static bool LodEnabled => Renderer.AuthoredLod.V;
 
-    /// <summary>Choose the level for every object of the scene that has one. Once per animate, after the
-    /// composes, so the distance is taken against the placement the frame will draw.</summary>
     /// <summary>The eye the last choice was taken from, and the object-table dirty count it saw. The bands
-    /// only move when the camera moves or an object does, so a settled frame costs the scan nothing -- which
-    /// is the same change-driven rule the rest of the build follows.</summary>
+    /// only move when the camera moves or an object does, so a settled frame costs the scan nothing -- the
+    /// same change-driven rule the rest of the build follows.</summary>
     private static Vector3 _lodEye = new(float.NaN);
     private static long _lodDirtyAt = -1;
     /// <summary>How far the eye may drift before the bands are re-tested. A tenth of a unit is well inside the
     /// hysteresis band, so nothing can pop because of it.</summary>
     private const float LodEyeEpsilon = 0.1f;
 
+    /// <summary>Choose the level for every object of the scene that has one. Once per animate, after the
+    /// composes, so the distance is taken against the placement the frame will draw.</summary>
     private static void LodChoose(int sceneIndex)
     {
         if (_lodWanted <= 0) return;
@@ -141,10 +132,9 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>The level CX wants, from the engine's own two thresholds plus hysteresis. Pure.
-    /// <para><paramref name="hyst"/> is a fraction of DISTANCE, so it enters squared. Rising past a boundary
+    /// <para><paramref name="hyst"/> is a fraction of DISTANCE, so it enters squared: rising past a boundary
     /// needs <c>d2 &gt; T (1+h)^2</c>, falling back needs <c>d2 &lt; T / (1+h)^2</c>, and in between the level
-    /// holds -- which is the whole anti-popping property. At most one level per call, matching the engine's own
-    /// single-step branches.</para></summary>
+    /// holds. At most one level per call, matching the engine's own single-step branches.</para></summary>
     internal static int ChooseLod(float d2, float near, float far, int cur, bool enabled, float scaleFactor,
                                   float hyst, bool hasAlternate)
     {

@@ -9,13 +9,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-101: NUI's pixels, drawn by Alloy. <c>nk_sdl_render</c> @0xe07bb0 is the stock SDL/GL3 nuklear backend
-/// (<c>CX-97</c>), and the engine's only GL draw left above the world frame. This
-/// replaces its GL half: nuklear still converts its own command queue (<c>nk_convert</c>), but into CX-owned
-/// buffers, and the resulting draw commands are recorded through <see cref="GuiCapture"/> and issued by
-/// <see cref="GuiPass"/> from the 4.6 context. The original is not called on a captured frame.
-/// <para>Chained at the LOWEST priority, so the flush order on this symbol stays the engine's: the GUI panels
-/// (<see cref="GuiPass"/>, 40), then the CX windows (<c>UiHostService</c>, 20), then NUI (here, 1).</para>
+/// NUI's pixels, drawn by Alloy. <c>nk_sdl_render</c> @0xe07bb0 is the stock SDL/GL3 nuklear backend and the
+/// engine's only GL draw left above the world frame; this replaces its GL half -- nuklear still runs
+/// <c>nk_convert</c>, but into CX-owned buffers, recorded through <see cref="GuiCapture"/>. Chained at the
+/// LOWEST priority, so the flush order on this symbol stays the engine's: panels, CX windows, then NUI.
 /// </summary>
 internal static unsafe class NuiFlush
 {
@@ -102,9 +99,8 @@ internal static unsafe class NuiFlush
 
     /// <summary>The net effect the function we replaced had on <c>GLRender</c>'s state caches, and therefore the
     /// contract the engine's overlay views and <c>AurRenderStrings</c> are entitled to: blend and scissor off,
-    /// cull and depth on, the current-VDO latch cleared. Cached, so each is a no-op when it already holds. The raw
-    /// GL <c>nk_sdl_render</c> leaks -- its program, VAO and three attrib arrays -- are deliberately NOT reproduced
-    /// (CX-97 §5): nothing downstream reads them, and leaving them is its bug.</summary>
+    /// cull and depth on, the current-VDO latch cleared. Cached, so each is a no-op when it already holds. The
+    /// raw GL leaks <c>nk_sdl_render</c> left behind are deliberately NOT reproduced: nothing downstream reads them.</summary>
     private static void HandBackEngineState()
     {
         const int CapBlend = 0, CapCull = 3, CapDepthTest = 0xb, CapScissor = 0xd;   // not-an-offset: engine cap enum
@@ -117,7 +113,7 @@ internal static unsafe class NuiFlush
 
     /// <summary>Convert nuklear's queue into our buffers and record every draw command. Grows once per frame at
     /// most; a conversion that still will not fit is said once and stands NUI's Alloy draw down for the session
-    /// (CX-45: there is no quiet half-drawn interface).</summary>
+    /// -- there is no quiet half-drawn interface.</summary>
     private static void Convert(IntPtr ctx)
     {
         for (int attempt = 0; ; attempt++)
@@ -222,8 +218,7 @@ internal static unsafe class NuiFlush
     /// <summary>The first draw command. The list is allocated BACKWARDS from the end of <paramref name="cmds"/>, and
     /// <paramref name="cmdOffset"/> is the distance from that end to the FIRST command -- written once, in the
     /// <c>cmd_count == 0</c> branch of the push (@0xddc480), so it stays one command's worth however many follow.
-    /// The walk then runs DOWNWARD in submission order (<c>nk__draw_list_begin</c>/<c>_end</c> @0xde0e60/@0xde0ea0).
-    /// Null when the buffer is unset or empty.</summary>
+    /// The walk then runs DOWNWARD in submission order. Null when the buffer is unset or empty.</summary>
     internal static byte* FirstCmd(IntPtr cmds, int count, long cmdOffset)
     {
         ref NkBuffer b = ref *(NkBuffer*)cmds;
@@ -231,8 +226,8 @@ internal static unsafe class NuiFlush
         return (byte*)b.MemoryPtr + (long)b.MemorySize - cmdOffset;
     }
 
-    /// <summary>A fixed <c>nk_buffer</c> over our own memory -- the four stores <c>nk_buffer_init_fixed</c> makes,
-    /// which is exactly what the Windows client does inlined (CX-97 §3).</summary>
+    /// <summary>A fixed <c>nk_buffer</c> over our own memory -- the four stores <c>nk_buffer_init_fixed</c>
+    /// makes, which is exactly what the Windows client does inlined.</summary>
     private static NkBuffer Fixed(void* memory, int bytes)
     {
         NkBuffer b = default;

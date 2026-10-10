@@ -8,9 +8,10 @@ using static CX.Alloy.AlloyRenderer;
 
 namespace CX.Alloy;
 
-/// <summary>#173: PROGRAM BUILD. Linking the Alloy stages -- fullbright, depth, lit and water -- from the embedded text or a content override (#92), and rebuilding from the embedded text whenever an override fails a ShaderContract predicate. Cold: once per program per context.
-/// An ADR 0014 module, not a partial (CX-699): it owns the program handles and uniform locations, and reaches the
-/// renderer's state through <c>using static</c> -- a compile-time alias, the same static load.</summary>
+/// <summary>PROGRAM BUILD: link the Alloy stages -- fullbright, depth, lit and water -- from the embedded
+/// text or a content override, and rebuild from the embedded text whenever an override fails a
+/// <see cref="ShaderContract"/> predicate. Cold: once per program per context. An ADR 0014 module, not a
+/// partial: it owns the program handles and uniform locations, reaching renderer state through static use.</summary>
 internal static unsafe class Programs
 {
     /// <summary>The program names and uniform locations every submitting partial reads. 4.6-side objects,
@@ -26,74 +27,54 @@ internal static unsafe class Programs
     internal static bool _depthFeatFailed;
     /// <summary>The vertex source the lit / fullbright programs actually compiled with (an override wins).</summary>
     internal static string? _litVsSrc;
-    /// <summary>CX-188 bench: the fragment text the lit program compiled with, for <see cref="BlendAblate"/>.</summary>
+    /// <summary>The fragment text the lit program compiled with: what every variant of it is spliced from (the
+    /// A2C mask, and whatever a diagnostic builds).</summary>
     internal static string? _litFsSrc;
-    /// <summary>The defines each rung of <c>/alloy bench</c>'s blended ladder adds to the lit program: (rung 1 draws
-    /// nothing at all, see <see cref="_blendSkip"/>; rung 2 its first group alone, <see cref="_blendOne"/>) no shading, then the walk stopped after its list, after its
-    /// light bodies, and whole but with no hot branch. Rung 0 is shipped.</summary>
-    private static readonly string[] BlendAblDefines = { "", "", "CX_BLEND_FLAT 1", "CX_BLEND_FLAT 1", "CX_NO_HOT 1\n#define CX_ABLATE 2",
-                                                         "CX_NO_HOT 1\n#define CX_ABLATE 4", "CX_NO_HOT 1" };
-    private static uint[]? _blendAbl;
-    private static LitLoc[]? _blendAblLoc;
-    /// <summary>The variant the blended ACCUMULATION draws with this bench step, 0 = the shipped lit program.</summary>
-    internal static uint _blendProg;
-    /// <summary>The blended ladder's rung 1: the OIT bracket opens and closes with not one draw in it.</summary>
-    internal static bool _blendSkip;
-    /// <summary>The blended ladder's rung 2: the accumulation draws its first group alone -- a one-time wait
-    /// costs the same as every group, a per-draw cost almost nothing.</summary>
-    internal static bool _blendOne;
-    internal static LitLoc _blendLoc;
-    /// <summary>The same rung's OIT-lists twin (0 = none): an oit 2 bracket draws lit batches with that program.</summary>
-    internal static uint _blendList;
-    internal static LitLoc _blendListLoc;
-    /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
-    /// carrying a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) is compiled ONCE from whatever
-    /// the chain held at the time -- so a session that logged into SoW first kept SoW's display hooks (the
-    /// racial-vision veil, and a second clustered-light walk per fragment for it) running on Arelith, and a
-    /// session that logged into Arelith first never picked SoW's files up at all. Set on the module-unload
-    /// edge (outside the bracket), acted on by <see cref="DropSpliced"/> inside it.</summary>
+    /// <summary>The spliced programs were built against a resource chain that is gone. Every program carrying
+    /// a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) compiles ONCE from whatever the chain held
+    /// then, so without this a session keeps the first server's display hooks running on the next one. Set on
+    /// the module-unload edge (outside the bracket), acted on by <see cref="DropSpliced"/> inside it.</summary>
     internal static bool _spliceStale;
 
     internal static int _depthVp = -1, _depthBase = -1;
-    /// <summary>#124: the dissolving batches' depth program (<see cref="DepthKeyVs"/>). Zero = it could not
-    /// build, and those batches fall back to being excluded from the prepass -- the pre-fix behaviour, which
-    /// is slower but never wrong.</summary>
+    /// <summary>The dissolving batches' depth program (<see cref="DepthKeyVs"/>). Zero = it could not build,
+    /// and those batches are excluded from the prepass instead -- slower, never wrong.</summary>
     internal static int _depthKeyVp = -1, _depthKeyBase = -1;
     internal static FeatLoc _depthKeyFeat;
     /// <summary>The depth prepass could not build (or glColorMask is missing) -- latched, and the colour pass
-    /// simply shades every fragment as it did before #119.</summary>
+    /// simply shades every fragment, which is slower, never wrong.</summary>
     internal static bool _depthFailed;
     /// <summary>Every Alloy vertex stage that ran carries <see cref="ClipExpr"/> under an invariant
-    /// qualifier. False = a #92 override rewrote one, and the prepass cannot re-test its depth.</summary>
+    /// qualifier. False = a content override rewrote one, and the prepass cannot re-test its depth.</summary>
     internal static bool _vsDepthSafe = true;
     internal static int _locVp = -1, _locBase = -1, _locTex = -1;
-    /// <summary>#126: <c>uAlphaCut</c> on each colour program -- the engine's <c>fAlphaDiscardValue</c>, set
-    /// per batch from the batch's class.</summary>
+    /// <summary><c>uAlphaCut</c> on each colour program -- the engine's <c>fAlphaDiscardValue</c>, set per
+    /// batch from the batch's class.</summary>
     internal static int _locCut = -1;
-    /// <summary>CX-191: <c>uAlphaMip</c> on the fullbright and feature-depth programs (the lit ones carry it in <see cref="LitLoc"/>).</summary>
+    /// <summary><c>uAlphaMip</c> on the fullbright and feature-depth programs (the lit ones carry it in <see cref="LitLoc"/>).</summary>
     internal static int _locAlphaMip = -1, _depthFeatMip = -1;
 
     internal static LitLoc _lit, _litH, _litL, _litD;
     /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
     /// linked-list bracket; every other lit draw keeps early-Z through <see cref="_progLit46"/>.</summary>
     internal static uint _progLitList;
-    /// <summary>CX-188 (ADR 0029): the DEFERRED twin -- the same final text with <c>CX_DEFERRED</c> and
+    /// <summary>ADR 0029: the DEFERRED twin -- the same final text with <c>CX_DEFERRED</c> and
     /// <c>CX_GBUF_OUT</c> in, so the point-light walk and the film statics are compiled out and the G-buffer is
     /// written instead. 0 = no twin, which is what stands the deferred pass down. Bound for the opaque and
     /// cutout lit batches of the main view; every other lit draw keeps the forward loop.</summary>
     internal static uint _progLitDef;
-    /// <summary>CX-189: the lit program with <c>CX_A2C_MASK</c> -- the coverage layer's own sample mask
+    /// <summary>The lit program with <c>CX_A2C_MASK</c> -- the coverage layer's own sample mask
     /// (<c>alloy.a2cmask</c>). Built on the layer's first ask; 0 until then or after a refusal.</summary>
     internal static uint _progLitMask;
     internal static LitLoc _litM;
     internal static int _litMaskSamples = -1;
     private static bool _maskFailed;
-    /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
+    /// <summary>The lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
     /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
     internal static uint _progLitHost;
     internal static int _locViz = -1;
     internal static int _locOit = -1, _locOitDim = -1, _locOitGob = -1;
-    /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
+    /// <summary>The fullbright stage's constant colour. White for every unlit draw but a fog-tinted
     /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
     internal static int _locTint = -1;
     internal static int _locSkyFog;
@@ -107,9 +88,8 @@ internal static unsafe class Programs
     internal static FeatLoc _watFeat;
     internal static FeatLoc _locFeat;
 
-    /// <summary>Build the water variant -- vertex and fragment only since #339 dropped the tessellated
-    /// sea. A failure disarms Alloy water for the session, and since #264 deleted the engine's bucket walk
-    /// that means water is simply not drawn (#285).</summary>
+    /// <summary>Build the water variant, vertex and fragment only -- there is no tessellated sea. A failure
+    /// disarms Alloy water for the session, and nothing walks behind it, so water is simply not drawn.</summary>
     internal static bool EnsureWaterProgram()
     {
         if (_progWater != 0) return true;
@@ -174,10 +154,9 @@ internal static unsafe class Programs
     }
 
     /// <summary>Throw away a program built from a stale content override and rebuild it from the embedded
-    /// stages. Preferred over standing the pass down: the embedded source is the one that agrees with the
-    /// record the CPU stages, so the frame is CORRECT here and merely un-restyled -- and the override's
-    /// author gets a line naming the file to update rather than a black world to bisect. Cold: once per
-    /// program per session.</summary>
+    /// stages. Preferred over standing the pass down: the embedded source agrees with the record the CPU
+    /// stages, so the frame is CORRECT and merely un-restyled, and the override's author gets a line naming
+    /// the file rather than a black world to bisect. Cold: once per program per session.</summary>
     internal static uint RebuildEmbedded(uint stale, string vs, string fs, string what, ref string vsSrc)
     {
         Gl.DeleteProgram(stale);
@@ -191,7 +170,7 @@ internal static unsafe class Programs
         return GlProgram.Graphics(vs, fs, _log, $"AlloyRenderer {what} program (embedded)", content: false);
     }
 
-    /// <summary>#350: delete every program that splices content and clear its failure latch, so each rebuilds
+    /// <summary>Delete every program that splices content and clear its failure latch, so each rebuilds
     /// on its next use from the module now loaded. Inside the bracket, which is why the edge only sets the
     /// flag. The fullbright and depth programs splice nothing and stay.</summary>
     internal static void DropSpliced()
@@ -205,8 +184,7 @@ internal static unsafe class Programs
         _progLitMask = 0; _maskFailed = false;
         if (_progWater != 0) Gl.DeleteProgram(_progWater);
         _progLit46 = 0; _progLitHost = 0; _progLitList = 0; _progLitDef = 0; _progWater = 0; OitPass.ListsArmed = false;
-        if (_blendAbl != null) foreach (uint p in _blendAbl) if (p != 0) Gl.DeleteProgram(p);
-        _blendAbl = null; _blendProg = 0; _blendList = 0;
+        Ablation.Forget(delete: true);
         _litFailed = false; _waterFailed = false;
         GrassField.DropProgram();
         PostStack.DropSpliced();
@@ -281,7 +259,7 @@ internal static unsafe class Programs
     }
 
     /// <summary>Build the depth-only program. A failure disarms the prepass for the session and the colour
-    /// pass keeps its pre-#119 behaviour -- shading every fragment -- which is slower, never wrong.</summary>
+    /// pass goes back to shading every fragment, which is slower, never wrong.</summary>
     internal static bool EnsureDepthProgram()
     {
         if (_progDepth != 0) return true;
@@ -331,10 +309,9 @@ internal static unsafe class Programs
     }
 
     /// <summary>What the owned stages ask of the driver beyond the GL 4.6 floor: three vertex-stage SSBO
-    /// blocks (draw, draw index, bones; floor 0) and the fragment sampler budget the lit stage declares.
-    /// The 0..15 budget is the one the bind sites spend, but the lit stage also declares three units past
-    /// it by <c>layout(binding)</c> -- #642's two raw cube arrays and R2's wetness map -- so the honest
-    /// need is the highest of those plus one, and the floor is 16.</summary>
+    /// blocks (draw, draw index, bones; floor 0) and the fragment sampler budget the lit stage declares. The
+    /// bind sites spend units 0..15, but the lit stage declares three past it by <c>layout(binding)</c> (the
+    /// raw cube arrays and the wetness map), so the honest need is the highest of those plus one.</summary>
     private static readonly int TexUnitsNeed = (int)TextureSlots.WetMap + 1;
     private const int VsSsboNeed = 3;
 
@@ -381,7 +358,7 @@ internal static unsafe class Programs
         // #350: from the hosted regions' STUBS -- the program every lit batch draws with carries no content
         // body; the second build below carries them for the batches that need them.
         uint prog = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,
-                                       _log, "AlloyRenderer clustered lit program",
+                                       _log, "AlloyRenderer lit program",
                                        out string vsSrc, out string fsSrc, host: false);
         string finalFs = fsSrc;
         if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
@@ -393,7 +370,7 @@ internal static unsafe class Programs
                            && (_bindless || ShaderContract.LitSlotSafe(fsSrc))
                            && (!_bindless || fsSrc.Contains("CxTexH"))))
         {
-            prog = RebuildEmbedded(prog, OwnedLitVs, litFs, "clustered lit", ref vsSrc);
+            prog = RebuildEmbedded(prog, OwnedLitVs, litFs, "lit", ref vsSrc);
             finalFs = litFs;
         }
         // a content override without the handle block compiled fine but still samples bound units: the
@@ -408,7 +385,8 @@ internal static unsafe class Programs
         if (prog == 0)
         {
             _litFailed = true;
-            _log?.Info("AlloyRenderer: clustered lit program unavailable -- lit parts revert to engine drawing");
+            _log?.Info("AlloyRenderer: the lit program is unavailable -- every lit part is skipped, which is an "
+                     + "empty world; nothing draws behind the refusal");
             return;
         }
         _progLit46 = prog;
@@ -456,50 +434,17 @@ internal static unsafe class Programs
             if (ph == 0) _log?.Info("AlloyRenderer: hosted lit program unavailable -- hosted materials draw the plain lit path");
             else { _progLitHost = ph; _litH = LitLocs(ph); }
         }
-        _log?.Info("AlloyRenderer: clustered forward+ lit program ready (4.6 context)");
+        _log?.Info("AlloyRenderer: lit program ready (4.6 context) -- forward except the point lights, which the "
+                 + "deferred twin and DeferredLights add");
     }
 
-    /// <summary>CX-188: the defines that compile a lit fragment stage into the deferred twin, injected right
-    /// after its <c>#version</c> line -- the walk's call sites out (<c>CX_DEFERRED</c>), the G-buffer outputs
-    /// in (<c>CX_GBUF_OUT</c>). <c>check-shaders.py</c> injects the identical pair.</summary>
-    /// <summary>CX-188 bench: draw the blended accumulation with ladder rung <paramref name="rung"/> (1..6), or
-    /// with the shipped lit program at 0. Built on the step that first asks; false = no lit program yet or the
-    /// variant did not link, which refuses that step alone.</summary>
-    internal static bool BlendAblate(int rung)
-    {
-        _blendProg = 0; _blendList = 0;
-        _blendSkip = rung == 1;
-        _blendOne = rung == 2;
-        if (rung <= 1) return true;
-        if (_litFsSrc == null || _litVsSrc == null || rung >= BlendAblDefines.Length) return false;
-        _blendAbl ??= new uint[BlendAblDefines.Length * 2];
-        _blendAblLoc ??= new LitLoc[BlendAblDefines.Length * 2];
-        int k = rung * 2;
-        if (_blendAbl[k] == 0)
-        {
-            string fs = AblateProgram.WithDefine(_litFsSrc, BlendAblDefines[rung]);
-            _blendAbl[k] = GlProgram.Graphics(_litVsSrc, fs, _log, $"AlloyRenderer lit program (blended ablate {rung})", host: false);
-            if (_blendAbl[k] == 0) return false;
-            _blendAblLoc[k] = LitLocs(_blendAbl[k]);
-            if (_progLitList != 0)
-            {
-                _blendAbl[k + 1] = GlProgram.Graphics(_litVsSrc, OitPass.WithLists(fs), _log, $"AlloyRenderer lit program (blended ablate {rung}, OIT lists)", host: false);
-                if (_blendAbl[k + 1] == 0) return false;
-                _blendAblLoc[k + 1] = LitLocs(_blendAbl[k + 1]);
-            }
-        }
-        _blendProg = _blendAbl[k]; _blendLoc = _blendAblLoc[k];
-        _blendList = _blendAbl[k + 1]; _blendListLoc = _blendAblLoc[k + 1];
-        return true;
-    }
-
-    /// <summary>CX-189: build <see cref="_progLitMask"/> from the lit program's own final text. False = no lit
+    /// <summary>Build <see cref="_progLitMask"/> from the lit program's own final text. False = no lit
     /// program yet, or the variant refused (latched, logged once): the layer falls back to hardware coverage.</summary>
     internal static bool EnsureMaskProgram()
     {
         if (_progLitMask != 0) return true;
         if (_maskFailed || _litFsSrc == null || _litVsSrc == null) return false;
-        _progLitMask = GlProgram.Graphics(_litVsSrc, AblateProgram.WithDefine(_litFsSrc, "CX_A2C_MASK 1"), _log,
+        _progLitMask = GlProgram.Graphics(_litVsSrc, ShaderStages.WithDefine(_litFsSrc, "CX_A2C_MASK 1"), _log,
                                           "AlloyRenderer lit program (A2C mask)", host: false);
         if (_progLitMask == 0)
         {
@@ -512,9 +457,9 @@ internal static unsafe class Programs
         return true;
     }
 
-    /// <summary>Context loss: every variant name is gone with the context.</summary>
-    internal static void ForgetBlendAblate() { _blendAbl = null; _blendProg = 0; _blendList = 0; }
-
+    /// <summary>The defines that compile a lit fragment stage into the deferred twin, spliced after its
+    /// <c>#version</c> line: the walk's call sites out (<c>CX_DEFERRED</c>), the G-buffer outputs in
+    /// (<c>CX_GBUF_OUT</c>). <c>check-shaders.py</c> splices the identical pair.</summary>
     internal static string WithDeferred(string fs)
     {
         int v = fs.IndexOf("#version", StringComparison.Ordinal);
@@ -523,7 +468,7 @@ internal static unsafe class Programs
     }
 
     /// <summary>Resolve one lit program's locations and bind its fixed sampler units. Called once per program
-    /// at build; #350 calls it twice.</summary>
+    /// at build, so twice where a hosted twin is built.</summary>
     internal static LitLoc LitLocs(uint prog)
     {
         var L = new LitLoc();
@@ -570,7 +515,7 @@ internal static unsafe class Programs
         return L;
     }
 
-    /// <summary>#123: the five <see cref="FeatDecl"/> uniform locations of one program, in the order
+    /// <summary>The <see cref="FeatDecl"/> uniform locations of one program, in the order
     /// <see cref="UploadFeatureTerms"/> writes them.</summary>
     internal static FeatLoc FeatLocs(uint prog) => WithScriptables(new FeatLoc
     {
@@ -608,7 +553,7 @@ internal static unsafe class Programs
         ProjL = GlProgram.Loc(prog, "m_proj"),
     }, prog);
 
-    /// <summary>#551: the scriptable block's locations, filled after the struct so the fixed buffers can be
+    /// <summary>The scriptable block's locations, filled after the struct so the fixed buffers can be
     /// written. Cold -- once per program, at build.</summary>
     private static FeatLoc WithScriptables(FeatLoc loc, uint prog)
     {

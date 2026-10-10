@@ -3,13 +3,10 @@ using System.Runtime.InteropServices;
 
 namespace CX.Framework;
 
-/// <summary>The main-thread pin (<c>pin=N</c> in cx.cfg, -1 = off). The scheduler trace showed the kernel's
-/// <c>migration/N</c> threads taking the core from the game's main thread ~90 times in 8s -- the load balancer
-/// moving it between cores, each move a cold cache and the doubled cycle count the hitch rows carry. A pinned
-/// thread cannot be migrated. Pinned at the FIRST FRAME, not at load: a thread inherits its creator's mask,
-/// and the engine spawns its own threads between load and the first present.
-/// <para>ponytail: an engine thread spawned after the pin (a loader) inherits it and shares the core; the thread
-/// table's last-cpu column shows that if it happens. Ceiling: pin from a hook on pthread_create instead.</para></summary>
+/// <summary>The main-thread pin (<c>pin=N</c> in cx.cfg, -1 = off): the load balancer migrates the game's main
+/// thread between cores tens of times a second, each move a cold cache, and a pinned thread cannot be migrated.
+/// Pinned at the FIRST FRAME, not at load -- a thread inherits its creator's mask and the engine spawns its own
+/// between the two. ponytail: a later loader thread inherits the pin and shares the core; hook pthread_create.</summary>
 public static unsafe class Affinity
 {
     [DllImport("libc.so.6")] private static extern int sched_setaffinity(int pid, nuint size, byte* mask);

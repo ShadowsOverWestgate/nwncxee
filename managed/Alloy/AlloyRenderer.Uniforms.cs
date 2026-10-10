@@ -8,27 +8,15 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#173: UNIFORM UPLOAD. The per-pass scene terms every Alloy stage shares: the feature and fog terms pushed to whichever program's locations the caller names, and (CX-43) the area light, sun cascades, local cubes, probe and light curve staged once into the <c>CxPass</c> block.</summary>
+/// <summary>UNIFORM UPLOAD. The per-pass scene terms every Alloy stage shares: the feature and fog terms
+/// pushed to whichever program's locations the caller names, and the area light, sun cascades, local cubes,
+/// probe and light curve staged once into the <c>CxPass</c> block.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>Field offsets inside it, from pairing GLRender::ConnectShaderData (uniform name -&gt;
-    /// location slot) with GLRender::SetUniforms (location slot -&gt; field).</summary>
-    /// <summary>#147: <c>areaGlobalWind</c> in plan, as the CPU sees it -- a world vector whose magnitude is
-    /// the speed, which is what <see cref="WaterBodies"/> projects fetch onto and what the wave model scales
-    /// by. Zero before the runtime block resolves, and a still area is genuinely zero; the shader decides
-    /// what a dead calm looks like, not this.
-    /// <para>Deliberately NOT <c>sqrt(dot(w.x, w.y))</c>, the stock <c>shd_windgrass_vs.shd</c> spelling: it
-    /// means <c>sqrt(x*y)</c> and goes NaN the moment the components differ in sign. The #123 feature port
-    /// takes <c>sqrt(abs(x*y))</c>, stock's magnitude without the NaN.</para></summary>
-    /// <summary>The RAW engine wind magnitude, which is what vanilla's water shader squares into its own
-    /// wave amplitude (<c>fAreaWindForce = dot(areaGlobalWind, areaGlobalWind)</c>). No conversion any
-    /// more -- #339 deleted the sea-state model that needed metres per second.</summary>
-    /// <summary>The engine's own wind vector and world clock, raw. Both feed vanilla's water phase --
-    /// <c>fAreaWindForce = dot(areaGlobalWind, areaGlobalWind)</c> and
-    /// <c>fTick = worldtimerTimeOfDay * 0.001</c> -- and a wave field that reads flat is one of them being
-    /// unlike what the engine's own shader gets, so the line prints them rather than a derived number.
-    /// The Z component is printed on purpose: the shader normalises the wind in THREE dimensions, so a large
-    /// Z shrinks the horizontal direction and stretches the wavelength past the area.</summary>
+    /// <summary>The engine's own wind vector and world clock, raw: both feed vanilla's water phase, so a wave
+    /// field that reads flat is one of them being unlike what the engine's own shader gets. Z is printed too
+    /// because the shader normalises the wind in THREE dimensions, so a large Z shrinks the horizontal
+    /// direction and stretches the wavelength past the area.</summary>
     internal static string DescribeWind()
     {
         var w = AreaWind();
@@ -44,9 +32,9 @@ public sealed unsafe partial class AlloyRenderer
     private static Vector2 AreaWind()
         => _runtime == null ? default : new Vector2(Rt.AreaWind.X, Rt.AreaWind.Y);
 
-    /// <summary>#132: the scene's fog colour, linearised. The block stores it display-space -- the stock
-    /// shaders lerp toward it AFTER RevertColorSpace -- and the Alloy frame is linear end to end, so the
-    /// curve comes off here rather than in every stage that fogs.</summary>
+    /// <summary>The scene's fog colour, linearised. The block stores it display-space -- the stock shaders
+    /// lerp toward it AFTER RevertColorSpace -- and the Alloy frame is linear end to end, so the curve comes
+    /// off here rather than in every stage that fogs.</summary>
     private static void UploadFogColour(int loc)
     {
         Vector3 src = FrameInputs.FogColor;
@@ -58,10 +46,9 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform4fv(loc, 1, c);
     }
 
-    /// <summary>#257: this frame's fog, packed the way every Alloy stage reads it -- enable, start, end and
-    /// 1/(end-start). Read out of <see cref="FrameInputs"/>, which took it straight off <c>Scene+0x140</c>;
-    /// nothing asks the engine to fill <c>GLRender::m_fog</c> for us any more, so a frame where the engine
-    /// drew nothing still fogs correctly.</summary>
+    /// <summary>This frame's fog, packed the way every Alloy stage reads it -- enable, start, end and
+    /// 1/(end-start). Read out of <see cref="FrameInputs"/> (straight off <c>Scene+0x140</c>) rather than
+    /// <c>GLRender::m_fog</c>, so a frame where the engine drew nothing still fogs correctly.</summary>
     private static void PackFog(float* px)
     {
         px[0] = FrameInputs.FogOn ? 1f : 0f;
@@ -70,12 +57,9 @@ public sealed unsafe partial class AlloyRenderer
         px[3] = span != 0f ? 1f / span : 0f;
     }
 
-    /// <summary>#131: just the scene fog, for a program that wants it and none of the rest of
-    /// <see cref="UploadFeatureTerms"/>. Same source, same bool-byte conversion; split out rather than
-    /// copied so the pack stays in one place.
-    /// <para>#341: "the scene fog" is five uniforms and an eye position now, not a pair -- the target colour
-    /// is built per ray. Every stage that fogs takes all of them from here, or two stages fog the same
-    /// fragment differently.</para></summary>
+    /// <summary>Just the scene fog -- five uniforms and an eye position, since the target colour is built per
+    /// ray -- for a program that wants it and none of the rest of <see cref="UploadFeatureTerms"/>. Every
+    /// stage that fogs takes all of them from here, or two stages fog the same fragment differently.</summary>
     internal static void UploadFog(in FeatLoc loc)
     {
         float* px = stackalloc float[4];
@@ -95,14 +79,14 @@ public sealed unsafe partial class AlloyRenderer
     /// read under these names. Once per program per pass; nothing here is per part.</summary>
     internal static void UploadFeatureTerms(in FeatLoc loc, int* viewport)
     {
-        // #124: pixelParams is the ONE term not read out of an engine global -- SetUniforms builds it from
-        // the window size, and this pass may be rendering into the probe cube instead, so it comes from the
+        // pixelParams is the ONE term not read out of an engine global -- SetUniforms builds it from the
+        // window size, and this pass may be rendering into the probe cube instead, so it comes from the
         // viewport actually bound. Everything else below is the engine's own live value.
         float w = viewport[2] > 0 ? viewport[2] : 1f, h = viewport[3] > 0 ? viewport[3] : 1f;
         float* px = stackalloc float[4];
         px[0] = 1f / w; px[1] = 1f / h; px[2] = w / h;
         Gl.Uniform3fv(loc.Pixel, 1, px);
-        Gl.Uniform1f(loc.LodBias, PostChain.LodBias);   // #391: -1 where the stage declares none; GL ignores it
+        Gl.Uniform1f(loc.LodBias, PostChain.LodBias);   // -1 where the stage declares none; GL ignores it
         Gl.Uniform1f(loc.Now, TexStream.Clock);
         UploadFog(loc);
         if (_shaderConstF != null)
@@ -126,16 +110,10 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform2fv(loc.KhCam, 1, px);
     }
 
-    /// <summary>#346: the spell-targeting shape's terms, straight out of the engine's global-constant
-    /// tables -- the same values <c>GLRender::SetUniforms</c> hands the engine's own copy of the same
-    /// shader. Written under the ENGINE's uniform names, which <see cref="TargetFs"/> keeps: the values are the
-    /// engine's, so the names are too, and a content override of that library reads the same contract.
-    /// <para>Only what the shape reads is uploaded. The harms/helps/ignores flags and the spell and feat ids
-    /// are part of the engine's own declaration and sampled by nothing, and a program that carries no targeting
-    /// code at all gets location -1 for every one of these, which GL ignores.</para>
-    /// <para>Nothing is converted. The colour is the engine's own display-space vec4 and the fragment stage
-    /// mixes with it inside the same encode bracket the fog uses, so a shape drawn on an Alloy tile and one
-    /// drawn on a vanilla tile are the same strength.</para></summary>
+    /// <summary>The spell-targeting shape's terms, straight out of the engine's global-constant tables, under
+    /// the ENGINE's own uniform names (which <see cref="TargetFs"/> keeps) so a content override of that
+    /// library reads the same contract. Only what the shape reads goes up, and nothing is converted: the
+    /// colour is the engine's display-space vec4, mixed inside the same encode bracket the fog uses.</summary>
     private static void UploadTargetShape(in FeatLoc loc)
     {
         // The shape's own "nothing to draw" answer is targetShape 0 AND range 0; the object type is the
@@ -152,21 +130,17 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform3fv(loc.TgtWorldL, 1, _shaderConstV);
     }
 
-    /// <summary>#347: the rest of the shared vanilla environment -- the projection and the scriptable
-    /// entries the spliced stock files gate on. Same shape and same reason as
-    /// <see cref="UploadTargetShape"/>: written under the ENGINE's uniform names, because the code reading
-    /// them is the engine's own, and a program carrying none of them gets -1 for every location.
-    /// <para>The noir and vision gates are integers a server script sets. Zero is "off" and is what an
-    /// unresolved constant table leaves them at, which is the correct answer for a client that cannot read
-    /// them rather than a feature stuck on.</para></summary>
+    /// <summary>The rest of the shared vanilla environment -- the projection and the scriptable entries the
+    /// spliced stock files gate on -- under the engine's own uniform names, as <see cref="UploadTargetShape"/>.
+    /// The noir and vision gates are script-set integers; zero is "off", which is what an unresolved constant
+    /// table leaves them at, so a client that cannot read them gets the feature off rather than stuck on.</summary>
     internal static void UploadVanillaEnv(in FeatLoc loc)
     {
         fixed (Matrix4x4* m = &_projMtx) Gl.UniformMatrix4fv(loc.ProjL, 1, 0, (float*)m);
         if (_shaderConstI == null || _shaderConstF == null || _shaderConstV4 == null) return;
-        // #551: the block, not a selection. A content shader that begins reading a slot nobody thought to
+        // The whole block, not a selection: a content shader that begins reading a slot nobody thought to
         // wire would otherwise compile, link, and read zero -- working under the engine and silently doing
-        // nothing under Alloy. sow-topdata#551 (Float13, the sky-light veil fade) is that case exactly.
-        // CX-11: only the live slots -- a program that declares none makes no calls at all.
+        // nothing under Alloy. Only the live slots, so a program that declares none makes no calls at all.
         fixed (FeatLoc* l = &loc)
         {
             for (int m = l->SIntLive; m != 0; m &= m - 1)
@@ -186,7 +160,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform3f(loc, modern ? 1f : 0f, modern ? Lighting.AmbientDir.V : 0f, modern && Lighting.SpecAa.V ? 1f : 0f);
     }
 
-    /// <summary>CX-43: the <c>CxPass</c> block's binding point, <c>layout(std140, binding = 0)</c> in
+    /// <summary>The <c>CxPass</c> block's binding point, <c>layout(std140, binding = 0)</c> in
     /// <c>cx_pass.glsl</c>. No other Alloy block uses the uniform-buffer namespace.</summary>
     internal const uint PassBinding = 0;
     /// <summary>The block's std140 size, 3604 by glslang reflection, rounded to a vec4.</summary>
@@ -201,9 +175,9 @@ public sealed unsafe partial class AlloyRenderer
                        PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
                        PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588, PbRelevance = 3592,
                        PbBounds = 3600, PbShBudget = 3604, PbLightFloor = 3608, PbFullModel = 3612;
-    /// <summary>CX-120: the sun terms the last staged pass block carried -- the cascade count, the fourth
-    /// column of <c>uSunVp[0]</c> and the live focus. The receiver's own witness, for the <c>[sunrx]</c>
-    /// clause on <c>CasterPass</c>'s period line.</summary>
+    /// <summary>The sun terms the last staged pass block carried -- the cascade count, the fourth column of
+    /// <c>uSunVp[0]</c> and the live focus. The receiver's own witness, for the <c>[sunrx]</c> clause on
+    /// <c>CasterPass</c>'s period line.</summary>
     private static int _rxSunN;
     private static Vector4 _rxSunVp3;
     private static Vector3 _rxSunFocus, _rxAreaDif, _rxAreaDir;
@@ -225,10 +199,10 @@ public sealed unsafe partial class AlloyRenderer
     /// mirror). The screen's own passes must not be among them.</summary>
     internal static int PassBindsBorrowed;
 
-    /// <summary>CX-43: this pass's shared scene terms into the <c>CxPass</c> block, then the shadow maps onto
-    /// their units and the program's own <c>uLocalCubes</c>. Called at each program switch that used to upload
-    /// the terms itself; the block goes up only when the refill differs from what is bound, so every switch
-    /// after a pass's first costs a fill and a compare and no GL uniform traffic.</summary>
+    /// <summary>This pass's shared scene terms into the <c>CxPass</c> block, then the shadow maps onto their
+    /// units and the program's own <c>uLocalCubes</c>. Called at each program switch; the block goes up only
+    /// when the refill differs from what is bound, so every switch after a pass's first costs a fill and a
+    /// compare and no GL uniform traffic.</summary>
     internal static void BindPass(int locCubes, int* viewport, float near, float far)
     {
         PassBinds++;
@@ -311,9 +285,9 @@ public sealed unsafe partial class AlloyRenderer
             PassVec(b, PbSunFocus, CasterPass.SunFocusLive);
             *(int*)(b + PbSunCascades) = n;
         }
-        // CX-120 (cold, read once per period by CasterPass's [sunrx] clause): what this pass block ACTUALLY
-        // carries for the sun, taken off the staged bytes rather than off the publisher -- six stores, so the
-        // witness costs nothing and cannot disagree with what the receiver samples.
+        // Cold (read once per period by CasterPass's [sunrx] clause): what this pass block ACTUALLY carries
+        // for the sun, taken off the staged bytes rather than off the publisher, so the witness cannot
+        // disagree with what the receiver samples.
         _rxSunN = *(int*)(b + PbSunCascades);
         _rxSunVp3 = *(Vector4*)(b + PbSunVp + 48);
         _rxSunFocus = *(Vector3*)(b + PbSunFocus);
@@ -322,22 +296,22 @@ public sealed unsafe partial class AlloyRenderer
 
         if (!_rawProbed) ProbeRawSampler();
         *(float*)(b + PbLocalFloor) = AlloyLights.ShadowFloor;
-        // #642: source radius (0 = no raw view, no search), temporal phase (golden-ratio turns per frame, 0
+        // Source radius (0 = no raw view, no search), temporal phase (golden-ratio turns per frame, 0
         // with no taa to integrate it), disc taps; w = the view depth past which no cube is read (0 = none)
         PassVec(b, PbLocalPcss, _rawSampler != 0 ? AlloyLights.ShadowSource : 0f,
                 PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, AlloyLights.ShadowDist);
-        // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the
+        // Pixels -> world radius per unit view depth, so the shader compares its disc against the
         // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
         float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
         PassVec(b, PbLocalSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ, AlloyLights.ShadowCap);
-        // CX-188 budget: shadow.perpixel, the per-pixel SHADOW budget every walk and the deferred record share.
+        // shadow.perpixel, the per-pixel SHADOW budget every walk and the deferred record share.
         // A caller that fills the block itself (the lightmap bake) leaves it zero, which every reader takes as
         // "no budget" -- the pre-budget path.
         *(float*)(b + PbShBudget) = AlloyLights.ShadowPerPixel;
-        // CX-188 budget: light.floor, the brightness a light's REACH ends at. Zero in a block a caller filled
+        // light.floor, the brightness a light's REACH ends at. Zero in a block a caller filled
         // itself (the lightmap bake, which wants every light's authored radius), which reads as no cut.
         *(float*)(b + PbLightFloor) = AlloyLights.LightFloor;
-        // CX-188 budget: light.fullmodel, the lighting LOD's cut. Zero in a self-filled block (the bake), which
+        // light.fullmodel, the lighting LOD's cut. Zero in a self-filled block (the bake), which
         // reads as the full model for every light -- the bake has exactly one light and it is the hero.
         *(float*)(b + PbFullModel) = AlloyLights.FullModel;
         if (CasterPass.CubesFresh)
@@ -354,7 +328,7 @@ public sealed unsafe partial class AlloyRenderer
         *(int*)(b + PbSceneEnv) = _sceneEnv ? 1 : 0;
     }
 
-    /// <summary>#121: may this pass sample the IBL probe? Never during a capture: sampling a texture that is an
+    /// <summary>May this pass sample the IBL probe? Never during a capture: sampling a texture that is an
     /// attachment of the framebuffer being written is undefined, and the capture draws through the lit program.</summary>
     private static bool ProbeLive => (!_capturing || _planar) && EnvProbe.Ready && EnvProbe.Tex != 0;
 
@@ -366,7 +340,7 @@ public sealed unsafe partial class AlloyRenderer
         bool fresh = CasterPass.CascadesFresh;
         Gl.ActiveTexture(Gl.TEXTURE0 + SunUnit);
         Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, SunShadowOr(fresh ? CasterPass.CascadeTex : 0));
-        // #306: the dynamic half rides the same publish, on BOTH units the table assigns it (the grass
+        // The dynamic half rides the same publish, on BOTH units the table assigns it (the grass
         // program's unit 10 is its displacement field, so grass reads the array off unit 13 instead).
         uint dyn = SunShadowOr(fresh ? CasterPass.SunDynTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnit);
@@ -397,7 +371,7 @@ public sealed unsafe partial class AlloyRenderer
         return name = t;
     }
 
-    /// <summary>#642: the no-compare sampler the receiver's blocker search reads the cube arrays through
+    /// <summary>The no-compare sampler the receiver's blocker search reads the cube arrays through
     /// (<see cref="TextureSlots.LocalShadowRaw"/>). 0 = the driver is short of fragment units or sampler
     /// objects, and the search stands down; asked once.</summary>
     private static uint _rawSampler;
@@ -419,8 +393,8 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>Point the cube units at <see cref="CasterPass"/>'s static and dynamic arrays (the null stand-in
-    /// when stale, as <see cref="BindSunMaps"/>), and the same two on the #642 raw units when the blocker
-    /// search has its sampler.</summary>
+    /// when stale, as <see cref="BindSunMaps"/>), and the same two on the raw units when the blocker search
+    /// has its sampler.</summary>
     internal static void BindCubeMaps()
     {
         if (!_rawProbed) ProbeRawSampler();
@@ -428,12 +402,12 @@ public sealed unsafe partial class AlloyRenderer
         uint st = CubeShadowOr(fresh ? CasterPass.CubeTex : 0), dy = CubeShadowOr(fresh ? CasterPass.CubeDynTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeUnit);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, st);
-        // #305: the dynamic pool rides the same publish -- the per-slot page indices carry PAGE+1, so a slot
+        // The dynamic pool rides the same publish -- the per-slot page indices carry PAGE+1, so a slot
         // with no movers (or a session with no pool) reads 0 and the receiver stays static-only there.
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeDynUnit);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, dy);
         if (_rawSampler != 0)
-        {   // #642: the same two arrays on the raw units; the sampler object bound there strips the compare
+        {   // The same two arrays on the raw units; the sampler object bound there strips the compare
             Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.LocalShadowRaw);
             Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, st);
             Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.LocalShadowDynRaw);
@@ -442,7 +416,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
     }
 
-    /// <summary>#121: the IBL probe onto its unit, or nothing -- unbound rather than left bound during a
+    /// <summary>The IBL probe onto its unit, or nothing -- unbound rather than left bound during a
     /// capture (<see cref="ProbeLive"/>); <c>uProbeMips</c> 0 in the pass block says the same to the stage.</summary>
     internal static void BindProbe()
     {

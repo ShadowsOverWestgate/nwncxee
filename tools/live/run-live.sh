@@ -28,7 +28,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-NWN_DIR="${NWN_DIR:-~/gry/steam/Neverwinter Nights}"
+NWN_DIR="${NWN_DIR:-$(python3 "$ROOT/tools/paths.py" NWN_DIR)}"
 REAL_USER_DIR="${NWN_USER_DIR:-$HOME/.local/share/Neverwinter Nights}"
 
 MODULE="The Dark Ranger's Treasure"

@@ -8,17 +8,11 @@ using CX.Framework;
 namespace CX.Services.Sound;
 
 /// <summary>
-/// CX-57: the engine keeps deciding what plays; CX owns what its audio does. The pinned OpenAL Soft
-/// (libopenal.so.1 / cx_openal.dll, beside the extender) is the engine's OpenAL, and every positional voice it
-/// starts is rendered by Steam Audio in native/cxaudio.cpp -- HRTF or speaker panning, the authored distance
-/// radii, occlusion and transmission, reflections and pathing through the area's own geometry, and the
-/// playback-side fixes for repetition, overlap and loudness. docs/audio.md.
+/// The engine keeps deciding what plays; CX owns what its audio does. The pinned OpenAL Soft (libopenal.so.1 /
+/// cx_openal.dll, beside the extender) is the engine's OpenAL, and every positional voice it starts is rendered by
+/// Steam Audio in <c>native/cxaudio.cpp</c> -- panning, the authored radii, occlusion, reflections, pathing and the
+/// playback fixes (docs/audio.md). Nothing managed runs on the audio thread; the main-thread hooks allocate nothing.
 /// </summary>
-/// <remarks>
-/// The seams: OpenAL's own exports (native shims, hooked by address), and four exosound functions, all
-/// name-exported on Windows. Nothing managed runs on the audio thread; the simulation and the pathing bake have
-/// threads of their own; the main-thread hooks are alloc-free.
-/// </remarks>
 public sealed unsafe class SoundService : IExtenderService
 {
     private static ExtenderLog? _log;
@@ -31,7 +25,7 @@ public sealed unsafe class SoundService : IExtenderService
     private static int _rowInterior = -1, _rowExterior = -1;
     private static int _lastEnv = -1;
     private static long _statsAt;
-    /// <summary>Starts that fell back to the stock path already said on screen (CX-45: once, not every 10 s).</summary>
+    /// <summary>Starts that fell back to the stock path already said on screen: once, not every 10 s.</summary>
     private static bool _saidRefused;
     /// <summary>A stand-down said before any text surface existed, repeated on screen at the first frame that has one.</summary>
     private static string? _failure;
@@ -92,7 +86,7 @@ public sealed unsafe class SoundService : IExtenderService
         log.Info("sound: armed -- positional voices render through Steam Audio 4.8.1 on OpenAL Soft 1.25.2 (docs/audio.md)");
     }
 
-    /// <summary>CX-45: said on screen and in the log, and the whole path stands down -- the game keeps its own audio.</summary>
+    /// <summary>Said on screen and in the log, and the whole path stands down -- the game keeps its own audio.</summary>
     private static void Fail(string why)
     {
         _failure = $"CX sound is off: {why}. The game plays its stock audio.";
@@ -275,7 +269,7 @@ public sealed unsafe class SoundService : IExtenderService
     }
 
     /// <summary>The area's EnvAudio row, for the "Area preset" reverb. Row 0 is also what an area that never set
-    /// the field carries (6 of 7 SoW areas), so 0 falls back on the interior flag.</summary>
+    /// the field carries (6 of 7 areas in one measured module), so 0 falls back on the interior flag.</summary>
     [UnmanagedCallersOnly]
     private static void OnSetEnvironment(IntPtr sound, byte row)
     {

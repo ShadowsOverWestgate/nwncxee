@@ -21,7 +21,9 @@ public static class CombatTextNative
 
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = IsDamageFont(DamageFont) && IsDamageFont("FNT_FLOATY_SMAL")
+        // The resref is the engine's own, read off HandleServerToPlayerCCMessage -- written out here so a
+        // change to DamageFont fails rather than redefining what the check means.
+        bool ok = IsDamageFont("fnt_floaty_smal") && IsDamageFont("FNT_FLOATY_SMAL")
                   && !IsDamageFont("") && !IsDamageFont("fnt_galahad14");
         log.Info(ok ? "CombatTextNative.SelfCheck: passed" : "CombatTextNative.SelfCheck: FAILED");
     }

@@ -1,8 +1,8 @@
-# Hotkeys: client <-> server contract (for sow-codebase)
+# Hotkeys: client <-> server contract
 
-The "Hotkeys" feature is split across the two repos. This client extender does the
-parts only a client can; **the arming UI is a server-authored NUI** (sow-codebase
-owns the toolbar layout and already builds many NUIs). This file is the contract
+The "Hotkeys" feature is split between the client and a server that opts in. This client extender does
+the parts only a client can; **the arming UI is a server-authored NUI** (the server owns the toolbar
+layout). Shadows over Westgate's server is the reference implementation. This file is the contract
 the server side must implement to match the client.
 
 ## Split of responsibilities
@@ -17,7 +17,7 @@ Client extender (this repo, done):
 - Persists consent **per server**, scoped by a client-minted token
   (`cx-hotkeys.cfg` in the client's NWN user directory, one `[token=<hex>]` section per server).
 
-Server (sow-codebase, done):
+Server (reference implementation done):
 - Builds the arming **NUI** (it knows the toolbar/ability layout to show).
 - Owns the key -> toolbar-action **mapping** (the client never sees it).
 - Persists the armed set **and the consent token** per character (server vault).

@@ -2872,7 +2872,7 @@ public readonly unsafe ref partial struct MdlNode(IntPtr ptr)
     /// <inheritdoc cref="EngineLayout.MdlNodeControllers"/>
     public ref IntPtr Controllers => ref *(IntPtr*)(Ptr + EngineLayout.MdlNodeControllers);
     /// <inheritdoc cref="EngineLayout.MdlNodeKind"/>
-    public ref byte Kind => ref *(byte*)(Ptr + EngineLayout.MdlNodeKind);
+    public ref uint Kind => ref *(uint*)(Ptr + EngineLayout.MdlNodeKind);
     /// <inheritdoc cref="EngineLayout.MdlNodeName"/>
     public ref byte Name => ref *(byte*)(Ptr + EngineLayout.MdlNodeName);
     /// <inheritdoc cref="EngineLayout.MdlNodeId"/>
@@ -3103,6 +3103,8 @@ public readonly unsafe partial struct Nui__JSON__IdNode(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.NuiIdNodeElement"/>
     public ref IntPtr Element => ref *(IntPtr*)(Ptr + EngineLayout.NuiIdNodeElement);
+    /// <inheritdoc cref="EngineLayout.NuiIdNodeKey"/>
+    public ref byte Key => ref *(byte*)(Ptr + EngineLayout.NuiIdNodeKey);
 }
 
 /// <summary>Typed view of an engine <c>Nui__JSON__JsonWindow*</c>.</summary>

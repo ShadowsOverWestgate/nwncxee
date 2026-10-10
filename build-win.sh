@@ -2,15 +2,15 @@
 # Cross-build the Windows leg on Linux (#48 M1): version.dll, the NativeAOT image itself, with
 # funchook, the UI font and the export-forwarding proxy all linked in, and CX-57's audio runtime beside it.
 # Needs clang-cl, lld-link, llvm-lib, cmake, the .NET SDK, and a Windows 10 SDK + MSVC lib/include
-# tree (default: the mounted Windows partition). Nothing here is supported by Microsoft; it works
+# tree (SDK / MSVC: the environment or local.env, see local.env.example). Nothing here is supported by Microsoft; it works
 # because ILC emits COFF on any host and lld-link links it.
 set -e
 cd "$(dirname "$0")"
 mkdir -p build
 
-SDK="${SDK:-/mnt/windows/Windows Kits/10}"
+SDK="${SDK:-$(python3 tools/paths.py SDK)}"
 SDKVER="${SDKVER:-10.0.19041.0}"
-MSVC="${MSVC:-/mnt/windows/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.35.32215}"
+MSVC="${MSVC:-$(python3 tools/paths.py MSVC)}"
 [ -f "$SDK/Lib/$SDKVER/um/x64/kernel32.Lib" ] || { echo "!! no Windows SDK under $SDK (set SDK/SDKVER)" >&2; exit 1; }
 [ -f "$MSVC/lib/x64/libvcruntime.lib" ] || { echo "!! no MSVC tools under $MSVC (set MSVC)" >&2; exit 1; }
 
@@ -90,7 +90,7 @@ fi
 # #456: the Windows symbol gate runs BEFORE the build, not as a report nobody reads. It checks every Nm row
 # names a real export, every At row lands in the image, and -- the clause the #456 crash bought -- that every
 # instance member returning a class by value has had its (this, sret) argument order decided at the call site.
-if command -v llvm-undname >/dev/null 2>&1 && [ -f "${NWN_WIN_EXE:-~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe}" ]; then
+if command -v llvm-undname >/dev/null 2>&1 && [ -f "$(python3 tools/paths.py NWN_WIN_EXE 2>/dev/null)" ]; then
   echo ">> checking Windows symbol rows..."
   ./tools/abi/check-win-symbols.py || { echo "!! symbol rows are wrong -- fix them before shipping a DLL" >&2; exit 1; }
 else

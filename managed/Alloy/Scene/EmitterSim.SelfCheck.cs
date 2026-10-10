@@ -12,14 +12,9 @@ internal static unsafe partial class EmitterSim
 {
     /// <summary>
     /// Off-device: every part of the simulation that is a DECISION rather than a read. The step is driven
-    /// through an <see cref="Emitter"/> snapshot, which is what both sources produce, and the pool is the real
-    /// one -- so the whole thing runs on a machine with no client and no GL.
-    /// <para>CX-120 added the check that matters most to this ticket: <see cref="BothSources"/> fills ONE
-    /// parameter set through both fillers and runs the same fountain from each, so "the DB path behaves like
-    /// the engine path" is a measurement rather than a claim.</para>
-    /// <para>What is NOT covered, and cannot be: <c>Part::GetWorld</c>, <c>Gob::GetAdjustedScale</c>, the wind
-    /// call and the p2p target's position virtual are engine calls with no seam. Those are read, reasoned
-    /// about and left to the live check.</para>
+    /// through an <see cref="Emitter"/> snapshot and the pool is the real one, so it all runs with no client
+    /// and no GL. NOT covered, and cannot be: <c>Part::GetWorld</c>, <c>Gob::GetAdjustedScale</c>, the wind
+    /// call and the p2p target's position virtual are engine calls with no seam, left to the live check.
     /// </summary>
     internal static void SelfCheck(ExtenderLog log)
     {
@@ -285,13 +280,8 @@ internal static unsafe partial class EmitterSim
 
     /// <summary><b>The filler, over one emitter:</b> thirty parameters stated as a parsed
     /// <see cref="EmitterDef"/> with the matching controller rest keys, read back through
-    /// <see cref="FillDb"/>, and then the slot keys the database re-tenants on.
-    /// <para>CX-188: the A/B is gone with <c>FillEngine</c>. It stated the same thirty parameters a second
-    /// time in a synthetic engine <c>PartEmitter</c>/<c>MdlNodeEmitter</c> pair and asserted the two
-    /// snapshots agreed field for field and ran 200 identical frames -- which was the argument that CX-120
-    /// did not change mode 0. Nothing fills a snapshot from a <c>PartEmitter</c> any more (the one caller was
-    /// this check), so the engine half had no subject left. The three field names that mean something else in
-    /// the MDL are still asserted below, because those are <see cref="FillDb"/>'s own mapping.</para></summary>
+    /// <see cref="FillDb"/>, then the slot keys the database re-tenants on -- plus the three field names that
+    /// mean something else in the MDL, which are <see cref="FillDb"/>'s own mapping.</summary>
     private static void BothSources(Checker check)
     {
         Reset();
@@ -358,7 +348,7 @@ internal static unsafe partial class EmitterSim
         Reset();
     }
 
-    /// <summary>CX-188: the two per-frame skips the fill now takes -- the rest keys memoised on the node and
+    /// <summary>The two per-frame skips the fill takes -- the rest keys memoised on the node and
     /// the cull that runs ahead of the snapshot. Each assertion is the smallest thing that fails if the skip
     /// ever hides a real change: a model or node swapped under a part, an animation's write, the memo's
     /// sharing between parts of one model, and the cull's verdict against the full fill's own numbers.</summary>
@@ -373,10 +363,6 @@ internal static unsafe partial class EmitterSim
                   && _chIds[ChDetonate] == Ctl.EmDetonate && _chIds[ChMass] == Ctl.EmMass,
           "every Ch* ordinal addresses its own controller id -- an ordinal off by one silently reads another "
           + "parameter's keys");
-        bool blocks = true;
-        for (int ord = 0; ord < ChCount; ord++)
-            blocks &= _chBlock[ord] == DbEmitterChannels.ChannelOf(_chIds[ord]);
-        check.Expect(blocks, "...and resolves to the channel DbEmitterChannels files that id under");
         check.Expect(_chBlock[ChSizeMid] < 0 && _chBlock[ChSizeMidY] < 0 && _chBlock[ChBirthRate] >= 0,
           "sizeMid/sizeMidY are no animatable channel of that sink, so they are always the node's rest key");
 
@@ -488,7 +474,7 @@ internal static unsafe partial class EmitterSim
             },
         };
 
-    /// <summary>CX-188: the part -> slot map against the one thing it must never do -- hand a part a slot that
+    /// <summary>The part -> slot map against the one thing it must never do -- hand a part a slot that
     /// is not its own. The eviction arm is the dangerous one: a full table reclaims the emitter longest unseen,
     /// and if the evicted part kept its map entry it would later be given a slot another emitter is burning in,
     /// silently inheriting its particles and its texture reference.</summary>

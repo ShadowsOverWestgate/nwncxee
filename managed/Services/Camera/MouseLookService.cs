@@ -8,32 +8,10 @@ using CX.Graphics;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Mouse-look on right-drag (#539). The engine's only mouse orbit is middle-drag
-/// (<c>PerformX/YMouseMoveAction</c> with the middle-held flag calling <c>CNWCModule::Turn/TiltCamera(deg, 1)</c>);
-/// this makes right-drag the same orbit with the cursor captured. The right press is HELD (not forwarded)
-/// until the drag decides: past the mode's <c>threshold</c> pixels it becomes a look (SDL relative mode,
-/// every motion event swallowed and fed to the engine's impulse path, so locks, limits and dialog bookkeeping
-/// stay engine-owned); released under the threshold it is replayed as press+release, so the radial menu opens
-/// exactly as before, just on release. A press over the engine GUI or over one of our windows passes through
-/// untouched. Opt-in: the mode's <c>right</c>. The knobs are the live camera mode's Mouse-look rows, read
-/// through the <see cref="MouseLook"/> facade; the toggle (<c>&lt;mode&gt;.mouselook</c>) is the whole
-/// service -- off, every event is forwarded untouched and a drag under way is released on the off edge
-/// (<see cref="MasterChanged"/>). Live both ways.
-/// <para>Middle-drag, the engine's own orbit, gets the same capture unconditionally: the engine turns on
-/// ABSOLUTE cursor deltas, so a vanilla drag stalls at the window edge. Press and release are forwarded (the
-/// engine keeps its middle-held bookkeeping), every motion between is swallowed and fed as relative deltas,
-/// and the release is forwarded at the press position (a button event is also a mouse-move to the engine).</para>
-/// <para>Action camera (the mode's <c>action</c>): relative mode is held for as long as the world camera is
-/// live and nothing else wants the cursor; every motion's delta turns the camera and the event is forwarded
-/// rewritten to the screen centre with no delta, so the engine's own hover pick and click land on the
-/// crosshair (<see cref="Crosshair"/>, drawn by a registered window since the hardware cursor is hidden under
-/// relative mode). Buttons are forwarded at the centre too. Holding Alt, typing in chat, one of our panels
-/// owning the keyboard, a dialog / cutscene / lock or the free camera pauses it with the cursor shown at the
-/// centre; it resumes on the next event once they clear. While held, click-to-move is refused at
-/// <c>WalkPlayerToPoint</c> and the world pick never returns the player creature.</para>
-/// <para>Outermost layer of the <c>WinMessageHandler</c> chain, above <see cref="UiInputService"/>; per-event
-/// state is static and the handler allocates nothing. Capture releases on button-up, on window focus loss and
-/// when <see cref="CameraService.GateUp"/> comes up.</para>
+/// Mouse-look on right-drag: the engine's one mouse orbit is middle-drag, and this makes right-drag the same orbit
+/// with the cursor captured -- SDL relative mode, every motion swallowed and fed to the engine's impulse path, so
+/// locks and limits stay engine-owned; a press under <c>threshold</c> is replayed so the radial menu still opens.
+/// The action camera forwards events rewritten to the screen centre. Outermost chain layer, allocates nothing.
 /// </summary>
 public sealed unsafe class MouseLookService : IExtenderService
 {
@@ -81,7 +59,7 @@ public sealed unsafe class MouseLookService : IExtenderService
     private static FeedbackHitCheckNonHostileFn _pickNonHostileOrig;
     private static int _walksRefused, _selfHidden;
     /// <summary>The toggle bind per camera mode: an SDL keycode, or a mouse button carried negative (-4 = X1,
-    /// -5 = X2); 0 = none. Indexed by the engine mode byte, like <see cref="CameraModes.ByMode"/>.</summary>
+    /// -5 = X2); 0 = none. Indexed by the engine's camera mode byte, like <see cref="CameraModes.ByMode"/>.</summary>
     private static readonly int[] _toggleCodes = new int[3];
     private static int ToggleCode => CameraService.Mode is >= 0 and < 3 ? _toggleCodes[CameraService.Mode] : 0;
 
@@ -328,7 +306,7 @@ public sealed unsafe class MouseLookService : IExtenderService
     /// the next event, which reads the knob).</summary>
     internal static void ActionChanged() { _altFree = false; if (!MouseLook.Action.V && _action) SetAction(false); }
 
-    /// <summary>The master's <c>changed:</c> (#584): the off edge releases a look or a held press at once, so the
+    /// <summary>The master's <c>changed:</c>: the off edge releases a look or a held press at once, so the
     /// cursor is never left captured waiting for the next mouse event. Nothing on the on edge -- the next press
     /// reads <c>MouseLook.Enabled.V</c>.</summary>
     internal static void MasterChanged() { if (!MouseLook.Enabled.V) { Release(); if (_action) SetAction(false); } }
@@ -372,12 +350,9 @@ public sealed unsafe class MouseLookService : IExtenderService
 }
 
 /// <summary>The action camera's crosshair: a small four-arm reticle at the viewport centre, drawn as a registered
-/// window with no rect (it hits nothing), only while <see cref="Visible"/>. The solid texel is the text sheet's.
-/// <para>Contextual: the engine's live mouse cursor id (<see cref="AimAssist.CursorId"/>) says what a click here
-/// would do -- attack, talk, use, cast, or the refused twin of any of them -- and the reticle takes that verb's
-/// colour and arm length. It is the SAME verb the vanilla cursor would have shown, including while a targeting
-/// mode overrides it, because it is the same field. Four corner ticks appear while
-/// <see cref="AimAssist.AssistTarget"/> holds a candidate, so "the aim is being helped" is visible.</para></summary>
+/// window with no rect (it hits nothing), only while <see cref="Visible"/>. Contextual: the engine's live mouse
+/// cursor id (<see cref="AimAssist.CursorId"/>) is the same field the vanilla cursor reads, so the reticle takes
+/// that verb's colour and arm length; four corner ticks appear while the assist holds a candidate.</summary>
 internal static class Crosshair
 {
     internal static volatile bool Visible;

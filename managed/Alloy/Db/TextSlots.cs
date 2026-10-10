@@ -12,36 +12,30 @@ public enum SlotAbi : byte
     /// <summary>Integers and/or pointers only: the same registers on both OSes.</summary>
     Plain,
     /// <summary>Carries at least one <c>float</c>. Win64 assigns registers by ARGUMENT INDEX with <c>this</c> as
-    /// index 0, so a lone float lands in <c>xmm1</c> and <c>(int, float)</c> puts the float in <c>xmm2</c>; SysV
-    /// walks a separate SSE sequence from <c>xmm0</c>. Measured per slot in
-    /// <c>CX-187</c> section 1.2. A declaration that lets the runtime apply the platform
-    /// convention (<c>CallConvMemberFunction</c> on Windows) gets this right; a hand-written register
-    /// assumption does not, and four of these slots also spill a float to the Win64 stack.</summary>
+    /// index 0, so a lone float lands in <c>xmm1</c> and <c>(int, float)</c> puts the float in <c>xmm2</c>;
+    /// SysV walks a separate SSE sequence from <c>xmm0</c>. Let the runtime apply the platform convention
+    /// (<c>CallConvMemberFunction</c> on Windows); four of these slots also spill a float to the Win64 stack.</summary>
     FloatArgs,
     /// <summary>A <c>Vector</c> (3 floats, 12 bytes) by value: SysV passes it in <c>xmm0</c>(x,y)+<c>xmm1</c>(z),
     /// Win64 passes a hidden POINTER to a caller copy.</summary>
     VectorByValue,
-    /// <summary>Returns a class by value. The one such slot here is <c>Vector SetPosition(Vector)</c>, and the two
-    /// OSes do not merely reorder: Win64 takes an <c>sret</c> buffer as argument 1, <c>(this, sret, &amp;arg)</c>,
-    /// while SysV returns the three floats in <c>xmm0</c>/<c>xmm1</c> with NO <c>sret</c> at all. Declaring one
-    /// order for both hands the engine a stack frame as <c>this</c> (memory note <c>sret-argument-order</c>, #456).</summary>
+    /// <summary>Returns a class by value -- here <c>Vector SetPosition(Vector)</c>. Win64 takes the
+    /// <c>sret</c> buffer as argument 1, <c>(this, sret, &amp;arg)</c>; SysV returns the three floats in
+    /// <c>xmm0</c>/<c>xmm1</c> with NO <c>sret</c>. One order for both hands the engine a stack frame as
+    /// <c>this</c>.</summary>
     SretReturn,
 }
 
 /// <summary>One row of the <c>CAurString</c> slot table. <paramref name="Linux"/> and <paramref name="Windows"/>
 /// are vtable INDICES: GCC emits the <c>D1</c>/<c>D0</c> destructor pair where MSVC emits one slot, so every
-/// Windows index past 0 is one lower. The authoritative measurement is
-/// <c>tools/seam/aurora-seam-vtables.tsv</c> (rows with <c>iface = CAurString</c>); this table is the
-/// implementation side of it, and the self-check asserts the shape they must share -- 52 rows in vtable order,
-/// a Windows index one lower past the single MSVC destructor slot -- not the file's contents.</summary>
+/// Windows index past 0 is one lower. <c>tools/seam/aurora-seam-vtables.tsv</c> is the authoritative
+/// measurement; the self-check asserts the shape the two must share, not the file's contents.</summary>
 public readonly record struct TextSlot(int Linux, int Windows, string Name, string Signature, SlotAbi Abi);
 
-/// <summary>CX-119: the <c>CAurString</c> interface, answered over <see cref="SceneDb"/> text records.
-/// <para>Each method here is the semantic body of one vtable slot, written against a <see cref="DbId"/> so it can
-/// be tested without an engine. CX-120's <see cref="Seam.Facade"/> owns the native shell, the vtable and the
-/// per-OS thunks; it binds them to these by <see cref="Slots"/>. A slot on a dead handle or a document-less
-/// record does nothing and returns the engine's "nothing happened" value -- never a crash, never a silent
-/// fallback into the engine's own object.</para></summary>
+/// <summary>The <c>CAurString</c> interface, answered over <see cref="SceneDb"/> text records.
+/// <para>Each method here is one vtable slot's semantic body, written against a <see cref="DbId"/> so it can
+/// be tested without an engine; <see cref="Seam.Facade"/> owns the native shell, vtable and per-OS thunks and
+/// binds them by <see cref="Slots"/>. A dead handle returns the engine's "nothing happened" value.</para></summary>
 public static partial class TextSlots
 {
     /// <summary>The 52 slots, in vtable order. The ABI column names only the slots where the two OSes differ;
@@ -108,13 +102,9 @@ public static partial class TextSlots
     // ---- 0, 1: destruction ----
 
     /// <summary>Slot 0, <c>StringGob::~StringGob</c> @0x494be0 -- the COMPLETE-OBJECT destructor. It runs the
-    /// destructor body and <b>does not free the object</b>: it resets both vptrs, drops the text, releases the
-    /// font, frees the colour table and the line array, and runs <c>~Gob</c>. The storage stays alive, which is
-    /// why the slot must not retire the facade.
-    /// <para>Binding this slot to the deleting destructor's work is what produced a burst of
-    /// <c>USE AFTER FREE -- Gob::AttachToScene on retired facade</c> when the options panel opened: the panel
-    /// destructs its labels and then re-attaches the same objects, which vanilla allows because they were
-    /// never freed.</para></summary>
+    /// destructor body and does NOT free the object: it resets both vptrs, drops the text, releases the font,
+    /// frees the colour table and the line array, and runs <c>~Gob</c>. The storage stays alive, so this slot
+    /// must not retire the facade -- the game legitimately re-attaches a destructed label.</summary>
     public static void DestructBody(DbId id)
     {
         TextDoc? d = TextObjects.Of(id);
@@ -134,9 +124,8 @@ public static partial class TextSlots
 
     /// <summary>Slot 1, <c>StringGob::~StringGob</c> @0x494c70 -- the DELETING destructor: the body above, then
     /// <c>operator delete(this, 0x558)</c>. Only this slot frees the record and lets the facade retire.
-    /// <para>The two heap blocks the shell owns -- its callback list and its attach list -- are freed here,
-    /// because a text object dies through its RECORD and so never reaches <c>ObjectSlots.Destroy</c>. Order
-    /// matters: the shell is looked up through the handle, so it has to happen before the record is freed.</para></summary>
+    /// <para>The shell's two heap blocks (callback list, attach list) are freed here, because a text object
+    /// dies through its RECORD; the shell is found through the handle, so that must precede the record free.</para></summary>
     public static void Destruct(DbId id)
     {
         DestructBody(id);
@@ -169,10 +158,9 @@ public static partial class TextSlots
     public static nint AttachToPart(DbId id, DbId to, int part, int mode) => AttachToObject(id, to, part, mode);
 
     /// <summary>Slot 4, <c>StringGob::AttachCornersToObjects</c> @0x495770. The two named dummies on
-    /// <paramref name="to"/> are the box's corners: the engine takes the world delta between them, rotates it by
-    /// <c>objectOrientation * conj(corner1Orientation)</c>, and writes the absolute components as
-    /// <c>maxWidth</c> and <c>maxHeight</c> before re-laying out. Ignoring them leaves every corner-attached
-    /// label unbounded, which is why this is not merely an attach.</summary>
+    /// <paramref name="to"/> are the box's corners: the engine takes the world delta between them, rotates it
+    /// by <c>objectOrientation * conj(corner1Orientation)</c>, and writes the absolute components as
+    /// <c>maxWidth</c>/<c>maxHeight</c> before re-laying out -- ignoring them leaves the label unbounded.</summary>
     public static int AttachCornersToObjects(DbId id, DbId to, string corner1, string corner2)
     {
         TextDoc? d = TextObjects.Of(id);
@@ -233,12 +221,9 @@ public static partial class TextSlots
     private static int _saidFlat;
 
     /// <summary>Slot 5, <c>StringGob::SetPositionOffset</c> @0x492420. It writes NOTHING unless
-    /// <c>GetBehavior(-1)</c> is a <c>CAurBehaviorAttachTranslate</c> (type <c>0x3ea</c>) -- the offset lives on
-    /// that behaviour, not on the object -- and answers 0 when it is not. Reproduced to the condition: the
-    /// offset goes to its own column keyed on the behaviour it belongs to, and
-    /// <see cref="DbAnim.SnapAttached"/> applies it the way that behaviour's <c>Control</c> does.
-    /// <para>It must NOT go into <see cref="SceneDb.ObjPos"/>: the attach placement overwrites that column
-    /// every compose, and composing on top of it put every quickbar label hundreds of units off screen.</para></summary>
+    /// <c>GetBehavior(-1)</c> is a <c>CAurBehaviorAttachTranslate</c> (type <c>0x3ea</c>) -- the offset lives
+    /// on that behaviour, not on the object -- so it goes to its own column keyed on that behaviour and NOT
+    /// into <see cref="SceneDb.ObjPos"/>, which the attach placement overwrites every compose.</summary>
     public static int SetPositionOffset(DbId id, Vector3 v)
     {
         if (!SceneDb.Objects.Valid(id)) return 0;
@@ -418,11 +403,10 @@ public static partial class TextSlots
         TextObjects.MarkText(id, d);
     }
 
-    /// <summary>Slot 24. The engine hands out a pointer INTO the object (<c>this+0x528</c>) and the game reads the
-    /// block through it, up to <c>+0x28</c>: <c>CGuiTextBubble::SetText</c> @0x688790 divides each bubble's height
-    /// by that line height (<c>StringGob+0x550</c>, <c>SetFont</c>'s fontheight / 0.01), so a short block makes it
-    /// pick no bubble and never set the text. The game also WRITES the box through it (<see cref="TextDoc.InfoBuf"/>),
-    /// so the block is the document's own. Returns it, or 0 for no document.</summary>
+    /// <summary>Slot 24. The engine hands out a pointer INTO the object (<c>this+0x528</c>) and the game reads
+    /// the block through it up to <c>+0x28</c> -- <c>CGuiTextBubble::SetText</c> @0x688790 divides by the line
+    /// height at <c>StringGob+0x550</c> -- and also WRITES the box through it
+    /// (<see cref="TextDoc.InfoBuf"/>), so the block is the document's own. Returns it, or 0 for no document.</summary>
     public static nint GetDisplayInfo(DbId id)
     {
         TextDoc? d = TextObjects.Of(id);
@@ -717,17 +701,10 @@ public static partial class TextSlots
         return true;
     }
 
-    /// <summary>Slot 47, <c>StringGob::MoveCaretTo</c> @0x4926d0: the mouse hit. The engine hands this a point
-    /// in WORLD space and its first statement is the transform into the string's own:
-    /// <c>conj(orientation) * (p - position)</c> off the gob's placement words <c>+0xa8</c>/<c>+0xb4</c>, with
-    /// the scale deliberately not divided out. The line is then found by accumulating line heights from the top
-    /// line (a click above the box selects the line BEFORE it), and the column by handing
-    /// <see cref="TextObjects.UpdateCaret"/> an UNSNAPPED target x with column -1, so its half-advance midpoint
-    /// decides. Note there is no <c>spacingB</c> term here, unlike the draw.
-    /// <para>Taking the argument as ALREADY local was the whole of "clicking a list row selects the wrong
-    /// row": a GUI list is one text gob whose rows are its LINES, the game answers a click on the list control
-    /// by asking this which line the hit point is on, and a world point tens of units from the box clamps to
-    /// the first line every time.</para></summary>
+    /// <summary>Slot 47, <c>StringGob::MoveCaretTo</c> @0x4926d0: the mouse hit. The point arrives in WORLD
+    /// space and the engine's first statement is <c>conj(orientation) * (p - position)</c>, scale deliberately
+    /// not divided out. The line comes from accumulating line heights from the top (a click above the box
+    /// selects the line BEFORE it), the column from an UNSNAPPED x with column -1. No <c>spacingB</c> term.</summary>
     public static int MoveCaretTo(DbId id, Vector3 world)
     {
         TextDoc? d = TextObjects.Of(id);
@@ -786,15 +763,10 @@ public static partial class TextSlots
     /// and shared, so the slot answers without freeing and the font retires with the atlas.</summary>
     public static int SuggestDeleteCurrentFont(DbId id) => GetCurrentFontIndex(id);
 
-    /// <summary>Slot 50. The engine hands out its raw <c>CStringItem**</c> (<c>StringGob+0x500</c>). Its only
-    /// callers are <c>CServerPage::SortServerList</c> and <c>CBuddyListPage::SortServerList</c>, and both do the
-    /// same thing: copy the array aside, write it back permuted, dereference nothing. So the facade hands out
-    /// native storage carrying one sentinel per line -- the 1-based line index, never a pointer -- and
-    /// <see cref="SyncItemOrder"/> reads the permutation back on the next slot call.
-    /// <para>Returning 0 here was a NULL the engine dereferenced four instructions later: the online server list
-    /// SIGSEGV'd the client the moment a server arrived.</para>
-    /// <para>The capacity is rounded up to a power of two the way <c>CExoArrayList</c> grows, because the sort
-    /// sizes every column's array from the FIRST column's line count and so reads past a shorter one.</para></summary>
+    /// <summary>Slot 50: the engine's raw <c>CStringItem**</c> (<c>StringGob+0x500</c>). The facade hands out
+    /// native storage carrying one 1-based line-index sentinel per line, never a pointer, which
+    /// <see cref="SyncItemOrder"/> reads back; never 0, the engine dereferences it. Capacity rounds up to a
+    /// power of two -- the sort sizes every array from the FIRST column's line count and reads past a short one.</summary>
     public static nint GetStringsArray(DbId id)
     {
         TextDoc? d = TextObjects.Of(id);
@@ -821,9 +793,8 @@ public static partial class TextSlots
 
     /// <summary>Apply whatever permutation the engine wrote into the array <see cref="GetStringsArray"/> handed
     /// out, then stand the array down. Runs at the head of every <c>CAurString</c> slot entry, because the sort
-    /// routines permute and then announce nothing; with no array outstanding the cost is one field test.
-    /// <para>A sentinel outside 1..n, or one seen twice, means the array is not the one this document handed
-    /// out: the order is left alone rather than scrambled.</para></summary>
+    /// routines permute and announce nothing; with no array outstanding the cost is one field test. A sentinel
+    /// outside 1..n, or seen twice, leaves the order alone rather than scrambling it.</summary>
     public static void SyncItemOrder(DbId id)
     {
         TextDoc? d = TextObjects.Of(id);

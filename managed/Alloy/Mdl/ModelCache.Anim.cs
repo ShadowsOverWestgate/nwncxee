@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace CX.Alloy.Mdl;
 
-/// <summary>CX-113: the animation half of the model cache -- the engine's <c>FindAnimation</c> @0x497c30,
+/// <summary>The animation half of the model cache -- the engine's <c>FindAnimation</c> @0x497c30,
 /// <c>FindAnimScale</c> @0x499b10, <c>Gob::LoadAddInAnimations</c> @0x43a960, and the per-(model, animation)
 /// node binding that replaces the engine's per-frame name/id probing.</summary>
 public static partial class ModelCache
@@ -13,13 +13,9 @@ public static partial class ModelCache
     private const string Default = "default";
 
     /// <summary>The animation <paramref name="anim"/> as <paramref name="model"/> resolves it through its
-    /// supermodel chain (the engine's <c>FindAnimation</c>), and the model in the chain that owns it.
-    /// <para>Exactly the engine's order, which is worth spelling out because it is not the obvious one: walk
-    /// the chain from <paramref name="model"/> up, answering the first model whose OWN animation list holds the
-    /// name (case-insensitive, <c>strcasecmp</c> on <c>Animation+0x10</c>); if the whole chain misses, search
-    /// <b>only the last model in the chain</b> for <c>"default"</c> -- not every model, and not the model asked
-    /// about. Linux @0x497c30 walks iteratively and keeps the terminal model in a register; Windows
-    /// (rva 0x50f80) tail-recurses and reaches the same fallback at the same model.</para></summary>
+    /// supermodel chain (the engine's <c>FindAnimation</c> @0x497c30, Windows rva 0x50f80), and the model that
+    /// owns it. The engine's order: from <paramref name="model"/> up, the first model whose OWN animation list
+    /// holds the name (case-insensitive); on a whole-chain miss, <b>only the last model</b> for "default".</summary>
     public static AnimDef? FindAnimation(ModelDef model, string anim, out ModelDef? owner)
     {
         owner = null;
@@ -50,13 +46,10 @@ public static partial class ModelCache
         return null;
     }
 
-    /// <summary>The engine's <c>FindAnimScale(model, anim)</c>: the product of <see cref="ModelDef.AnimScale"/>
-    /// over every model in the chain BELOW the one that owns <paramref name="anim"/>.
-    /// <para>The engine finds the owner by POINTER identity over each model's animation array and multiplies
-    /// <c>Model+0xcc</c> on each miss, so an animation the model owns itself scales by 1, one owned by its
-    /// supermodel scales by the model's own <c>setanimationscale</c>, and so on. An animation that belongs to no
-    /// model in the chain comes back with the whole product -- the engine's answer too, not a refusal.</para>
-    /// <para>Windows rva 0x50ed0 reads the same <c>+0x98</c>/<c>+0xa0</c>/<c>+0xa8</c>/<c>+0xcc</c>.</para></summary>
+    /// <summary>The engine's <c>FindAnimScale</c> @0x499b10 (Windows rva 0x50ed0): the product of
+    /// <see cref="ModelDef.AnimScale"/> over the chain BELOW the model that owns <paramref name="anim"/> (owner
+    /// found by POINTER identity), so an animation the model owns itself scales by 1. One no model in the chain
+    /// owns comes back with the whole product -- the engine's answer, not a refusal.</summary>
     public static float FindAnimScale(ModelDef? model, AnimDef? anim)
     {
         float scale = 1f;
@@ -94,14 +87,9 @@ public static partial class ModelCache
     }
 
     /// <summary><c>Gob::LoadAddInAnimations(name)</c> @0x43a960: the extra animation set an object can be given
-    /// on top of its model's. The engine's own body is <c>FindModel(name)</c> plus one <c>Model::AddRef</c>, so
-    /// this is <see cref="Acquire"/> -- the caller keeps the handle and <see cref="Release"/>s it when the
-    /// object drops the set, the way <c>Gob::RemoveAddInAnimations</c> <c>DelRef</c>s it.
-    /// <para>Not ported: the engine's SECOND path, taken only when <c>FindModel</c> comes back null. It
-    /// <c>fopen64</c>s <c>"&lt;name&gt;.mdl"</c> relative to the PROCESS WORKING DIRECTORY, outside the resource
-    /// chain entirely, and runs <c>::LoadModel(FILE*)</c> on it -- a developer hook for a loose file next to the
-    /// binary, which cannot be reached through hak, NWSync, module or override. CX resolves the name through the
-    /// resource chain and reports a miss instead.</para></summary>
+    /// on top of its model's. The engine's body is <c>FindModel(name)</c> plus one <c>Model::AddRef</c>, so this
+    /// is <see cref="Acquire"/> and the caller <see cref="Release"/>s it when the object drops the set. The
+    /// engine's null-FindModel fallback -- a loose <c>.mdl</c> in the working directory -- is not ported.</summary>
     public static ModelDef? LoadAddInAnimations(string resref)
     {
         ModelDef? m = Acquire(resref);
@@ -148,12 +136,9 @@ public static partial class ModelCache
         new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The lookup the animation runtime uses: <see cref="FindAnimation"/> and
-    /// <see cref="FindAnimScale"/> once per (model, name), remembered after that.
-    /// <para>Why memoise at all, when the engine does not: the engine's own lookup is a linear
-    /// <c>strcasecmp</c> over each model's array, repeated up the chain -- and a real chain is five models deep
-    /// with 165 animations at its base (<c>a_ba</c>), so one <c>PlayAnimation</c> costs hundreds of string
-    /// compares. The engine pays that every time; this pays it once. The memo is built BY the ported walk, so
-    /// it cannot answer anything the walk would not, and it is dropped with the model.</para></summary>
+    /// <see cref="FindAnimScale"/> once per (model, name), remembered after that. A real chain is five models
+    /// deep with 165 animations at its base (<c>a_ba</c>), so the engine's unmemoised walk costs hundreds of
+    /// <c>strcasecmp</c>s per <c>PlayAnimation</c>. Built BY the ported walk, and dropped with the model.</summary>
     public static AnimLookup Resolve(ModelDef model, string anim)
     {
         // A handle from FindModel or a read-ahead has not been through Acquire, so its chain may still be
@@ -212,23 +197,10 @@ public static partial class ModelCache
         if (by.TryAdd(anim, b)) _bindingCount++;
     }
 
-    /// <summary>The binding of <paramref name="anim"/> onto <paramref name="model"/>'s nodes, built on first
-    /// ask and cached until the model is evicted.
-    /// <para><b>The engine's matching, and where CX differs.</b> The engine binds in two hops at PARSE time,
-    /// both of them <c>MaxTree::SynchronizeTree</c> @0x453830 -&gt; <c>SynchronizeNodes</c> @0x453760: a model's
-    /// nodes take their id from the supermodel node of the same name (<c>beginmodelgeom</c> @0x447f90), and an
-    /// animation's nodes take theirs from the owning model's (<c>newanim</c> @0x447fe0). The match is
-    /// HIERARCHICAL -- the two roots pair unconditionally, and a child is only ever matched against the matched
-    /// parent's children, case-insensitively -- and an unmatched node is marked -1. At animate time
-    /// <c>AnimateHierarchy</c> @0x499990 pairs a child part with the animation child whose id equals the part's
-    /// (<c>Part+0x30</c>, copied from <c>MdlNode+0x34</c> by <c>CreateInstanceTreeR</c> @0x43c6b0), scanning the
-    /// siblings circularly from the same index.</para>
-    /// <para>CX runs the same hierarchical name match, but binds straight to the model's node INDEX instead of
-    /// going through the id. That is a deliberate difference: a chain root's nodes all carry id 0 (nothing ever
-    /// writes <c>MdlNode+0x34</c> except the synchronise), so in practice the engine's ids collide and its
-    /// circular scan degenerates to "the first sibling at or after this index that is not -1" -- i.e. a
-    /// mismatched name silently shifts the binding onto a sibling. CX binds the node the name names, or
-    /// nothing.</para></summary>
+    /// <summary>The binding of <paramref name="anim"/> onto <paramref name="model"/>'s nodes, cached with the
+    /// model, by the engine's hierarchical name match (<c>MaxTree::SynchronizeTree</c> @0x453830): roots pair
+    /// unconditionally, a child only against the matched parent's children, case-insensitive, unmatched -1 --
+    /// but onto the node INDEX, not the engine's node ids, which collide at 0 and let its scan shift a bind.</summary>
     public static AnimBinding Bind(ModelDef model, AnimDef anim)
     {
         if (_bindings.TryGetValue(model, out Dictionary<AnimDef, AnimBinding>? have)

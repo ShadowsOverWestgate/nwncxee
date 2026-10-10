@@ -5,11 +5,10 @@ namespace CX.Ui;
 
 public sealed partial class CascadeMenu
 {
-    /// <summary>Off-device proof of the CX-690/CX-691 contract: root placement + clamp, hit-test, hover, wrapping
-    /// key navigation, lazy children opened at the parent's right edge (flipped at the viewport edge, clamped
-    /// vertically), a 30-row child scrolling to its tail, sibling replacement, Left/Esc unwind, outside press,
-    /// disabled rows, the right-button context, the hover dwell, icon rects, a zero-alloc draw, the row drag and
-    /// the open animation.</summary>
+    /// <summary>Off-device proof of the widget's contract: root placement + clamp, hit-test, hover, wrapping key
+    /// navigation, lazy children at the parent's right edge (flipped and clamped at the viewport edge), a 30-row
+    /// child scrolling to its tail, sibling replacement, Left/Esc unwind, outside press, disabled rows, the
+    /// right-button context, the hover dwell, icon rects, a zero-alloc draw, the row drag and the open animation.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
@@ -105,7 +104,7 @@ public sealed partial class CascadeMenu
         m.OpenChild(0, 2, child);
         check.Expect(m.MouseDown(5f, 5f, 1).Kind == CascadeActionKind.CloseAll && !m.Open, "press outside every level closes all");
 
-        // Row drag (CX-694): armed by a left press, started past DragPx, the gap under the pointer is the target,
+        // Row drag: armed by a left press, started past DragPx, the gap under the pointer is the target,
         // hover/dwell/closes hold, the release drops; Esc or a release off every level cancels.
         m.OpenAt(root, 100f, 100f, atlas, vpW, vpH);
         m.OpenChild(0, 2, child);
@@ -222,7 +221,9 @@ public sealed partial class CascadeMenu
         check.Expect(l0.X == vpW - l0.W && l0.Y == vpH - l0.H, "the root clamps into the viewport");
         check.Expect(m.OpenChild(0, 2, child) && l1.X == l0.X - l1.W && l1.Y == vpH - l1.H, "a child past the right edge flips to the parent's left; a tall child clamps up");
         m.OpenAt(root, 100f, 1000f, atlas, vpW, vpH);
-        check.Expect(l0.Y == vpH - 8 * ih && m.OpenChild(0, 7, child) && l1.X == l0.X + l0.W && l1.Y == Window.ClampAxis(m.RowTop(0, 7), l1.H, vpH) && l1.Y + l1.H <= vpH, "a child off the row near the bottom clamps into view");
+        check.Expect(l0.Y == vpH - 8 * ih && m.OpenChild(0, 7, child) && l1.X == l0.X + l0.W
+          && l1.Y == vpH - l1.H && l1.Y < m.RowTop(0, 7),
+          "a child off a row near the bottom is pulled up until its last row is on screen");
         m.Close();
 
         // Drill mode: a child replaces the parent in place under a Back band; only the deepest level is live.
@@ -292,7 +293,7 @@ public sealed partial class CascadeMenu
         m.Close();
         check.Expect(!m.Open && m.Icons.Length == 0 && !m.Contains(110f, 110f), "closed: nothing reported, nothing hit");
 
-        // Open animation (CX-694): a level stamps its first draw, fades/slides over AnimMs (the icon quads carry the
+        // Open animation: a level stamps its first draw, fades/slides over AnimMs (the icon quads carry the
         // eased alpha and offset, the hit rect does not move), a re-layout of an open level keeps its stamp.
         st.AnimMs = 100; st.NowMs = 5000;
         m.OpenAt(root, 100f, 100f, atlas, vpW, vpH);

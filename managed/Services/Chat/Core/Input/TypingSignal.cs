@@ -2,14 +2,10 @@ using CX.Framework;
 
 namespace CX.Services.Chat.Core;
 
-/// <summary>The chat-bar focus/unfocus signal vanilla sends the server, as pure logic: a single latch
-/// that decides whether an open/close of our chat entry is a state CHANGE worth putting on the wire.
-/// <para>Vanilla emits <c>CGuiInGame::NotifyServerAboutGuiEvent(1|2, chatMode, OBJECT_INVALID, {0,0,0})</c>
-/// from five <c>CGuiInGameChatPrompt</c> sites; servers read it as ChatBarFocus/ChatBarUnFocus (a "player
-/// is typing" indicator). Our window skip-originals every one of those sites, so we re-emit it here.</para>
-/// <para>Send-nothing rules live in the engine call, not here: the native
-/// <c>NotifyServerAboutGuiEvent</c> already drops the packet when there is no player creature or no
-/// message object (i.e. not in a module).</para></summary>
+/// <summary>The chat-bar focus/unfocus signal vanilla sends the server, as pure logic: a latch deciding whether
+/// an open/close of our chat entry is a state CHANGE worth putting on the wire. Vanilla emits
+/// <c>CGuiInGame::NotifyServerAboutGuiEvent(1|2, chatMode, OBJECT_INVALID, {0,0,0})</c> from five
+/// <c>CGuiInGameChatPrompt</c> sites our window skips, so we re-emit it; the native call drops it off-module.</summary>
 public static class TypingSignal
 {
     /// <summary>ChatBarFocus -- the entry took the keyboard.</summary>
@@ -85,7 +81,7 @@ public static class TypingSignal
         check.Expect(Focus(), "focus after reset sends");
         Reset();
 
-        check.Expect(ModeOf(Channel.Talk) == 0 && ModeOf(Channel.Tell) == 0, "talk and tell both report mode 0");
+        check.Expect(ModeOf(Channel.Talk) == 0 && ModeOf(Channel.Tell) == 0, "talk and tell both report chat mode 0");
         check.Expect(ModeOf(Channel.Whisper) == 1, "whisper is mode 1");
         check.Expect(ModeOf(Channel.Shout) == 2, "shout is mode 2");
         check.Expect(ModeOf(Channel.Party) == 3, "party is mode 3");

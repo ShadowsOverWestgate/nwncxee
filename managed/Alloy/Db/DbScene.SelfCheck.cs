@@ -5,7 +5,7 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 (seam-scene) off-device checks: the camera arithmetic against hand-computed values, the
+/// <summary>Off-device checks: the camera arithmetic against hand-computed values, the
 /// snapshot ping-pong protocol against a second thread, and the scene's draw-order list. No engine, no GL --
 /// every input is a column this file writes.</summary>
 internal static unsafe class DbSceneSelfCheck

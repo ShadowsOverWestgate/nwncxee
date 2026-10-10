@@ -7,10 +7,8 @@ namespace CX.Alloy.Db;
 
 /// <summary>Per-part DYNAMIC vertex positions: the one thing a pose cannot express in a matrix, because the
 /// vertices themselves move. Two producers (the animmesh morph and the dangly solve) and one consumer
-/// (seam-feed, which uploads the buffer into the part's mesh-arena range). Replaces the engine's
-/// <c>VdoGetItemDynamicData</c> / <c>CommitItemDynamicData</c> pair, whose whole job was to find a writable
-/// copy of a mesh's positions -- here the copy is the part's own and the arena never holds rest data for it.
-/// <para>Layout and ownership are fixed in <c>Db/DbPose.LAYOUT.md</c>, the note seam-feed reads.</para></summary>
+/// (seam-feed, which uploads the buffer into the part's mesh-arena range); the writable copy is the part's
+/// own, so the arena never holds rest data for it. Layout and ownership: <c>Db/DbPose.LAYOUT.md</c>.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>Per part: the dynamic position buffer (<c>3 * Count</c> floats, model space), its vertex count,
@@ -204,14 +202,8 @@ public static unsafe partial class DbAnim
     /// <summary>
     /// The animmesh morph, from <c>MdlNodeAnimMesh::InternalControl</c> @0x499320: pick the frame from
     /// <c>t / samplePeriod</c>, lerp into the next frame inside the pool, and blend the result into the part's
-    /// dynamic buffers by <paramref name="w"/>. BOTH pools are morphed -- the positions at
-    /// <c>MdlNodeAnimMesh+0x300</c> and the UVs at <c>+0x308</c>, which is how a scrolling-UV effect (the load
-    /// screen's smoke) moves at all.
-    /// <para>The engine's shared-frame-index quirk is kept: the POSITION pool clamps the index in place before
-    /// the UV pool reads it, so a node whose two pools have different frame counts holds where the engine holds
-    /// and extrapolates where it extrapolates (<c>AnimHierarchy.Frames</c> has the reading that pins it). The
-    /// two pools are otherwise independent -- a node with UV frames and NO position frames morphs its UVs, as
-    /// the engine's own branch for a node with no position frames does.</para>
+    /// dynamic buffers by <paramref name="w"/>. BOTH pools are morphed -- positions and UVs, which is how a
+    /// scrolling-UV effect moves -- and the engine's shared-frame-index quirk is kept.
     /// </summary>
     private static void Morph(int part, AnimMeshDef mesh, float t, float w)
     {

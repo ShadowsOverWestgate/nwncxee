@@ -10,11 +10,10 @@ using CX.Services.Chat.Core.Model;
 namespace CX.Services.Chat.Render;
 
 /// <summary>
-/// Builds one <see cref="VertexBatch"/> for a <see cref="ChatWindow"/> each time something changes
-/// (ingest / input / resize -- all cold threads), which <see cref="ChatRenderer.Publish(RenderFrame[])"/> then draws.
-/// The message body is assembled through an ordered array of stateless line components gated by the
-/// window's toggle bitset (architecture #17): a new visual feature = a new component + a new bit.
-/// Only the rows that fit the body are walked/wrapped, so a rebuild is cheap even per keystroke.
+/// Builds one <see cref="VertexBatch"/> for a <see cref="ChatWindow"/> each time something changes (ingest /
+/// input / resize -- all cold threads), which <see cref="ChatRenderer.Publish(RenderFrame[])"/> then draws. The
+/// message body is assembled through an ordered array of stateless line components gated by the window's toggle
+/// bitset: a new visual feature = a new component + a new bit. Only rows that fit the body are walked/wrapped.
 /// </summary>
 public static partial class WindowRenderer
 {
@@ -25,11 +24,11 @@ public static partial class WindowRenderer
         public uint TabTextRgb, FrameRgb;
     }
 
-    /// <summary>Per-thread reusable scratch for the ring walk (#53).</summary>
+    /// <summary>Per-thread reusable scratch for the ring walk.</summary>
     [System.ThreadStatic] private static ChatLine[]? _ringScratch;
     private static ChatLine[] RingScratch() => _ringScratch ??= new ChatLine[ChatStore.Capacity];
 
-    /// <summary>Per-thread pooled VertexBatch + rune/colour lists (#53 finding #4). The internal
+    /// <summary>Per-thread pooled VertexBatch + rune/colour lists. The internal
     /// <c>List&lt;float&gt;</c> keeps its capacity across rebuilds, avoiding per-build heap churn.
     /// Portraits/spans/blockH escape into published frames and must NOT be pooled.</summary>
     [System.ThreadStatic] private static VertexBatch? _batchScratch;
@@ -104,10 +103,9 @@ public static partial class WindowRenderer
     public const float BottomPad = 4f;
 
     /// <summary>Assemble a chatbox frame. <paramref name="atlas"/> is the face the body text draws in (the
-    /// window's own, CX-683); <paramref name="chrome"/> the UI face the tab bar, buttons, input strip and channel
-    /// list draw in (they are sized by <see cref="Metrics.Scale"/>, which follows the UI face) -- null = the body
-    /// face. <paramref name="showFooter"/> draws the edit line (own-input, typing, and the tab has a send channel);
-    /// <paramref name="showGrip"/> draws the corner resize grip.</summary>
+    /// window's own); <paramref name="chrome"/> the UI face the tab bar, buttons, input strip and channel list
+    /// draw in (sized by <see cref="Metrics.Scale"/>, which follows the UI face) -- null = the body face.
+    /// <paramref name="showFooter"/> draws the edit line; <paramref name="showGrip"/> the corner resize grip.</summary>
     public static RenderFrame Build(ChatWindow win, SettingsWindow settings, ChatStore store, GlyphAtlas atlas,
                                     bool showFooter, string editText, int caret, bool showGrip,
                                     (int start, int end)? selection = null, GlyphAtlas? chrome = null)
@@ -323,7 +321,7 @@ public static partial class WindowRenderer
                 b.Rect(sbx + ins, tt, bx + bw - ins, tt + th, p.TabActive.r, p.TabActive.g, p.TabActive.b, 1f);
         }
 
-        // Pop-out input strip: below the frame (#25), a channel dropdown at its left + a word-wrapped edit
+        // Pop-out input strip: below the frame, a channel dropdown at its left + a word-wrapped edit
         // line that grows the strip DOWNWARD one FooterH per wrapped row (so long input never clips).
         if (showFooter)
             EmitInputStrip(b, chrome, win, editText, caret, selection, p);
@@ -339,7 +337,7 @@ public static partial class WindowRenderer
             GripLine(b, cx, cy, 16f, gr, gg, gb);
         }
 
-        // Tab-bar [⚙] (#41) at the right edge, shown on hover (or settings open).
+        // Tab-bar [⚙] at the right edge, shown on hover (or settings open).
         if (showGrip || settings.Open)
         {
             float gearLeft = win.X + win.W - ChatWindow.GearW;
@@ -386,7 +384,7 @@ public static partial class WindowRenderer
         };
     }
 
-    /// <summary>A chrome-only frame for the ghost tab floating at the pointer during a tab drag (#42).
+    /// <summary>A chrome-only frame for the ghost tab floating at the pointer during a tab drag.
     /// Draws on top of everything (appended as the last frame in the publish array).</summary>
     public static RenderFrame BuildGhostTab(GlyphAtlas atlas, ChatWindow paletteWin,
                                             float x, float y, float w, string label)

@@ -6,42 +6,24 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #352: the content's own full-screen post chain -- the engine's <c>fsfbpostpr</c> program, framebuffer
-/// effect 2 of <c>Camera::DoFrameBufferEffects</c> @0x4a8eb0, which the M4 cutover dropped with
-/// RenderSinglePass -- hosted as one stage of the display-space stack. SoW's status overlay
-/// (<c>inc_postpr_stat</c>), grade, noir, sky rays and lens flare all live in the <c>inc_postpr</c> that
-/// chain includes, so this is what puts them back.
-/// <para>A <c>// $VANILLA inc_postpr</c> region is replaced by the resource chain's copy at build, so a hak or
-/// NWSync override of the chain is what runs; the stub between the markers is a pass-through. The environment
-/// ahead of the region stands in for
-/// <c>inc_common</c>/<c>inc_uniforms</c> the way <see cref="AlloyRenderer.VanillaEnvFs"/> does for the lit
-/// stage, under the ENGINE's names, so stock text drops in unedited; <see cref="Prepare"/> writes those
-/// names from Alloy's own values. Runs where the engine ran it: on the resolved, display-space frame.</para>
-/// <para><b>CX-93: this region is the stage's CONTENT HOOK, not an engine dependency.</b> Every option bit is
-/// stripped from <c>POSTPROCESSING_TYPES_ENABLED</c> (<see cref="MaskStripped"/>), so not one stock
-/// <c>inc_postpr_*</c> include compiles inside an Alloy program: sharpen and vibrance joined gamma and toon as
-/// stages of Alloy's own (<see cref="PostStack.SharpenStageFs"/>, <see cref="PostStack.VibranceStageFs"/>), and
-/// depth of field and dynamic contrast have vertex halves this fullscreen triangle does not run. What is left
-/// between the markers is whatever the CONTENT put in its own <c>inc_postpr</c>, which is the only reason the
-/// stage exists. A quality change still rebuilds the program, as the engine reloads its shaders on the
-/// option.</para>
+/// The content's own full-screen post chain -- the engine's <c>fsfbpostpr</c> program, framebuffer effect 2 of
+/// <c>Camera::DoFrameBufferEffects</c> @0x4a8eb0 -- hosted as one stage of the display-space stack, which is
+/// what puts a content repo's grade, noir, sky rays and status overlay back. A <c>// $VANILLA inc_postpr</c>
+/// region takes the resource chain's copy at build; the stub between the markers is a pass-through.
 /// </summary>
 internal static unsafe class FbPostStage
 {
-    /// <summary>The stage's resref (#92 override point), same rules as every stack stage.</summary>
+    /// <summary>The stage's resref (an override point), same rules as every stack stage.</summary>
     internal const string ShdFs = "cx_fbpost_fs";
     /// <summary><c>Camera::GetIsFBEffectEnabled(2)</c> @0x5a6530: bit 2 of <c>m_nFramebufferEffectsEnabled</c>.
     /// <c>ConfigureFBEffectPostProcessing</c> @0x66ad40 sets it from a LONG read at CClientOptions+0x118, i.e.
     /// option mask != 0 OR <c>run-shader-even-with-no-effects</c> (+0x11c) -- so it is the engine's own
     /// answer to "does the post program run this session".</summary>
     internal const uint EffectPost = 1u << 2;
-    /// <summary>The option bits stripped from the hosted text -- CX-93: ALL of them. DOF 0x02 and dynamic
-    /// contrast 0x04 have vertex halves this fullscreen triangle does not run; gamma 0x10, toon 0x20 and now
-    /// sharpen 0x01 and vibrance 0x08 are stages of Alloy's own. With the mask at 0 not one stock
-    /// <c>inc_postpr_*</c> include compiles inside an Alloy program, which is the whole of CX-93's fbpost
-    /// half: what is left between the markers is whatever the CONTENT put in its own <c>inc_postpr</c>.
-    /// <para>A content fork that gates its OWN passes on a mask bit would lose them; none does, and the
-    /// answer if one ever did is <c>CX_ALLOY</c>, the same contract as everywhere else.</para></summary>
+    /// <summary>The option bits stripped from the hosted text -- ALL of them. DOF 0x02 and dynamic contrast
+    /// 0x04 have vertex halves this fullscreen triangle does not run; gamma 0x10, toon 0x20, sharpen 0x01 and
+    /// vibrance 0x08 are stages of Alloy's own. With the mask at 0 not one stock <c>inc_postpr_*</c> include
+    /// compiles inside an Alloy program: what is left is whatever the CONTENT put in its <c>inc_postpr</c>.</summary>
     internal const int MaskStripped = 0x3f;   // not-an-offset: every inc_postpr.shd option bit
     /// <summary><c>GetGlobalShaderParami(7)</c>: the client's shader quality option, the preamble's
     /// <c>SHADER_QUALITY_MODE</c> (the same read <see cref="AlloyLights"/> makes for the subsurface term);
@@ -83,11 +65,9 @@ internal static unsafe class FbPostStage
     }
 
     /// <summary>From <see cref="PostStack.Run"/>, ahead of the stage draw: every engine name the chain reads,
-    /// from Alloy's values, onto this program: <c>m_proj</c> and the whole scriptable block through the
-    /// renderer's own upload, the rest by name. <c>sceneCurrentFrame</c> is Alloy's presented-frame counter,
-    /// not the engine's scene counter -- the chain only ever animates on it. Hot: allocates nothing. Also binds
-    /// a LINEAR sampler on the source unit (the stack's textures are NEAREST; rays, chromatic aberration and
-    /// the ink tap at fractional offsets), which Run unbinds after the draw.</summary>
+    /// from Alloy's values, onto this program. <c>sceneCurrentFrame</c> is Alloy's presented-frame counter, not
+    /// the engine's scene counter -- the chain only ever animates on it. Hot. Also binds a LINEAR sampler on
+    /// the source unit (the stack's textures are NEAREST), which Run unbinds after the draw.</summary>
     internal static void Prepare(uint src, uint prog, int* viewport)
     {
         if (prog != _prog)
@@ -123,9 +103,8 @@ internal static unsafe class FbPostStage
 
     /// <summary>The stage text: the environment the chain reads (inc_common/inc_uniforms as the fragment half
     /// of a post program sees them, under the engine's names), then the chain itself off the resource chain.
-    /// <c>inc_postpr</c> defines <c>POSTPROCESSING</c>/<c>LIGHTING</c>/<c>FOG</c> for itself, so none of those
-    /// are set here; <c>inc_lighting</c>/<c>inc_fog</c>, which it then includes, are the engine's forward
-    /// pipeline and are skipped -- no post term reads them.</summary>
+    /// <c>inc_postpr</c> defines <c>POSTPROCESSING</c>/<c>LIGHTING</c>/<c>FOG</c> for itself, so none are set
+    /// here; <c>inc_lighting</c>/<c>inc_fog</c> are the engine's forward pipeline and are skipped.</summary>
     internal static string FbPostFs => ShaderSource.Get("cx_fbpost_f.glsl");
 
     /// <summary>Off-device: the mask stripping is what the doc says, the gate is effect 2's bit, and the text
@@ -135,9 +114,9 @@ internal static unsafe class FbPostStage
         var check = new Checker(log);
         // CX-93: the point of the whole half. Whatever the chain answers with, no option bit reaches it, so
         // every stock inc_postpr_* include preprocesses away and only the content's own passes are compiled.
-        check.Expect(HostedMask(MaskStripped) == 0 && MaskStripped == 0x3f,
-          "no option bit inc_postpr.shd defines reaches the hosted text: not one stock post include compiles here");
-        check.Expect(EffectPost == 4u, "the gate is Camera::GetIsFBEffectEnabled(2)'s bit");
+        check.Expect(HostedMask(0x3f) == 0,
+          "every one of inc_postpr.shd's six option bits is stripped before the hosted text: not one stock post "
+          + "include compiles here");
         check.Expect(!FbPostFs.Contains("#define LIGHTING") && !FbPostFs.Contains("#define FOG") && !FbPostFs.Contains("#define POSTPROCESSING 1"),
           "inc_postpr's own defines are left to it");
         check.Expect(FbPostFs.Contains("// $VANILLA inc_postpr\n") && FbPostFs.Contains("vec4 FS_PostProcess() {"), "the region and its stub");

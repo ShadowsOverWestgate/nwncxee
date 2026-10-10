@@ -9,46 +9,10 @@ using CX.Ui;
 namespace CX.Services.Radial;
 
 /// <summary>
-/// The radial seam and the dropdown on it: skip <c>CRadialMenu::ActivateInternal</c>, take the engine-built
-/// tree, and show it as a <see cref="CascadeMenu"/> in one registered <see cref="Window"/> (CX-689..CX-691;
-/// <c>CX-162</c>). Every root builds its whole top ring and calls
-/// <c>Activate</c> last, so at the hook <c>this</c> is a complete root with its XY and target inside and no GUI
-/// modality engaged. A submenu row materializes its child through the engine's own lazy creator
-/// (<see cref="RadialTree.Materialize"/>) on click, Enter/Right or the hover dwell, never cached across opens;
-/// a leaf row invokes the engine triple (<see cref="RadialTree.Invoke"/>); every close tears the tree down.
-/// <para><b>One thread.</b> <c>Update(void*)</c> is the only caller of both the SDL pump and
-/// <c>CClientExoApp::MainLoop</c>, so the cold/hot split is about allocation, not races. <see cref="Draw"/> runs
-/// inside <c>CGuiMan::UpdateAndRender</c>, where the engine never builds a submenu, so a dwell request and a
-/// draw-time close (font re-bake, master off, module gone) are queued for <see cref="Service"/> at
-/// <c>PostPresent</c> -- same thread, after the present, before the next pump -- and <see cref="Draw"/> stays
-/// zero-alloc.</para>
-/// <para><b>Modality.</b> <see cref="Window.SuppressChords"/> is set exactly while the cascade is open: the pump's
-/// modal pass swallows every press, release, key and wheel before the engine queues a keybind. A press outside
-/// every level closes the menu and is consumed, as vanilla's captured-mouse radial eats it. Swallowing the opening
-/// right-up is best-effort: one pump batch can deliver the up before this hook opened anything -- harmless.</para>
-/// <para><b>Teardown.</b> Synchronous teardown inside the hook is safe: every <c>Activate</c> caller returns
-/// straight after the call or holds the menu only in a local it never reads again, and no global points at the
-/// root (the research note has the twelve-caller Ghidra audit). <see cref="Close"/> also runs on the area edge
-/// (<c>StartLoadBar</c>) for the tree held open under the cascade.</para>
-/// <para><b>Re-entry.</b> The keybind opener is gated on <c>InMenuMode()==0</c>, which stays true under CX, so a
-/// second open can arrive while a tree is held: the hook closes the cascade and releases the held root first
-/// (reason <c>reenter</c>). A hook firing from INSIDE a leaf handler forwards to vanilla (the tree on the stack
-/// must not be torn down under it), as does an open with <c>static_nMenuDepth != 0</c> (an engine menu's descent,
-/// whose child must not be freed under a live parent).</para>
-/// <para><b>Vanilla parity, deliberate divergences:</b> a click or dwell on a submenu row descends and invokes the
-/// slot's entry callback too, as <c>HandleMenuAction</c> does; a creator that declines leaves the row as it is; a
-/// click on a disabled row does nothing (vanilla closes the radial); a right press on a row is
-/// <see cref="CascadeActionKind.Context"/> and opens the row-action popup (CX-692).</para>
-/// <para><b>Layout.</b> Every list is composed from the engine's rows and the persisted <see cref="RadialPins"/>
-/// rows of the root kind (<see cref="ItemsFor"/>): hoists are walked from the root through
-/// <see cref="RadialTree.Materialize"/> (creator-only, never an entry) and validated against the leaf's raw
-/// <c>(fn, param)</c> -- a mismatch greys the row and <see cref="Leaf"/> refuses it; reorders fix a slot row's
-/// index in its list; hides drop it. Edits arrive by drag-and-drop or the row-action popup, a second
-/// <see cref="CascadeMenu"/> (<see cref="_ctx"/>) that takes every input while open; a change re-composes the
-/// touched level in place, closing the levels below. Walked children hang off the held root, so
-/// <see cref="Release"/> frees them with it. Folders are named top-list rows whose level lists the hoists filed in
-/// them (<see cref="FolderItems"/>); "Also show on" copies a hoist to another root kind (<see cref="ShowOn"/>),
-/// where the engine's own subtree at the same path resolves it with that root's target (CX-692, CX-694).</para>
+/// The radial seam and the dropdown on it: skip <c>CRadialMenu::ActivateInternal</c>, take the engine-built tree and
+/// show it as a <see cref="CascadeMenu"/> in one registered <see cref="Window"/>. Every root builds its whole top ring
+/// and calls <c>Activate</c> last, so at the hook <c>this</c> is a complete root with its XY and target inside and no
+/// GUI modality engaged; a submenu materializes lazily, never cached across opens, and every close tears the tree down.
 /// </summary>
 public sealed unsafe partial class RadialService : IExtenderService
 {
@@ -72,7 +36,7 @@ public sealed unsafe partial class RadialService : IExtenderService
     /// cleared at close, on the one thread; <see cref="Window.CapturesPointer"/> puts it ahead of the engine GUI.</summary>
     private static Window? _window;
     private static readonly CascadeMenu _menu = new();
-    /// <summary>The row-action popup (CX-692): open beside the row of <see cref="_ctxLevel"/>/<see cref="_ctxRow"/>.</summary>
+    /// <summary>The row-action popup: open beside the row of <see cref="_ctxLevel"/>/<see cref="_ctxRow"/>.</summary>
     private static readonly CascadeMenu _ctx = new();
     private static int _ctxLevel = -1, _ctxRow = -1;
     /// <summary>The kind of the held root, for the layout rows. ponytail: one vptr = one kind, so the self, other-creature,
@@ -87,12 +51,12 @@ public sealed unsafe partial class RadialService : IExtenderService
     /// <summary>The vanilla slot path of the menu behind each level: empty at the root, a hoisted submenu's child
     /// carries its pin's path. Reorders are keyed by it.</summary>
     private static readonly int[]?[] _levelPath = new int[CascadeMenu.MaxDepth][];
-    /// <summary>The folder a level lists (CX-694), null for an engine level. A folder level's menu handle is the root's:
+    /// <summary>The folder a level lists, null for an engine level. A folder level's menu handle is the root's:
     /// its rows are hoists, each walked from the root.</summary>
     private static readonly string?[] _levelFolder = new string?[CascadeMenu.MaxDepth];
     /// <summary>The popup's corner, for re-laying it while a name is typed.</summary>
     private static float _ctxX, _ctxY;
-    /// <summary>The name editor (CX-694): the popup shows one <c>Name: …</c> row while set; keys edit, Enter commits to
+    /// <summary>The name editor: the popup shows one <c>Name: …</c> row while set; keys edit, Enter commits to
     /// <see cref="NameEdit.Commit"/>, Esc or a press outside cancels. ponytail: ASCII from SDL keycodes (the pump
     /// already swallows every key while the cascade is open); SDL_TEXTINPUT and the keyboard-owner path are the upgrade.</summary>
     private static NameEdit? _naming;
@@ -100,11 +64,10 @@ public sealed unsafe partial class RadialService : IExtenderService
     /// <summary>A popup child row: a folder pick (<see cref="Name"/> "" = the top list) or a new folder to name.</summary>
     private sealed record FolderPick(string Name, bool New);
     private const int NameMax = 24;
-    /// <summary>The root kinds "Also show on" offers (CX-694): the world roots whose slot 1 builds the caster's own
-    /// <c>CClientSpellMenu</c> (verified: <c>CreateClientSpellMenu</c> @0x73b360, <c>CGuiPlaceableMenu::CreateMenuByID</c>
-    /// @0x7ecc30, <c>CGuiDoorMenu::CreateMenuByID</c> @0x7569f0, <c>CNWCTile::CreateMenuByID</c> @0x80c160; read on the
-    /// Linux program only -- the Windows twins are unexported and were not read, nothing here calls them). The item
-    /// root's slot 1 is the item's own spell list, the quickbar and chat roots have no target: not offered.</summary>
+    /// <summary>The root kinds "Also show on" offers: the world roots whose slot 1 builds the caster's own
+    /// <c>CClientSpellMenu</c> (<c>CreateClientSpellMenu</c> @0x73b360, <c>CGuiPlaceableMenu::CreateMenuByID</c>
+    /// @0x7ecc30, <c>CGuiDoorMenu::CreateMenuByID</c> @0x7569f0, <c>CNWCTile::CreateMenuByID</c> @0x80c160). The item
+    /// root's slot 1 is the item's own spell list, and the quickbar and chat roots have no target: not offered.</summary>
     private static readonly (RootKind Kind, string Label)[] ShowOnKinds =
         { (RootKind.Creature, "Creatures"), (RootKind.Placeable, "Placeables"), (RootKind.Door, "Doors"), (RootKind.Plain, "Ground") };
     private static VertexBatch? _batch, _ctxBatch;
@@ -117,7 +80,7 @@ public sealed unsafe partial class RadialService : IExtenderService
     private static string? _deferClose;
 
     private enum RowAction { PinToTop = 1, Unpin, MoveUp, MoveDown, Hide, Unhide, Reset, MoveTo, ShowOn, Rename, RemoveFolder, Everywhere }
-    /// <summary>The root kinds "Show everywhere (as self)" pins on: every root with a target of its own (CX-694).</summary>
+    /// <summary>The root kinds "Show everywhere (as self)" pins on: every root with a target of its own.</summary>
     private static readonly RootKind[] EverywhereKinds = { RootKind.Creature, RootKind.Placeable, RootKind.Door, RootKind.Item, RootKind.Plain, RootKind.Trap };
     private const int LoadBarPriority = 50;
     private const int ServicePriority = 40;
@@ -176,6 +139,10 @@ public sealed unsafe partial class RadialService : IExtenderService
     /// synchronous <c>ActivateRadialMenu</c> by a CX window the engine does not see the pointer over (the inventory).</summary>
     internal static (int X, int Y)? OpenAt;
 
+    /// <summary>The seam. Anything this cannot own forwards to vanilla intact: the master off, the rot latch, a hook
+    /// that threw, an open from INSIDE a leaf handler (the tree on the stack must not be torn down under it) and an
+    /// open with <c>static_nMenuDepth != 0</c> (an engine menu's descent, whose child must not be freed under a live
+    /// parent). A second open while a tree is held closes the cascade and releases that root first.</summary>
     [UnmanagedCallersOnly]
     private static void OnActivateInternal(IntPtr menu)
     {
@@ -244,11 +211,10 @@ public sealed unsafe partial class RadialService : IExtenderService
 
     private static void Forward(IntPtr menu) { if (_orig != null) _orig(menu); }
 
-    /// <summary>The first-open layout latch. No <c>CRadialMenu</c> row carries an <c>Expect</c> (the auto-delete byte
-    /// has unwritten neighbours), so <c>EngineLayout.Probe</c> would pass vacuously; assert what a fresh root must
-    /// hold instead: every root sets <c>m_bAutoDelete = 1</c> before <c>Activate</c>, and <c>m_pParent</c> (+0x358) /
-    /// the refcount (+0x874) are zeroed by the ctor @0x583460 and written only by <c>HandleMenuAction</c> /
-    /// <c>CreateSubMenu</c> on a descent, which never happened.</summary>
+    /// <summary>The first-open layout latch. No <c>CRadialMenu</c> row carries an <c>Expect</c>, so
+    /// <c>EngineLayout.Probe</c> would pass vacuously; assert what a fresh root must hold instead: <c>m_bAutoDelete =
+    /// 1</c> before <c>Activate</c>, with <c>m_pParent</c> (+0x358) and the refcount (+0x874) zeroed by the ctor
+    /// @0x583460 and written only by <c>HandleMenuAction</c> / <c>CreateSubMenu</c> on a descent.</summary>
     private static bool RootLooksRight(IntPtr menu)
     {
         var m = new CRadialMenu(menu);
@@ -509,23 +475,22 @@ public sealed unsafe partial class RadialService : IExtenderService
         Invoke(parent, level, slot, _menu.Level(level).Items[row].Label);
     }
 
-    /// <summary>The one-row list an empty submenu opens (CX-694): disabled, null tag, so every input on it is inert.</summary>
+    /// <summary>The one-row list an empty submenu opens: disabled, null tag, so every input on it is inert.</summary>
     private static readonly CascadeItem[] NoActions = { new("No actions", disabled: true) };
     private static CascadeItem[] OrEmpty(CascadeItem[] items) => items.Length > 0 ? items : NoActions;
 
-    // ---- layout (CX-692; cold) -----------------------------------------------------------------
+    // ---- layout (cold) -------------------------------------------------------------------------
 
     /// <summary>The rows of the engine menu at <paramref name="path"/> under the layout: the vanilla rows less this
-    /// list's hides (never all of them: a list that would empty shows every row) and -- at the root -- the slots filed
-    /// in a folder, the root kind's reorders for this list, and -- at the root -- its hoists, each walked from the root through the
-    /// engine's creators (a repeat step returns the child already made), read at the leaf and validated; a declined
-    /// step or a mismatch yields the greyed row. Composed by <see cref="RadialPins.Compose"/>.</summary>
+    /// list's hides (never all of them: a list that would empty shows every row) and the slots filed in a folder, plus
+    /// this list's reorders and -- at the root -- its hoists, each walked from the root through the engine's creators
+    /// and validated at the leaf; a declined step or a mismatch yields a greyed row (<see cref="RadialPins.Compose"/>).</summary>
     private static CascadeItem[] ItemsFor(IntPtr menu, int[] path)
     {
         CascadeItem[] vanilla = RadialTree.BuildItems(menu);
         if (path.Length == 0 && _log != null)
         {
-            CascadeItem hdr = RadialIcons.HeaderItem(menu, _kind, _log);   // CX-693: the item's own composite icon, null tag = no row
+            CascadeItem hdr = RadialIcons.HeaderItem(menu, _kind, _log);   // the item's own composite icon, null tag = no row
             if (hdr.Label != null) { var w = new CascadeItem[vanilla.Length + 1]; w[0] = hdr; vanilla.CopyTo(w, 1); vanilla = w; }
         }
         var rows = RadialPins.ForList(_kind, path);
@@ -585,7 +550,7 @@ public sealed unsafe partial class RadialService : IExtenderService
             new RadialRowTag { Menu = m, Slot = leaf.Index, Pin = pin, Valid = true });
     }
 
-    /// <summary>A folder's rows (CX-694): its member hoists, each resolved from the held root, and its filed top-level
+    /// <summary>A folder's rows: its member hoists, each resolved from the held root, and its filed top-level
     /// slots, each the root's own row (greyed when this root has no such slot), in the position model.</summary>
     private static CascadeItem[] FolderItems(string folder)
     {
@@ -616,7 +581,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         return n;
     }
 
-    /// <summary>The list without the row of vanilla slot <paramref name="slot"/> (a hidden row, CX-694).</summary>
+    /// <summary>The list without the row of vanilla slot <paramref name="slot"/>: a hidden row.</summary>
     private static CascadeItem[] Without(CascadeItem[] items, int slot)
     {
         int i = Array.FindIndex(items, it => it.Tag is int s && s == slot);
@@ -627,14 +592,10 @@ public sealed unsafe partial class RadialService : IExtenderService
         return r;
     }
 
-    /// <summary>Right press on a row: the row-action popup at the row's right edge. Pin to top (a top-level row
-    /// reads Move to top: a reorder at 0), Unpin (a hoist, or the vanilla row a hoist mirrors), Move up / Move down
-    /// within the row's list, Hide (a vanilla row outside a folder; never the list's last one, so a list cannot be
-    /// emptied), Move to ▸ (the folders and a new one: a hoist or a filed slot is refiled, a deeper vanilla row becomes
-    /// a hoist, a top-level one a filed reorder), Also show on ▸ (the same row pinned on another root kind, CX-694; a
-    /// top-level slot as self only), Show hidden (when the list has any), Reset layout for this root kind (one
-    /// press). A folder row: Rename, Move up / down, Remove folder. A header row has no popup, nor does an
-    /// unclassified root (its rows would have no kind to be filed under).</summary>
+    /// <summary>Right press on a row: the row-action popup at the row's right edge -- Pin to top (a top-level row
+    /// reads Move to top), Unpin, Move up / down within the row's list, Hide (never the list's last row, so a list
+    /// cannot be emptied), Move to ▸, Also show on ▸ (a top-level slot as self only), Show hidden, Reset layout for
+    /// this root kind; a folder row gets Rename, Move up / down, Remove. No popup on a header or unclassified root.</summary>
     private static void OpenContext(int level, int row)
     {
         GlyphAtlas? atlas = _atlas;
@@ -752,7 +713,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         return new RadialPin { Root = _kind, Path = path, Fn = fn, Param = leaf.Param, Label = RadialPins.Breadcrumb(crumb), Icon = leaf.Icon };
     }
 
-    /// <summary>"Also show on" (CX-694): the popup row pinned at the top of <paramref name="kind"/>'s list with the
+    /// <summary>"Also show on": the popup row pinned at the top of <paramref name="kind"/>'s list with the
     /// same path and validator; the engine builds the same subtree under that root with its own target and greys the
     /// leaf itself when that target is not a valid one (<c>TargetIsValid</c> → <c>DisableEntry</c> in the spell
     /// creators). A row already pinned there is left alone.</summary>
@@ -778,7 +739,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         return SelfActions.KeyOf(leaf);
     }
 
-    /// <summary>"Show everywhere (as self)" (CX-694): one self pin at the top of every <see cref="EverywhereKinds"/>
+    /// <summary>"Show everywhere (as self)": one self pin at the top of every <see cref="EverywhereKinds"/>
     /// list, this root's included (Creature is every other creature's menu too); a walked hoist already at the path
     /// turns into the self pin where it sits. Fired on a stand-in of the self menu wherever it is, as the self menu
     /// would fire it.</summary>
@@ -807,7 +768,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         Relayout(0, -1);
     }
 
-    /// <summary>"Move to" (CX-694): the popup row into folder <paramref name="folder"/> ("" = the top list) at its top.</summary>
+    /// <summary>"Move to": the popup row into folder <paramref name="folder"/> ("" = the top list) at its top.</summary>
     private static void MoveTo(string folder)
     {
         int level = _ctxLevel, row = _ctxRow;
@@ -817,7 +778,7 @@ public sealed unsafe partial class RadialService : IExtenderService
 
     /// <summary>The row's fileable pin: <see cref="PinOf"/>, else a top-level slot's reorder (the one it has, or a new
     /// one carrying its label for the greyed row) -- the slot files into a folder as a reorder with <c>in</c> and
-    /// leaves the top list (CX-694). Null for a folder row or a header.</summary>
+    /// leaves the top list. Null for a folder row or a header.</summary>
     private static RadialPin? FiledOf(int level, int row, out bool existing)
     {
         RadialPin? pin = PinOf(level, row, out existing);
@@ -890,7 +851,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         ShowName();
     }
 
-    /// <summary>A drop (CX-694): into a gap of the row's own list is a reorder to that index; a deeper row into a
+    /// <summary>A drop: into a gap of the row's own list is a reorder to that index; a deeper row into a
     /// gap of the top list is a hoist there; any other pairing is nothing.</summary>
     private static void DropRow(int level, int row, int toLevel, int toIndex)
     {
@@ -986,8 +947,9 @@ public sealed unsafe partial class RadialService : IExtenderService
         TextRig.DrawBatch(cb.AsSpan(), cb.VertexCount);
     }
 
-    /// <summary>PostPresent: serve what <see cref="Draw"/> queued -- a close, else one dwell descent. Nothing to do
-    /// on an idle frame.</summary>
+    /// <summary>PostPresent: serve what <see cref="Draw"/> queued -- a close, else one dwell descent. The draw runs
+    /// inside <c>CGuiMan::UpdateAndRender</c>, where the engine never builds a submenu, so both are queued for here
+    /// instead -- same thread, after the present, before the next pump -- and the draw itself stays zero-alloc.</summary>
     private static void Service()
     {
         if (!_menu.Open) return;

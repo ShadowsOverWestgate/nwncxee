@@ -6,20 +6,13 @@ using CX.Alloy.Mdl;
 namespace CX.Alloy.Db;
 
 /// <summary>The skin palettes: <c>SkinDef</c>'s bind arrays plus the DB pose columns into 64-bone matrices,
-/// written straight into the renderer's bone stage. A port of <c>Alloy/Scene/SkinPose.cs</c> -- itself the
-/// transcription of <c>RenderSkinned</c> @0x482c70, <c>GatherBones</c> @0x482b10 and the matrix half of
-/// <c>ExecuteSkinGPU</c> @0x482800 -- with the part-tree walk replaced by a column walk.
-/// <para><b>What the port deletes.</b> The engine gathered the WHOLE creature tree once per SKINNED PART,
-/// because the gathered transforms are in that part's own space; and it needed a lazy
-/// <c>PartSkin::PostProcess</c> to have built the bind arrays, which nothing re-drove once Alloy stopped
-/// drawing the part (#284's permanent hole). Here the bind arrays are the parsed <see cref="SkinDef"/> -- they
-/// exist before the object does -- and the gather is one pass over the object's part range with the
-/// skinmesh's own inverse applied, so the "unprepared skinmesh" refusal cannot arise.</para>
-/// <para>Buffer layout: <c>Db/DbPose.LAYOUT.md</c>.</para></summary>
+/// written straight into the renderer's bone stage. Transcribed from <c>RenderSkinned</c> @0x482c70,
+/// <c>GatherBones</c> @0x482b10 and the matrix half of <c>ExecuteSkinGPU</c> @0x482800, with the part-tree
+/// walk replaced by a column walk. Buffer layout: <c>Db/DbPose.LAYOUT.md</c>.</summary>
 public static unsafe partial class DbAnim
 {
-    /// <summary>Bone slots a palette addresses, matching <c>AlloyRenderer.BoneCount</c>.</summary>
-    private const int BoneCount = 64;
+    /// <summary>Bone slots a palette addresses: the renderer's own stride, not a second copy of it.</summary>
+    private const int BoneCount = AlloyRenderer.BoneCount;
     private static int _skinned, _skinNoBind, _skinNoSlot;
     private static bool _skinNoSlotSaid;
 
@@ -145,12 +138,10 @@ public static unsafe partial class DbAnim
         return true;
     }
 
-    /// <summary>The record whose model a compiled bone map indexes. <c>RenderSkinned</c> climbs Part+0x48 to the
-    /// TOPMOST part of the one part tree and <c>GatherBones</c> walks that root's own model, so a slot names a
-    /// node of the body skeleton for anything <c>Gob::Append</c> grafted (<see cref="SeamFlag.Composed"/>) --
-    /// TDN's 2-node body parts skinned straight to pmh0 -- and of the record itself for a separately attached
-    /// gob (a robe, a cloak), whose tree is its own. The ASCII slot list was resolved by name against its own
-    /// model already, so callers use this for the map form only.</summary>
+    /// <summary>The record whose model a compiled bone map indexes. <c>RenderSkinned</c> climbs Part+0x48 to
+    /// the TOPMOST part of the one part tree and <c>GatherBones</c> walks that root's own model, so a slot
+    /// names a node of the body skeleton for anything <c>Gob::Append</c> grafted
+    /// (<see cref="SeamFlag.Composed"/>) and of the record itself for a separately attached gob.</summary>
     private static DbId TreeRoot(DbId obj)
     {
         DbId root = obj;
@@ -187,9 +178,7 @@ public static unsafe partial class DbAnim
     /// <summary>
     /// The inverse bind pose a compiled binary does not carry, derived once per <see cref="SkinDef"/> from the
     /// model's REST pose: the matrix that takes a bone's rest world back into the skinmesh's rest space, so a
-    /// creature standing in its rest pose gets the identity for every slot and deforms from there. This is
-    /// <c>PartSkin::PostProcess</c>'s step, done against the model instead of the instantiated tree -- the
-    /// node transforms are the same ones the tree is built from.
+    /// creature in its rest pose gets the identity for every slot and deforms from there.
     /// </summary>
     private static Matrix4x4[]? DerivedBind(ModelDef model, int meshNode, SkinDef skin, int[] map, int slots,
                                             bool isMap)

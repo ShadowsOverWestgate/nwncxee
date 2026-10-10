@@ -2,12 +2,10 @@ using CX.Alloy.Mdl;
 
 namespace CX.Alloy.Db;
 
-/// <summary>The part walk: what <c>Part::Animate</c> @0x49ad00 and its one real override are for.
-/// <para>The engine's walk existed to find the parts whose <c>Animate</c> is NOT the plain recursion -- one
-/// indirect call per part to discover that nearly none of them do anything (<c>Alloy/Anim/PartWalk.cs</c> has
-/// the sweep that proves it: only <c>PartDanglyMesh::Animate</c> @0x49bbb0 overrides it meaningfully, and
-/// <c>PartEmitter::Animate</c> is a tail-jump into the base). In DB mode the question is answered by the node's
-/// kind, read off a column, so a creature with no dangly part costs one pass over one byte array.</para></summary>
+/// <summary>The part walk: what <c>Part::Animate</c> @0x49ad00 and its one real override are for. The engine
+/// spends one indirect call per part to find the parts whose <c>Animate</c> is not the plain recursion, and
+/// only <c>PartDanglyMesh::Animate</c> @0x49bbb0 overrides it meaningfully. Here the node's kind answers that
+/// off a column, so an object with no dangly part costs one pass over one byte array.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>Animate <paramref name="obj"/>'s parts: the dangly solve where a part has one, and nothing
@@ -16,9 +14,7 @@ public static unsafe partial class DbAnim
     private static void PartWalk(DbId obj)
     {
         int i = obj.Index;
-        // The tree fact, scanned once per part range instead of per step: an object with no dangly part --
-        // every tile, every placeable, nearly every creature -- used to walk its whole range here every frame
-        // to discover that.
+        // The tree fact, scanned once per part range instead of per step.
         if (!_hasDangly[i] || !Dangly.Enabled.V) return;
         int first = SceneDb.ObjPartFirst[i], n = SceneDb.ObjPartCount[i];
         if (n <= 0 || _danglyDt <= 0f) return;

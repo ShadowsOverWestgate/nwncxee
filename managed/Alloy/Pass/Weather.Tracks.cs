@@ -7,18 +7,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>Footsteps in the weather. A creature's real foot contact -- <c>CNWCCreature::PlayFootstep</c>, which
-/// <see cref="Services.Anim.Footfall"/> forwards whether the model's <c>snd_Footstep</c> event or the pose layer's
-/// contact test raised it -- presses a print into lying snow and kicks a splash off ground the rain wet.
-/// <para>Prints: one world-tiling RGBA32F texture the CPU stamps into (x depth, y when pressed, zw which repeat
-/// of the tile the print belongs to, so a print from one period away never shows through). Only the stamped
-/// rows go up, once per lit bind that finds them dirty; the lit splice (<c>cx_wx_track</c>) thins and dents the
-/// snow under them, and they refill over <see cref="TrackFill"/>.</para>
-/// <para>Splashes: the last <see cref="FootMax"/> wet footfalls ride the rain-splash draw as extra crowns, each
-/// gated on the GPU by the area wetness map at the foot -- nothing under a roof, a flick on damp stone, a sheet
-/// out of standing water -- so they carry on after the rain stops, until the ground dries.</para>
-/// <para>ponytail: the hook and the draw share these arrays with no fence: both run on the game thread while
-/// <see cref="Db.RenderThread"/> is refused. Double-buffer them if the render thread ever starts.</para></summary>
+/// <summary>Footsteps in the weather: a creature's real foot contact presses a print into lying snow and kicks
+/// a splash off ground the rain wet. Prints go into one world-tiling RGBA32F texture the CPU stamps into, only
+/// the dirty rows uploaded; splashes ride the rain-splash draw, gated on the GPU by the area wetness map.
+/// ponytail: hook and draw share these arrays with no fence -- double-buffer if a render thread ever starts.</summary>
 internal static unsafe partial class Weather
 {
     /// <summary>Texels across the track texture, and the metres it repeats over: 2.5 cm a texel. Pinned to
@@ -120,11 +112,10 @@ internal static unsafe partial class Weather
         }
     }
 
-    /// <summary>Stamp one print into <paramref name="t"/>. A texel of the same tile repeat takes it where it is at
-    /// least as deep as what the texel still shows (an older print, faded by <paramref name="rate"/>); a texel
-    /// holding another repeat's print takes it only when that print has faded or lies farther from
-    /// <paramref name="focus"/> -- so a step one period away never erases the trail at the player's feet. The rows
-    /// touched widen <paramref name="lo"/>..<paramref name="hi"/> (unwrapped).</summary>
+    /// <summary>Stamp one print into <paramref name="t"/>. A texel of the same tile repeat takes it where it is
+    /// at least as deep as what the texel still shows; one holding another repeat's print takes it only when
+    /// that print has faded or lies farther from <paramref name="focus"/>, so a step one period away never
+    /// erases the trail at the player's feet. The rows touched widen <paramref name="lo"/>..<paramref name="hi"/>.</summary>
     internal static void Print(float[] t, Vector2 at, Vector2 h, float now, float rate, Vector2 focus, ref int lo, ref int hi)
     {
         const float tpm = TrackSize / TrackPeriodM;

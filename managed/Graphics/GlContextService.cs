@@ -6,17 +6,10 @@ using CX.Framework;
 namespace CX.Graphics;
 
 /// <summary>
-/// #80 (map #68, spec #77 M1): owns the share-listed GL 4.6 core context on the engine's drawable --
-/// the promotion of the #70 probe. Created once on the first presented frame (the render thread has the
-/// engine's 3.3 context current there); clean failure path disables the service and leaves the engine
-/// untouched. Every in-play frame it runs the context-switch bracket: fence the engine's commands,
-/// switch to the 4.6 context, server-wait the fence, drain <c>glGetError</c>, fence back, switch to the
-/// engine context, server-wait, drain again -- 2 switches/frame, proving zero GL errors and no state
-/// leakage in live play. Per #70: buffers/fences share, VAOs do not -- own 4.6-side VAOs are the
-/// tracer-draw ticket's job, done inside the bracket via <see cref="Available"/>/<see cref="Context"/>.
-/// <para>Opt-out: <c>alloy.gl46=0</c> in <c>cx.cfg</c> (ADR 0013 bucket 2 -- the capability gate is
-/// decided before the context is probed). Hot path allocates nothing (cached fn pointers, GL fence objects
-/// only); the ~900-frame stats line is the sole cold part.</para>
+/// Owns the GL 4.6 core context, share-listed with the engine's and on the engine's own drawable; created
+/// on the first presented frame, and any failure disables the service and leaves the engine untouched.
+/// Every in-play frame it brackets the present -- fence, switch, server-wait, drain <c>glGetError</c>, and
+/// the reverse back. Buffers and fences share between the two; VAOs do not. Knob <c>alloy.gl46</c>.
 /// </summary>
 public sealed unsafe class GlContextService : IExtenderService
 {
@@ -41,15 +34,10 @@ public sealed unsafe class GlContextService : IExtenderService
                        GL_DEBUG_TYPE_PORTABILITY = 0x824F, GL_DEBUG_TYPE_PERFORMANCE = 0x8250;
     private const int DebugIds = 64, DebugLines = 200;
 
-    /// <summary><c>alloy.gldebug=1</c> in <c>cx.cfg</c>: create the 4.6 context as a DEBUG context and route
-    /// KHR_debug messages into the extender log. This is the only channel undefined behaviour reaches --
-    /// <c>glGetError</c> has no code for it, and a non-debug context "may have zero debug output" (KHR_debug).
-    /// Mesa reports a great deal here that NVIDIA never mentions, which is the point: the tester's driver
-    /// gets to say what it objects to (CX-157, E1). Synchronous, so the
-    /// callback runs on this thread inside the offending call. ERROR and UNDEFINED_BEHAVIOR messages are
-    /// logged every time (Mesa files EVERY API error under one id, so an id is not an identity there), up to
-    /// <see cref="DebugLines"/> per session; the other types log their first sighting per id. An allocation
-    /// per logged line, accepted under the gate. Totals go on the [gl46] line.</summary>
+    /// <summary><c>alloy.gldebug=1</c>: create the 4.6 context as a DEBUG context and route KHR_debug messages
+    /// into the extender log -- the only channel undefined behaviour reaches, as <c>glGetError</c> has no code
+    /// for it. Synchronous: the callback runs inside the offending call. ERROR and UNDEFINED_BEHAVIOR log every
+    /// time (Mesa files every API error under ONE id) up to <see cref="DebugLines"/>; other types once per id.</summary>
     private static bool _debug;
     /// <summary><c>alloy.gldebug=1</c>: the passes may spend on per-call validation the release path skips.</summary>
     internal static bool Debug => _debug;
@@ -61,7 +49,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <summary>The GLX handle of the 4.6 core context (valid while <see cref="Available"/>).</summary>
     public static IntPtr Context;
 
-    /// <summary>#216: <c>alloy.gl46=0</c> -- a CHOICE, not a verdict about the device. Kept
+    /// <summary><c>alloy.gl46=0</c> -- a CHOICE, not a verdict about the device. Kept
     /// apart from <c>_disabled</c>, which <see cref="Fail"/> also sets, or the frame verdict would report
     /// every driver failure as a config opt-out.</summary>
     public static bool OptedOut { get; private set; }
@@ -78,7 +66,7 @@ public sealed unsafe class GlContextService : IExtenderService
     private static delegate* unmanaged<IntPtr, uint, ulong, void> _waitSync;
     private static delegate* unmanaged<IntPtr, void> _deleteSync;
     private static delegate* unmanaged<void> _flush;
-    /// <summary>#456: the <c>alloy.glsync=1</c> ordering primitive. <c>glFinish</c> is the only barrier that is
+    /// <summary>The <c>alloy.glsync=1</c> ordering primitive. <c>glFinish</c> is the only barrier that is
     /// unconditionally correct across two contexts sharing one drawable -- it returns when the commands have
     /// actually EXECUTED, where the fence pair only promises the GPU will order them. Costs a full pipeline
     /// stall per switch, so it is the diagnosis and, if it is also the cure, a decision to take deliberately.</summary>
@@ -86,12 +74,10 @@ public sealed unsafe class GlContextService : IExtenderService
 
     private static int _frames, _err46, _errEng, _switchFails;
 
-    /// <summary>#324: GPU span of the frame's Alloy work -- t0 at the first Enter, t1 re-stamped at every
-    /// Leave, so the pair brackets the shadow bake through the colour frame on the GPU timeline. NOT the
-    /// frame's GPU time: engine GL outside the brackets (2D UI, present) is excluded and idle gaps inside
-    /// them are included. Read beside the CPU [zones] line and the [alloy] elapsed queries: span far above
-    /// the elapsed sum means the GPU idled on the CPU; frame period minus span bounds the headroom the
-    /// GPU-side moves (#1-#4) spend into.</summary>
+    /// <summary>GPU span of the frame's Alloy work -- t0 at the first Enter, t1 re-stamped at every Leave, so
+    /// the pair brackets the shadow bake through the colour frame on the GPU timeline. NOT the frame's GPU
+    /// time: engine GL outside the brackets (2D UI, present) is excluded and idle gaps inside them are
+    /// included. Span far above the [alloy] elapsed sum means the GPU idled on the CPU.</summary>
     private static GpuStamp _span;
     private static bool _stamped;
 
@@ -106,20 +92,20 @@ public sealed unsafe class GlContextService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        // #170: the 4.6-context bracket wraps the present, so it is the LAST pre-present participant.
+        // the 4.6-context bracket wraps the present, so it is the LAST pre-present participant.
         FrameRegistry.Global.Register(FramePhase.PrePresent, 10, OnFrame, "GlContextService.bracket", log);
         // Restart knob: Boot, not V -- the context decision is this session's.
         _disabled = !CX.Alloy.Renderer.Gl46.Boot;
         OptedOut = _disabled;
         _debug = CX.Alloy.Renderer.GlDebug.Boot;
-        // #456: does the 4.6 context's DEFAULT FRAMEBUFFER address the same surface the engine presents?
+        // does the 4.6 context's DEFAULT FRAMEBUFFER address the same surface the engine presents?
         // On GLX both contexts name one drawable and the question never arises. Under WGL the pairing is
         // Wine's to make, and if the two contexts track their own back buffer against a shared chain, the
         // owned frame lands in whichever one Alloy happens to hold -- half the presents, which reads as a
         // black frame every other frame. One pixel read either side of the switch answers it; the read
         // stalls the pipeline, so it is a knob and it stops on its own.
         _swapProbe = CX.Alloy.Renderer.SwapProbe.Boot;
-        // #456: how the bracket orders the two contexts against one drawable. 0 = the fence pair
+        // how the bracket orders the two contexts against one drawable. 0 = the fence pair
         // (glFenceSync/glWaitSync, a GPU-side wait that costs nothing on the CPU). 1 = glFinish, which
         // stalls until the work is done. If the black frames go away at 1, the frames were racing the
         // present and the fence pair is not the barrier this drawable needs on this platform.
@@ -133,7 +119,7 @@ public sealed unsafe class GlContextService : IExtenderService
     [DllImport("libdl.so.2")] private static extern IntPtr dlsym(IntPtr handle, string name);
     private static IntPtr Dl(string n) => dlsym(IntPtr.Zero, n);
 
-    /// <summary>#455: the WGL mirror of the GLX handles above. Lazy-bound like <c>libdl.so.2</c> is on
+    /// <summary>The WGL mirror of the GLX handles above. Lazy-bound like <c>libdl.so.2</c> is on
     /// Windows, so neither import is resolved on the platform that never calls it. There is no FBConfig
     /// step: the window's pixel format is already set by the engine.</summary>
     [DllImport("opengl32.dll")] private static extern IntPtr wglGetCurrentDC();
@@ -166,12 +152,10 @@ public sealed unsafe class GlContextService : IExtenderService
     [UnmanagedCallersOnly]
     private static int XErrorNoop(IntPtr dpy, IntPtr ev) => 0;   // default handler exits the client
 
-    /// <summary><see cref="InBracket"/>'s work has already run this frame, in some other bracket. This is the
-    /// only reason the health bracket may stand down, and it is about the WORK, not about the bracket: it used
-    /// to be set by <see cref="Leave"/>, i.e. by anyone entering the context at all, and <c>GuiPass</c>'s GUI
-    /// flush enters every frame from the second present onwards (main menu included) without doing the work --
-    /// so the health bracket ran once per session and #211/#212's deletes were never issued in the states those
-    /// tickets exist for.</summary>
+    /// <summary><see cref="InBracket"/>'s work has already run this frame, in some other bracket -- the only
+    /// reason the health bracket may stand down. It tracks the WORK, not the bracket: <c>GuiPass</c>'s GUI
+    /// flush enters the context every frame (main menu included) without doing the work, so a flag set by
+    /// mere entry would stand the health bracket down for the session and never issue the deferred deletes.</summary>
     private static bool _workRan;
     /// <summary>Some bracket closed this frame (the old <c>_worked</c>). Diagnostic only -- it is what
     /// separates "the health bracket had the frame to itself" from "a foreign bracket ran and left the work
@@ -198,9 +182,9 @@ public sealed unsafe class GlContextService : IExtenderService
         _span.Rotate(); _stamped = false;
     }
 
-    /// <summary>#211/#212's contract, with no context and no GL: the per-frame flag means THE WORK RAN, not
-    /// "a bracket was entered". A foreign bracket must leave the work owed, running it must not run it twice,
-    /// and the frame boundary must owe it again.</summary>
+    /// <summary>The flag's contract, asserted with no context and no GL: the per-frame flag means THE WORK
+    /// RAN, not "a bracket was entered". A foreign bracket must leave the work owed, running it must not run
+    /// it twice, and the frame boundary must owe it again.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         Action? savedWork = InBracket;
@@ -226,9 +210,8 @@ public sealed unsafe class GlContextService : IExtenderService
 
     /// <summary>Work that needs A context but not the Alloy pass: the health bracket runs every in-play frame
     /// whether or not anything drew, so it is the one place a resource retired while Alloy is stood down can
-    /// still be freed. #211's texture deletes hang here -- otherwise a module unload back to the
-    /// main menu, or the permanent disarm latch would hold the whole owned texture set for the session,
-    /// because the colour bracket returns before <c>Enter</c> forever in those states.</summary>
+    /// still be freed. The owned texture deletes hang here -- a module unload back to the main menu, or the
+    /// permanent disarm latch, would otherwise hold the whole owned texture set for the session.</summary>
     public static Action? InBracket;
 
     private static void Fail(string why)
@@ -239,7 +222,7 @@ public sealed unsafe class GlContextService : IExtenderService
     }
 
     /// <summary>Create the 4.6 core context share-listed with the engine's, on the engine's own
-    /// drawable (the #70 recipe). Cold, one-shot; any missing piece is a clean disable.</summary>
+    /// drawable. Cold, one-shot; any missing piece is a clean disable.</summary>
     private static void Create()
     {
         var log = _log!;
@@ -255,7 +238,7 @@ public sealed unsafe class GlContextService : IExtenderService
         var getString = (delegate* unmanaged<uint, byte*>)GP("glGetString");
         if (_fenceSync == null || _waitSync == null || _deleteSync == null || _flush == null)
         { Fail("a GL entry point did not resolve"); return; }
-        // CX-44: the one DSA stand-down (docs/alloy-refusals.md #7). The ENGINE's context is current here and is
+        // the one DSA stand-down (docs/alloy-refusals.md). The ENGINE's context is current here and is
         // asked too, since the decode/drip edits run in it and GLX pointers alone prove nothing. It is asked for
         // the extension, not the version: NVIDIA reports a requested 3.3 context as 3.3 yet exposes DSA in it.
         int major = 0, minor = 0;
@@ -368,7 +351,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <see cref="Leave"/> before returning to engine code.</summary>
     public static bool Enter()
     {
-        // CX-188: the thread that HOLDS the context has it current for the whole session, so its bracket is
+        // the thread that HOLDS the context has it current for the whole session, so its bracket is
         // already open and there is nothing to switch. Said true so every pass site -- BeginOwnedFrame, the
         // GUI flush, the atlas pump -- works unchanged on the render thread; without it Enter refuses on
         // _heldElsewhere and the GUI reads "a flush could not enter the 4.6 context" on every frame.
@@ -417,9 +400,7 @@ public sealed unsafe class GlContextService : IExtenderService
         if (_finish != null) _finish();
     }
 
-    /// <summary>Close the bracket: drain glGetError on the 4.6 side (an error can never leak across the
-    /// boundary unnoticed), fence, switch back to the engine context, server-wait, drain again.</summary>
-    /// <summary>#456: frames of <c>swapprobe</c> left. The probe reads the SAME pixel of framebuffer 0 twice
+    /// <summary>Frames of <c>swapprobe</c> left. The probe reads the SAME pixel of framebuffer 0 twice
     /// -- once in the 4.6 context, once in the engine's, with nothing drawn between -- so a difference is
     /// the two contexts disagreeing about what framebuffer 0 IS, and nothing else.</summary>
     private static int _swapProbe;
@@ -443,9 +424,11 @@ public sealed unsafe class GlContextService : IExtenderService
         return px;
     }
 
+    /// <summary>Close the bracket: drain glGetError on the 4.6 side (an error can never leak across the
+    /// boundary unnoticed), fence, switch back to the engine context, server-wait, drain again.</summary>
     public static void Leave()
     {
-        // CX-188: the holder thread's bracket never closes -- its context stays current until the session or
+        // the holder thread's bracket never closes -- its context stays current until the session or
         // the stand-down ends. Switching back to the ENGINE context from here would hand the game thread's
         // context to the render thread, which is the GLX BadAccess (and therefore the process exit) this
         // whole hand-over is written around.
@@ -561,11 +544,10 @@ public sealed unsafe class GlContextService : IExtenderService
     private static readonly uint[] _shadowDescribed = new uint[8];
     private static int _shadowDescribedN;
 
-    /// <summary>alloy.gldebug only: the warning names no program or unit, so say which. Runs inside the
-    /// synchronous callback -- i.e. inside the offending draw -- once per program: its label and, per shadow
-    /// sampler, the unit and the texture bound there for the sampler's target.
-    /// ponytail: GL queries (and an ActiveTexture round trip) from a KHR_debug callback are outside the spec's
-    /// promises; NVIDIA tolerates them, and this is debug-context-only.</summary>
+    /// <summary><c>alloy.gldebug</c> only: the warning names no program or unit, so log the program's label
+    /// and, per shadow sampler, the unit and the texture bound there. Once per program, inside the draw.
+    /// ponytail: GL queries (and an ActiveTexture round trip) from a KHR_debug callback are outside the
+    /// spec's promises; NVIDIA tolerates them, and this is debug-context-only.</summary>
     private static void DescribeShadowSamplers()
     {
         if (Gl.GetIntegerv == null || Gl.GetProgramiv == null || Gl.GetActiveUniform == null || Gl.GetUniformiv == null) return;
@@ -598,15 +580,12 @@ public sealed unsafe class GlContextService : IExtenderService
         _log?.Info(sb.ToString());
     }
 
-    // ---- CX-120 seam-scene: the 4.6 context on a render thread ----
+    // ---- the 4.6 context on a render thread ----
 
     /// <summary>Make the 4.6 context current on the CALLING thread and leave it current -- what
-    /// <c>CX.Alloy.Db.RenderThread</c> does once at start instead of running the per-frame Enter/Leave
-    /// bracket on the game thread. A GL context is current on at most one thread, so this is only valid when
-    /// the game thread holds no bracket (<see cref="Inside"/> is false), and from then on the game thread must
-    /// not call <see cref="Enter"/>.
-    /// <para>The engine's own context is NOT touched: it stays current on the game thread, which is what lets
-    /// the engine's 2D, NUI and the present keep running there while this thread draws.</para></summary>
+    /// <c>CX.Alloy.Db.RenderThread</c> does once instead of the per-frame Enter/Leave bracket. A GL context is
+    /// current on at most one thread, so this is valid only while the game thread holds no bracket
+    /// (<see cref="Inside"/> false) and never calls <see cref="Enter"/> again; the engine's is untouched.</summary>
     public static bool MakeCurrentHere()
     {
         // _heldElsewhere is expected to be TRUE here: the game thread reserved it before starting this
@@ -683,12 +662,9 @@ public sealed unsafe class GlContextService : IExtenderService
     }
 
     /// <summary>Run <see cref="InBracket"/> on the thread that already holds the 4.6 context -- the work that
-    /// needs A context but not the Alloy pass (#211's texture retires, the texture registry's drain, the
-    /// arena pump, the palette and glyph-atlas builds). With a render thread the game thread's bracket never
-    /// opens, so this is where that work happens instead; without one it stays in <see cref="OnFrame"/>.
-    /// <para>This is the ONE declaration of "the frame's deferred work ran": every site that performs it calls
-    /// through here, which is what lets <see cref="OnFrame"/>'s health bracket stand down for the right
-    /// reason. A caller must hold the 4.6 context.</para></summary>
+    /// needs A context but not the Alloy pass (texture retires, the texture registry's drain, the arena pump,
+    /// the palette and glyph-atlas builds). With a render thread the game thread's bracket never opens, so
+    /// this is the ONE declaration that the frame's deferred work ran. A caller must hold the context.</summary>
     public static void RunInBracketHere()
     {
         Action? work = InBracket;

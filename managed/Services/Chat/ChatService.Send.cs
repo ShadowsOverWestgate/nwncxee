@@ -102,7 +102,7 @@ public sealed unsafe partial class ChatService
         }
     }
 
-    /// <summary>Auto-open routing for an incoming Tell (#46). Creates a tab or window per the config;
+    /// <summary>Auto-open routing for an incoming Tell. Creates a tab or window per the config;
     /// never steals keyboard focus (no FocusedIndex change on ingest).</summary>
     private static void RouteIncomingTell(ChatLine line)
     {
@@ -171,7 +171,7 @@ public sealed unsafe partial class ChatService
     public static void StartTell(string name) { if (!string.IsNullOrEmpty(name)) StartTellTo(name, _playerResolver?.Resolve(name)); }
 
     /// <summary>Open the chat input targeting <paramref name="name"/>. When Tell routing is Off, falls back
-    /// to pre-filling <c>/t "name" </c>. Otherwise navigates to the existing pinned tab or creates one (#46).
+    /// to pre-filling <c>/t "name" </c>. Otherwise navigates to the existing pinned tab or creates one.
     /// <paramref name="playerId"/> filters the tab to that player's messages.</summary>
     private static void StartTellTo(string name, uint? playerId)
     {

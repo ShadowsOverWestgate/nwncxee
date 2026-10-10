@@ -1,20 +1,11 @@
 namespace CX.Framework;
 
 /// <summary>
-/// One pass's fallback-to-vanilla latch: dedupe the reason, log it once, return false (#174). Written five
-/// times across the passes before this, each with its own flag and its own near-identical log line.
+/// One pass's fallback-to-vanilla latch: dedupe the reason, log it once, return false. <see cref="Refuse"/> is
+/// per-pass and NOT latched, because a GUI 3D panel may refuse while the world pass keeps arming;
+/// <see cref="Fail"/> latches, because the machine or driver cannot do it at all. Both arguments must be CONSTANT
+/// strings: the reason is compared before it is logged, so an interpolated one allocates on every refusal.
 /// </summary>
-/// <remarks>
-/// Two kinds, and the distinction is load-bearing. <see cref="Refuse"/> is per-pass and NOT latched -- a GUI
-/// 3D panel or a reflection subframe legitimately refuses while the world pass keeps arming, so a session
-/// that refused once must still arm on the passes it can. <see cref="Fail"/> latches: the machine or the
-/// driver cannot do this at all, and retrying every frame would only repeat the line.
-/// <para>One instance per pass, allocated at init and never on a frame. Both arguments must be CONSTANT
-/// strings: the reason is compared before it is logged, so an interpolated one would allocate on every
-/// refusal -- and a per-pass refusal is a per-frame event whenever a GUI 3D panel or a reflection subframe
-/// is live. Pass the literal; put anything that varies into the log line's own formatting, which only runs
-/// when the reason changes.</para>
-/// </remarks>
 public sealed class StandDown
 {
     private readonly string _who;

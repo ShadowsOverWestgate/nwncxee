@@ -4,11 +4,10 @@ using System.Collections.Generic;
 namespace CX.Framework;
 
 /// <summary>
-/// Hidden-tier dynamic state under one name prefix (spec §4.2, chat's <c>w&lt;N&gt;.*</c>): N windows × M tabs
-/// is not a fixed declaration, so the group owns the whole <c>&lt;group&gt;.&lt;prefix&gt;*</c> key family as one
-/// bag. Persisted to <c>cx.cfg</c> like a knob (every pair, verbatim), no row, no command, not in <c>/knobs</c>,
-/// and never touched by the group's reset. The feature <see cref="Replace"/>s the whole set on a save and reads
-/// it back through <see cref="Pairs"/>; keys inside the bag are spelled without the group prefix.
+/// Hidden-tier dynamic state under one name prefix (chat's <c>w&lt;N&gt;.*</c>): N windows x M tabs is not a fixed
+/// declaration, so the group owns the whole <c>&lt;group&gt;.&lt;prefix&gt;*</c> key family as one bag. Persisted
+/// to <c>cx.cfg</c> verbatim, with no row, no command and no part in the group's reset. The feature
+/// <see cref="Replace"/>s the whole set on a save; keys inside the bag carry no group prefix.
 /// </summary>
 public sealed class KnobBag
 {

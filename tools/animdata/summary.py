@@ -2,7 +2,7 @@
 """One TSV row per animation with the numbers a procedural layer cares about.
 
     ./summary.py --stock pmh0 walk run ... > table.tsv
-    ./summary.py pmh0 walk_fem run_fem          # live chain, SoW animation-set cycles
+    ./summary.py pmh0 walk_fem run_fem          # live chain, content animation-set cycles
 """
 import sys
 import fk

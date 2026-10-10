@@ -1,11 +1,9 @@
 namespace CX.Graphics;
 
 /// <summary>Double-buffered GPU query: begin on the slot whose result has already been harvested, so the
-/// readback never stalls the pass waiting for a result the GPU has not produced.
-/// <para>Harvesting happens in BEGIN, not in End, and unconditionally. End only runs when Begin took the
-/// pass, so harvesting there wedges the meter the first time both slots are pending at once -- one heavy
-/// frame with the GPU two frames behind, or a third Alloy pass in a frame -- and it never reports again
-/// for the session. Same rule as <c>AlloyLights.Build</c>, for the same reason.</para></summary>
+/// readback never stalls the pass waiting for a result the GPU has not produced. Harvesting happens in
+/// BEGIN, unconditionally -- End only runs when Begin took the pass, so harvesting there would wedge the
+/// meter for the session the first time both slots are pending at once.</summary>
 public unsafe struct GpuQuery
 {
     /// <summary>The meters' kill switch (<c>/alloy gpumeter 0</c>): every Begin declines, so no query is

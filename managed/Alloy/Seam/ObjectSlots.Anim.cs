@@ -31,12 +31,8 @@ public sealed unsafe partial class ObjectSlots
 
     /// <summary><c>Gob::GetAnimation(char const*, float* time, float* length)</c> @0x499eb0: the RUN playing
     /// that animation, or null, with the run's current TIME through the first pointer and the animation's
-    /// LENGTH through the second -- that order, which is the engine's (@0x499ef0 writes <c>AnimRun+0x14</c>
-    /// through the first and <c>Animation+0x8c</c> through the second), and both -1 when nothing is playing.
-    /// Both out-pointers are optional, as everywhere else in this interface.
-    /// <para>The order is load-bearing: <c>CNWCAnimBase::GetOverlayAnimationPlaying</c> reads the handle as
-    /// "playing", and <c>CNWCObject::SetAnimation</c> then calls <c>ShowEquippedItems</c> on a slot that
-    /// answers null for a placeable -- see <c>DbAnim.GetAnimationCore</c>.</para></summary>
+    /// LENGTH through the second -- the engine's order, both -1 when nothing is playing, both pointers optional.
+    /// The handle itself is what <c>CNWCAnimBase::GetOverlayAnimationPlaying</c> reads as "playing".</summary>
     [UnmanagedCallersOnly]
     private static nint GetAnimation(nint self, nint name, float* time, float* length)
     {

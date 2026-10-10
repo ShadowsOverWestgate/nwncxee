@@ -8,20 +8,16 @@ using CX.Framework;
 
 namespace CX.Alloy.Db;
 
-/// <summary>Wires <see cref="DbTriggers"/> in DB mode.</summary>
+/// <summary>Wires <see cref="DbTriggers"/>.</summary>
 public sealed class DbTriggersService : IExtenderService
 {
     public void Initialize(ExtenderLog log, HookService hooks) => DbTriggers.Install(log, hooks);
 }
 
-/// <summary>The area transitions' prisms in DB mode. <c>CNWCTrigger::AddToRenderList</c> builds each with
-/// <c>AurPartTriggerCreate</c> @0x4da840, which files it into the scene's BSP (<c>SceneBSPAddPart</c>) -- the one
-/// place both the hit test (<c>HitPartOnBSPNode</c>'s trigger list) and <c>DoHighlightTriggers</c> found it. A DB
-/// scene has no BSP, so nothing found it: no transition could be hovered, and the hover sheen never lit.
-/// <para>The engine's <c>PartTrigger</c> still exists and is still what <c>UpdateTriggerColor</c> writes the
-/// highlight into; this keeps the list of live ones per scene, a copy of their triangles for the pick
-/// (<see cref="Cast"/>, <c>PartTrigger::HitCheckGeom</c>'s rule), and hands the pointers to
-/// <see cref="TriggerHighlight"/>. Every hook is cold.</para></summary>
+/// <summary>The area transitions' prisms. The engine files each <c>AurPartTriggerCreate</c> @0x4da840 prism
+/// into the scene BSP that both the hit test and <c>DoHighlightTriggers</c> read; the scene database has no
+/// BSP, so this keeps the live ones per scene, a copy of their triangles for the pick (<see cref="Cast"/>,
+/// <c>PartTrigger::HitCheckGeom</c>'s rule), and hands the pointers to <see cref="TriggerHighlight"/>. Cold.</summary>
 internal static unsafe class DbTriggers
 {
     private sealed class Entry
@@ -79,9 +75,10 @@ internal static unsafe class DbTriggers
     private static void Add(nint t, DbId scene)
     {
         Remove(t);
-        int n = *(int*)(t + EngineLayout.TriggerTriVerts) / 3 * 3;
-        var src = (Vector3*)*(nint*)(t + EngineLayout.TriggerTris);
-        var e = new Entry { Ptr = t, Scene = scene, Payload = *(long*)(t + EngineLayout.TriggerPayload), Tris = new Vector3[src == null ? 0 : n] };
+        var trig = new PartTrigger(t);
+        int n = trig.TriVerts / 3 * 3;
+        var src = (Vector3*)trig.Tris;
+        var e = new Entry { Ptr = t, Scene = scene, Payload = trig.Payload, Tris = new Vector3[src == null ? 0 : n] };
         e.Min = new Vector3(float.MaxValue);
         e.Max = new Vector3(float.MinValue);
         for (int i = 0; i < e.Tris.Length; i++)

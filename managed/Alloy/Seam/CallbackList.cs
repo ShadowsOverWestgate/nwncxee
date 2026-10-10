@@ -39,7 +39,7 @@ public sealed unsafe partial class ObjectSlots
         if (shell == 0) { Facade.Object(self, 84); return; }
         // The engine's Gob::SetScene @0x43e020 is NOT hooked -- it works on a facade, writes +0x88 itself and
         // then fires this event, which is where the attachment behaviours propagated the new scene down. The
-        // behaviours do not exist in DB mode, so the propagation is here, keyed on the same event name.
+        // behaviours do not exist here, so the propagation lives in this slot, keyed on the same event name.
         if (name != 0 && CallbackList.NameIs(name, "UpdateScenes"))
         {
             DbId id = Facade.Object(self, 84);
@@ -121,13 +121,10 @@ internal static unsafe class CallbackList
         }
     }
 
-    /// <summary>Dispatch exactly as <c>Gob::DoEvent</c> does, and the four rules are all load-bearing:
-    /// the count is SNAPSHOTTED before the walk (so a callback registered during dispatch is not seen), the
-    /// walk runs BACKWARD (newest registration first), a callback fires when its name is empty, starts with
-    /// <c>'*'</c>, or <c>strcasecmp</c>-matches the event name whole, and the <c>void*</c> handed over is the
-    /// caller's unless that is null, in which case the callback's own registered data is substituted. The walk
-    /// stops the moment the object dies, because <c>DoEvent</c> is the sanctioned way for a callback to delete
-    /// its own object -- the engine guards that with a SafePointer and the seam with the handle.</summary>
+    /// <summary>Dispatch as <c>Gob::DoEvent</c> does, every rule load-bearing: the count is snapshotted before
+    /// the walk (a callback registered during dispatch is not seen); the walk runs backward, newest first; a
+    /// callback fires on an empty name, a <c>'*'</c> prefix or a whole <c>strcasecmp</c> match; the <c>void*</c>
+    /// is the caller's, or the callback's own when null; the walk stops once the object dies -- it may delete it.</summary>
     internal static void Dispatch(nint self, nint shell, nint name, nint data)
     {
         nint arr = *(nint*)(shell + SeamLayout.GobCallbackList);

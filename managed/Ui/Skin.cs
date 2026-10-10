@@ -12,12 +12,10 @@ public readonly record struct SkinPart(string Name, string Resref, int L = 0, in
                                        int SrcX = 0, int SrcY = 0, int SrcW = 0, int SrcH = 0);
 
 /// <summary>
-/// A window's skin over the game's own GUI art (native-gui-skinning §4): the declared parts, one
-/// <see cref="VertexBatch"/> per part, one <see cref="TextRig.DrawSkin"/> per part per frame. Each resref is resolved by
-/// name every frame and nothing engine-side is cached across one (§4.4: the <c>CAurTexture*</c> is borrowed). A
-/// server may re-point a part with the policy key <c>&lt;skin&gt;.skin.&lt;part&gt;=&lt;resref&gt;</c>.
-/// <para>Refusal is whole-skin (§4.5, CX-45): <see cref="Arm"/> probes every resref through the engine's pure key
-/// lookup; one miss logs every missing name, puts a notice on screen, and the owner draws its built-in look.</para>
+/// A window's skin over the game's own GUI art: the declared parts, one <see cref="VertexBatch"/> per part, one
+/// <see cref="TextRig.DrawSkin"/> per part per frame. Each resref is resolved by name every frame and nothing
+/// engine-side is cached across one -- the <c>CAurTexture*</c> is borrowed. A server may re-point a part with the
+/// policy key <c>&lt;skin&gt;.skin.&lt;part&gt;=&lt;resref&gt;</c>.
 /// </summary>
 public sealed class Skin
 {
@@ -53,9 +51,10 @@ public sealed class Skin
         return -1;
     }
 
-    /// <summary>Re-resolve every part's resref against the server policy and probe them, when the policy moved or
-    /// the key <paramref name="context"/> (e.g. the module) changed since the last arm. Cold except on a change: a
-    /// field compare per frame otherwise.</summary>
+    /// <summary>Re-resolve every part's resref against the server policy and probe them through the engine's pure
+    /// key lookup, when the policy moved or the key <paramref name="context"/> (e.g. the module) changed since the
+    /// last arm; otherwise a field compare per frame. Refusal is whole-skin: one missing resref logs every missing
+    /// name, puts a notice on screen, and the owner draws its built-in look instead.</summary>
     public bool Arm(ExtenderLog? log, string context)
     {
         if (_armedEpoch == ServerPolicy.Epoch && _armedFor == context) return Armed;

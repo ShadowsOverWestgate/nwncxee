@@ -3,11 +3,10 @@ using System;
 namespace CX.Graphics;
 
 /// <summary>
-/// A GPU-to-CPU readback that never stalls: <see cref="Slots"/> regions of ONE persistently mapped, client-readable
-/// buffer. The GPU copies into a slot and fences it; the CPU reads a slot straight off the mapping once its fence has
-/// passed, with no GL call. This replaces <c>glGetBufferSubData</c>, which on NVIDIA queues its copy behind everything
-/// the frame has submitted and blocks until the GPU drains it -- a fence on the SOURCE does not help -- so one small
-/// read after the colour pass cost 7-9 ms a frame and left both processors half idle.
+/// A GPU-to-CPU readback that never stalls: <see cref="Slots"/> regions of ONE persistently mapped,
+/// client-readable buffer. The GPU copies into a slot and fences it; the CPU reads a slot straight off the
+/// mapping once its fence has passed, with no GL call. Never <c>glGetBufferSubData</c>: on NVIDIA it queues
+/// its copy behind the whole submitted frame and blocks (a fence on the SOURCE does not help).
 /// </summary>
 public unsafe struct GpuReadback
 {

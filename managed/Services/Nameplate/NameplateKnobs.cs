@@ -3,14 +3,10 @@ using CX.Ui;
 
 namespace CX.Services.Nameplate;
 
-/// <summary>The <c>nameplate</c> group (spec §4.2) and the storage <see cref="NameplateService"/> reads on the
-/// frame: the master (off = the engine's own bubble mode back, stock names and bubbles draw; live both ways,
-/// #591), then one section per thing drawn -- both, the nameplate, the chat bubble -- each carrying its own
-/// Advanced rows and <see cref="TextStyle"/> (an own face per element is an enthusiast's dial, ADR 0030), the
-/// Chat-only wrap and animation numbers, and the Chat-only <see cref="Probe"/> button. <see cref="Queue"/>'s
-/// ladder ends at <see cref="PlateTable.MaxLines"/> and <see cref="Lines"/> at <see cref="PlateTable.MaxWrapped"/>:
-/// the table cannot hold more, so a higher value would report what the drain silently clamps away. Touched from
-/// <c>NameplateService.Initialize</c> so the group declares whether or not the hooks arm.</summary>
+/// <summary>The <c>nameplate</c> group and the storage <see cref="NameplateService"/> reads on the frame: the
+/// master (off = the engine's own bubble mode back, stock names and bubbles draw; live both ways), then one
+/// section per thing drawn. <see cref="Queue"/> and <see cref="Lines"/> stop at the table's
+/// <see cref="PlateTable.MaxLines"/>/<see cref="PlateTable.MaxWrapped"/>, past which the drain clamps silently.</summary>
 internal static class NameplateKnobs
 {
     internal static readonly KnobGroup G;

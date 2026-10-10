@@ -40,7 +40,7 @@ public enum Dirty : uint
 public enum ObjKind : byte { Free, Model, Text, Light, Empty }
 
 /// <summary>The boolean state a <c>Gob</c> kept as bits, as one word per object
-/// (<see cref="SceneDb.ObjSeamFlags"/>). Owner: the CX-120 seam-obj stream.</summary>
+/// (<see cref="SceneDb.ObjSeamFlags"/>). Owner: the seam-obj stream.</summary>
 [Flags]
 public enum SeamFlag : uint
 {
@@ -283,17 +283,10 @@ public sealed class DbTable
         _markAt[i] = ++_markClock;
     }
 
-    /// <summary>CX-188: a monotonic stamp per MARK, so "was this slot marked since I last looked at it" is one
-    /// compare. Neither of the two things a reader already has can answer that: the dirty BITS do not change
-    /// when an already-set bit is re-OR'd, and the list does not grow (<see cref="Mark"/> appends a slot once
-    /// per take), so <see cref="DirtyMark"/> does not move either. A reader stamps
-    /// <see cref="MarkClock"/> when it folds a slot in and re-folds it when <see cref="MarkAt"/> passes that.
-    /// <para>The clock is the TABLE's, not the slot's: it only ever has to be compared, never counted, and one
-    /// counter makes a reader's stamp valid against every slot of the table.</para>
-    /// <para>GAME THREAD ONLY, as every write to these tables is (ADR 0028 section 5): the increment inside
-    /// <see cref="Mark"/> is a plain <c>++</c>, not interlocked, and every reader of it -- the transform step's
-    /// part loop, <c>HitFeed.Fold</c> -- runs on that thread as well. A render-thread reader would need its
-    /// own answer, not this one.</para></summary>
+    /// <summary>A monotonic stamp per MARK, so "was this slot marked since I last looked at it" is one compare:
+    /// the dirty BITS do not change when an already-set bit is re-OR'd and the list does not grow, so neither
+    /// answers it. The clock is the TABLE's, so one reader stamp is valid against every slot. GAME THREAD ONLY
+    /// (ADR 0028 section 5): the increment is a plain <c>++</c>, and every reader runs on that thread too.</summary>
     public long MarkClock => _markClock;
     /// <inheritdoc cref="MarkClock"/>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -318,16 +311,14 @@ public sealed class DbTable
     }
 }
 
-/// <summary>CX-111 / ADR 0028: <b>CX's scene database</b> -- the records the game layer drives through the Aurora
-/// seam (CX-120) and the renderer reads, in place of the engine's <c>Scene</c>/<c>Gob</c>/<c>Part</c> objects.
-/// Struct-of-arrays tables indexed by <see cref="DbId"/>; the GAME thread is the only writer (every seam call
-/// arrives there), and the renderer reads a per-frame snapshot published from the dirty lists
-/// (<c>RenderSnapshot</c>, CX-120), so neither waits on the other. Column owners are named per column; a stream
-/// adds columns here (append-only) rather than keeping a parallel table keyed on a handle.</summary>
+/// <summary>ADR 0028: <b>CX's scene database</b> -- struct-of-arrays tables indexed by <see cref="DbId"/>,
+/// driven by the game layer through the Aurora seam and read by the renderer, in place of the engine's
+/// <c>Scene</c>/<c>Gob</c>/<c>Part</c> objects. The GAME thread is the only writer and the renderer reads a
+/// per-frame <c>RenderSnapshot</c> of the dirty lists, so neither waits. A stream adds columns here, appended.</summary>
 public static class SceneDb
 {
     /// <summary>Records held at once. Objects: every creature, placeable, item, door, VFX, GUI control and text
-    /// across every live scene (the heaviest SoW area measured ~3k gobs, GUI ~2k). Parts: the instance trees.</summary>
+    /// across every live scene (the heaviest measured area ~3k gobs, GUI ~2k). Parts: the instance trees.</summary>
     public const int MaxScenes = 256, MaxObjects = 1 << 16, MaxParts = 1 << 19, MaxCameras = 512;
 
     public static readonly DbTable Scenes = new(MaxScenes);
@@ -354,11 +345,10 @@ public static class SceneDb
     /// rider keeps the world matrix it last had -- or the WRONG node of the same creature.</summary>
     public static readonly string?[] ObjAttachNode = new string?[MaxObjects];
 
-    /// <summary>Every rider of an object, as slot links (index + 1, 0 = none): what <c>"UpdateScenes"</c>
-    /// reached in the engine -- a seam attach (<see cref="ObjAttachTo"/>) or an attach BEHAVIOUR the game built
-    /// itself (<c>GuiAurAttachToObject</c>). The shell's own attach list (+0x4a8) is NOT that set:
-    /// <c>Gob::AddAttachment</c> @0x5424a0 keeps 17 and overwrites the last past that. A reader keeps a rider
-    /// only while <see cref="RiderParent"/> is still the parent's live handle, so a recycled slot needs no cleanup.</summary>
+    /// <summary>Every rider of an object, as slot links (index + 1, 0 = none): a seam attach
+    /// (<see cref="ObjAttachTo"/>) or an attach BEHAVIOUR the game built itself. The shell's own attach list
+    /// (+0x4a8) is NOT that set -- <c>Gob::AddAttachment</c> @0x5424a0 keeps 17 and overwrites past that. A
+    /// reader keeps a rider only while <see cref="RiderParent"/> is the parent's live handle.</summary>
     private static readonly int[] _kidHead = new int[MaxObjects], _kidTail = new int[MaxObjects],
                                   _kidNext = new int[MaxObjects], _kidPrev = new int[MaxObjects],
                                   _kidOf = new int[MaxObjects];
@@ -420,9 +410,8 @@ public static class SceneDb
     }
     /// <summary>Which <c>CAurBehaviorAttach*</c> subclass the game's attach asked for -- the <c>mode</c>
     /// argument of <c>Gob::AttachToObject</c> @0x43e0e0 / <c>Gob::AttachToPart</c> @0x43e2a0, whose switch is
-    /// 0 plain, 1 translate, 2 rotate, 3 no-orientation, 4 GUI-scale. DB mode constructs no behaviour object,
-    /// so the variant lives here; <c>StringGob::SetPositionOffset</c> is the first reader (it answers 0 unless
-    /// the installed behaviour is the TRANSLATE one).</summary>
+    /// 0 plain, 1 translate, 2 rotate, 3 no-orientation, 4 GUI-scale. CX constructs no behaviour object, so
+    /// the variant lives here; <c>StringGob::SetPositionOffset</c> is the first reader.</summary>
     public static readonly byte[] ObjAttachMode = new byte[MaxObjects];
     /// <summary><see cref="ObjAttachMode"/>'s translate variant, the one a GUI label is attached with.</summary>
     public const byte AttachTranslate = 1;
@@ -459,7 +448,7 @@ public static class SceneDb
     /// <summary>Animated per-part alpha and self-illumination (controllers), 1 / 0 at rest.</summary>
     public static readonly float[] PartAlpha = new float[MaxParts];
     public static readonly Vector3[] PartSelfIllum = new Vector3[MaxParts];
-    /// <summary>The mesh-arena range this part draws (CX-114), -1 for a part with no geometry.</summary>
+    /// <summary>The mesh-arena range this part draws, -1 for a part with no geometry.</summary>
     public static readonly int[] PartMesh = new int[MaxParts];
     /// <summary>A reference part's instanced object -- the engine's <c>PartReference+0x68</c>, which
     /// <c>CreateReferenceObjects</c> @0x4421e0 fills and <c>Gob::ReattachReference</c> @0x43fc50 re-points.
@@ -471,7 +460,7 @@ public static class SceneDb
     /// <summary>A scene with a tile grid is a world scene; one without is a GUI panel's (the engine's <c>Scene+0x188</c> test).</summary>
     public static readonly bool[] SceneIsWorld = new bool[MaxScenes];
     public static readonly nint[] SceneFacade = new nint[MaxScenes];
-    /// <summary>seam-feed (CX-120): the scene's name as <c>NewCAurScene</c> was given it
+    /// <summary>The scene's name as <c>NewCAurScene</c> was given it
     /// (<c>sceneGUI_&lt;panel&gt;</c>, <c>sceneArea</c>, ...). The GUI depth convention and the engine's two
     /// lit-GUI-scene tests are name rules, so the name has to survive the seam; seam-obj writes it.</summary>
     public static readonly string[] SceneName = new string[MaxScenes];
@@ -525,11 +514,9 @@ public static class SceneDb
     /// game) and of its registered animation callbacks; both freed when the object retires.</summary>
     public static readonly nint[] ObjSeamPartShells = new nint[MaxObjects], ObjSeamCallbacks = new nint[MaxObjects];
     /// <summary>The objects this one OWNS, as an intrusive list: the head is here and each member's next is
-    /// in <see cref="ObjSeamAppendNext"/>. Two kinds, with one lifetime rule -- they die with their parent:
-    /// what <c>Gob::Append</c> composed onto it (the engine grew ONE part tree; CX composes child records, so
-    /// a creature's head, arms and robe are records attached to the body's parts), and what a reference node
-    /// instanced (<c>CreateReferenceObjects</c> @0x5421e0, whose child the engine hangs on the reference PART
-    /// and destroys in <c>PartReference::~PartReference</c> @0x5448e0).</summary>
+    /// in <see cref="ObjSeamAppendNext"/>. Two kinds, one lifetime rule -- they die with their parent: what
+    /// <c>Gob::Append</c> composed onto it (CX composes child records where the engine grew one part tree),
+    /// and what a reference node instanced (<c>CreateReferenceObjects</c> @0x5421e0).</summary>
     public static readonly DbId[] ObjSeamAppendHead = new DbId[MaxObjects], ObjSeamAppendNext = new DbId[MaxObjects];
 
     /// <summary>Index into the visual-transform pool, -1 for an object that has none.</summary>
@@ -542,13 +529,9 @@ public static class SceneDb
     // ---- CX-119 (text): the text position offset ----
 
     /// <summary>A text object's position offset, in the attached frame. <c>StringGob::SetPositionOffset</c>
-    /// @0x492420 does NOT write the object's own placement words -- it writes the offset onto the installed
-    /// behaviour, and only when that behaviour is a <c>CAurBehaviorAttachTranslate</c> (type <c>0x3ea</c>).
-    /// <c>CAurBehaviorAttachTranslate::Control</c> @0x4a2960 then applies it after the base attach has snapped
-    /// the object onto its parent part: <c>SetPosition(GetPosition() + GetOrientation() * offset)</c>.
-    /// <para>It therefore needs a column of its own. Writing it into <see cref="ObjPos"/> -- the column the
-    /// attach placement overwrites every compose -- is what put quickbar labels hundreds of units off screen
-    /// (CX-120 gui, .scratch/live/gui-db5).</para></summary>
+    /// @0x492420 writes it onto the installed behaviour, and only a <c>CAurBehaviorAttachTranslate</c> (type
+    /// <c>0x3ea</c>), whose <c>Control</c> @0x4a2960 applies it after the base attach has snapped the object
+    /// onto its parent part. Hence a column of its own: <see cref="ObjPos"/> is overwritten every compose.</summary>
     public static readonly Vector3[] TextPosOffset = new Vector3[MaxObjects];
 
     /// <summary>The behaviour <see cref="TextPosOffset"/> was set for, 0 for none. In the engine the offset
@@ -672,7 +655,7 @@ public static class SceneDb
     /// material; null when the mesh names none or it could not be read. Its texture names win over the
     /// mesh's.</summary>
     public static readonly MtrDef?[] PartMtr = new MtrDef?[MaxParts];
-    /// <summary>Four texture ids per part (stride 4, slot 0 the diffuse one), for CX-117's texture registry
+    /// <summary>Four texture ids per part (stride 4, slot 0 the diffuse one), for the texture registry
     /// to fill; 0 is "not resolved yet". The NAMES are not copied per part -- they live in the shared
     /// <see cref="PartMtr"/> or <see cref="PartMeshDef"/>, and <see cref="PartTexName"/> reads them.</summary>
     public static readonly int[] PartTexId = new int[MaxParts * 4];
@@ -709,7 +692,7 @@ public static class SceneDb
     /// below zero, so a fully transparent object is not pickable.</summary>
     public static readonly float[] HitObjAlpha = new float[MaxObjects];
     /// <summary>The door fade's output (<c>Gob+0x10c</c>) -- the DB column that replaces the engine field
-    /// <c>DoorFade</c> writes in engine mode. A door at or below <c>mindooralpha</c> is not hit-tested.</summary>
+    /// <c>DoorFade</c> writes when Alloy is off. A door at or below <c>mindooralpha</c> is not hit-tested.</summary>
     public static readonly float[] HitObjFadeAlpha = new float[MaxObjects];
     /// <summary>The model's classification byte (<c>Model+0x8e</c>), copied per object so the cast's gates
     /// cost no model deref: 1 effect, 2 tile, 4 character, 8 door, 0 anything else.</summary>
@@ -767,7 +750,7 @@ public static class SceneDb
     public static readonly float[] TileFade = new float[MaxTiles], TileFadeAcc = new float[MaxTiles], TileReveal = new float[MaxTiles];
     /// <summary>The tile's lights in <see cref="Lights"/>: <see cref="TileLightStride"/> slots per tile,
     /// each a raw index or -1. NOT a contiguous run -- <see cref="DbTable"/>'s free list is LIFO, so after the
-    /// first area change two lights allocated together land out of order (review r1 #2).</summary>
+    /// first area change two lights allocated together land out of order.</summary>
     public const int TileLightStride = 8;
     public static readonly int[] TileLightIds = NewTileLightIds();
     public static readonly int[] TileLightCount = new int[MaxTiles];
@@ -777,10 +760,8 @@ public static class SceneDb
     public static readonly Vector3[] TileFadeBmin = new Vector3[MaxTiles], TileFadeBmax = new Vector3[MaxTiles];
     /// <summary>World bounds of each <c>tilefade 1</c> PART of the tile, up to
     /// <see cref="TileFadeBoxStride"/>. <c>CheckFadePlane</c> @0x47bf30 tests the parts one at a time and
-    /// fades the tile when ANY of them is not entirely beyond the plane -- which is not the same question as
-    /// the union's: a union box has corners no part occupies, and those corners can straddle a plane every
-    /// real part is clear of. Measured on the stock inn: the union faded 3 roof tiles where the engine
-    /// faded 1.</summary>
+    /// fades the tile when ANY is not entirely beyond the plane -- not the union's question, whose empty
+    /// corners straddle planes every real part is clear of (the stock inn: 3 roof tiles faded, not 1).</summary>
     public const int TileFadeBoxStride = 4;
     public static readonly Vector3[] TileFadeBoxLo = new Vector3[MaxTiles * TileFadeBoxStride];
     /// <inheritdoc cref="TileFadeBoxLo"/>
@@ -820,12 +801,10 @@ public static class SceneDb
 
     /// <summary>PLT layers a pixel may name, one palette each: the engine's layered-texture count.</summary>
     public const int PltLayers = 10;
-    /// <summary>CX-117: per object, one master-palette ROW per PLT layer (<see cref="PltLayers"/> entries,
+    /// <summary>Per object, one master-palette ROW per PLT layer (<see cref="PltLayers"/> entries,
     /// layer-major). The value is the engine's own scheme integer -- a global row into the 256x1792 master
-    /// palette, i.e. <c>paletteSlot*256 + colour</c> -- so no layer-to-palette mapping lives on the CX side.
-    /// This is the whole of a creature's colour state: Alloy resolves
-    /// <c>colour = master[row[layer]][intensity]</c> in the shader, so a colour change is one entry here plus
-    /// <see cref="Dirty.Material"/>, never a per-creature composite. Written only through <c>PltColors</c>.</summary>
+    /// palette, <c>paletteSlot*256 + colour</c>. Alloy resolves <c>colour = master[row[layer]][intensity]</c>
+    /// in the shader, so a colour change is one entry here plus <see cref="Dirty.Material"/>.</summary>
     public static readonly ushort[] ObjPltRow = new ushort[MaxObjects * PltLayers];
     /// <summary>Per object, the environment map <c>Gob::SetEnvironmentMap</c> last named (null = none). The
     /// engine kept it on the gob (<c>gob+0x480</c>), so a body piece appended AFTER the call still drew
@@ -850,12 +829,8 @@ public static class SceneDb
     public static readonly ObjFlag[] ObjFlags = new ObjFlag[MaxObjects];
     /// <summary>Quarter turns of TEXTURE rotation this placement's parts carry, NWN's tile anti-repetition
     /// scheme: <c>SpawnPartsForTile</c> @0x563450 ends with <c>SetPartTextureRotate(parts, orient)</c>
-    /// @0x561670, which stores <c>orient * 90</c> degrees on every eligible mesh of the tree
-    /// (<c>PartTriMesh+0xb0</c>) for <c>TransformTextureMatrix</c> to make <c>m_texture</c> out of.
-    /// <para>Per OBJECT and not per recipe: one <see cref="DrawRecipe"/> serves every placement of a tile
-    /// model, and the four orientations of that model differ only here. Zero for everything else -- a STATIC
-    /// placeable goes through the same <c>SpawnTile</c> slot but <c>RespawnStaticPlaceablesForTile</c>
-    /// @0x808aa0 passes <c>orient = 0</c>, so its textures do not turn.</para></summary>
+    /// @0x561670, <c>orient * 90</c> degrees on every eligible mesh (<c>PartTriMesh+0xb0</c>). Per OBJECT, not
+    /// per recipe: one <see cref="DrawRecipe"/> serves every placement; a static placeable gets orient 0.</summary>
     public static readonly byte[] ObjTexRotate = new byte[MaxObjects];
     /// <summary>The object a blended run composites WITH and a fade applies to: the root of the attachment
     /// chain, or the explicit fade owner. Resolved when attachment or fade ownership changes, never per frame
@@ -880,12 +855,10 @@ public static class SceneDb
     /// (1 = no fade). Written by the tiles stream's tile-fade ramp and by the hit stream's door fade; the feed
     /// only multiplies it in, so neither costs the draw a tile dereference.</summary>
     public static readonly float[] PartFade = Fill(new float[MaxParts], 1f);
-    /// <summary>CX-116: the fog-of-war REVEAL this part's tile is at (1 = fully revealed). The engine's
-    /// fog of war is a FOG term, not an alpha: with <c>TileData+0xc8 &lt; 1</c>, <c>Scene</c>'s draw
-    /// (src/Scene.c:6257-6266) enables fog, sets the colour to the scene's fog colour times
-    /// <c>reveal^2</c>, the start to <c>reveal * Scene+0x144</c> and the end to
-    /// <c>reveal * Scene+0x148 + 0.1</c>. seam-feed must do that, per draw, from this column -- folding it
-    /// into <see cref="PartFade"/> would make an unexplored tile transparent instead of fogged.</summary>
+    /// <summary>The fog-of-war REVEAL this part's tile is at (1 = fully revealed). The engine's fog of war is a
+    /// FOG term, not an alpha: below 1 the draw enables fog, the colour being the scene's fog colour times
+    /// <c>reveal^2</c>, the start <c>reveal * Scene+0x144</c> and the end <c>reveal * Scene+0x148 + 0.1</c>.
+    /// Folding it into <see cref="PartFade"/> would make an unexplored tile transparent instead of fogged.</summary>
     public static readonly float[] PartReveal = Fill(new float[MaxParts], 1f);
 
     /// <summary>The keyhole dissolve this part is under (1 = solid), written by the dissolve step.</summary>
@@ -899,15 +872,10 @@ public static class SceneDb
 
     // ---- seam-anim (CX-120): the light terms an animation drives ----
 
-    /// <summary>A light part's ANIMATED colour, radius and multiplier, written by the pose step from the
-    /// node's <c>LightColor</c> / <c>LightRadius</c> / <c>LightMultiplier</c> controllers (file ids 76 / 88 /
-    /// 140). Meaningless until <see cref="PartLitAnim"/> says so: a light with no such controller keeps its
-    /// model-declared rest value and these are never written, which is what makes the flag the gate rather
-    /// than a sentinel value a real colour could collide with.
-    /// <para>They are a blend target, not a sample: a controller writes <c>lerp(column, key, weight)</c> as
-    /// every other controller does, so a crossfade between two animations crossfades a torch's flicker too.
-    /// The column is seeded from the node's rest keys on its first write (<see cref="PartLitAnim"/> going
-    /// non-zero), because nothing else knows when a light part starts being animated.</para></summary>
+    /// <summary>A light part's ANIMATED colour, radius and multiplier, written by the pose step from the node's
+    /// <c>LightColor</c>/<c>LightRadius</c>/<c>LightMultiplier</c> controllers (file ids 76 / 88 / 140) and
+    /// meaningless until <see cref="PartLitAnim"/> says so. A blend target, not a sample -- a controller writes
+    /// <c>lerp(column, key, weight)</c> -- seeded from the node's rest keys on its first write.</summary>
     public static readonly Vector3[] PartLitColour = new Vector3[MaxParts];
     /// <inheritdoc cref="PartLitColour"/>
     public static readonly float[] PartLitRadius = new float[MaxParts];
@@ -923,7 +891,7 @@ public static class SceneDb
     private static int[] Fill(int[] a, int v) { Array.Fill(a, v); return a; }
     private static float[] Fill(float[] a, float v) { Array.Fill(a, v); return a; }
 
-    /// <summary>seam-feed (CX-120): the scene's three SKY objects, in the engine's own draw order (current,
+    /// <summary>The scene's three SKY objects, in the engine's own draw order (current,
     /// the one fading in over it, the cross-fade). They hang off the SCENE rather than off any part tree --
     /// the engine kept them at <c>Scene+0x18</c>/<c>+0x38</c> and only <c>RenderSkyBoxes</c> ever walked them.
     /// seam-scene's <c>SetSkyBox</c> slot writes them.</summary>
@@ -935,8 +903,7 @@ public static class SceneDb
     /// <summary>The sky cross-fade, as the engine's own three fields hold it (<c>Scene+0x40/+0x44/+0x48</c>,
     /// read off <c>Scene::SetSkyAlpha</c> @0x55f100): <see cref="SceneSkyT"/> is the blend 0..1,
     /// <see cref="SceneSkyCur"/> the mode being shown and <see cref="SceneSkyDesired"/> the one being faded
-    /// to. Written by seam-scene's <c>SetSkyAlpha</c>/<c>SetSkyBox</c>/<c>ClearSkyBox</c> slots, read by the
-    /// sky pass (the column set feed-r1 #20 asked for).</summary>
+    /// to. Written by seam-scene's sky slots, read by the sky pass.</summary>
     public static readonly float[] SceneSkyT = new float[MaxScenes];
     /// <inheritdoc cref="SceneSkyT"/>
     public static readonly int[] SceneSkyCur = new int[MaxScenes];
@@ -965,7 +932,7 @@ public static class SceneDb
         }
     }
 
-    /// <summary>seam-feed (CX-120): the scene's highlight set as a per-object bit, which is what the glow and
+    /// <summary>The scene's highlight set as a per-object bit, which is what the glow and
     /// outline passes read. A set rather than a walk: the engine asked each gob a flag, and the pass wants the
     /// handful that answered yes.</summary>
     public static readonly DbId[] SceneHighlight = new DbId[MaxScenes * MaxHighlight];
@@ -1053,10 +1020,8 @@ public sealed class DbList
 
     /// <summary>Move <paramref name="id"/> to position <paramref name="to"/> (clamped), keeping every other
     /// entry's relative order: what the four <c>RenderGob*</c> slots do to the draw order.
-    /// <para><paramref name="to"/> is an index in the list AS IT IS NOW, before the move. Taking the element
-    /// out shifts everything after it down one, so a target past its current position is one too high after
-    /// the removal -- which is the off-by-one that made <c>RenderGobAfter</c> insert past its anchor. The
-    /// caller therefore names the slot it wants in today's list and this is where it is corrected, once.</para></summary>
+    /// <paramref name="to"/> is an index in the list AS IT IS NOW -- taking the element out shifts everything
+    /// after it down one, so a target past its current position is corrected here, once.</summary>
     public void MoveTo(DbId id, int to)
     {
         int at = IndexOf(id);
@@ -1127,7 +1092,7 @@ public struct PartMaterial
     public bool Render, Shadow, Beaming, Lightmapped, RotateTexture;
 }
 
-/// <summary>seam-feed (CX-120): the object facts the draw used to answer by dereferencing a <c>Gob</c>.</summary>
+/// <summary>The object facts the draw answers without dereferencing a <c>Gob</c>.</summary>
 [Flags]
 public enum ObjFlag : ushort
 {
@@ -1145,7 +1110,7 @@ public enum ObjFlag : ushort
     /// per-object "last" would be a fifth radix digit; the vanilla uses are a handful of VFX. The upgrade is
     /// that digit, above the texture one, not a second draw list.</para></summary>
     RenderLast = 1 << 3,
-    /// <summary><c>AurDisableShadowing</c>: casts nothing. Read by the caster admission in DB mode.</summary>
+    /// <summary><c>AurDisableShadowing</c>: casts nothing. Read by the caster admission.</summary>
     NoShadow = 1 << 4,
     /// <summary>In the scene's highlight set (the glow/outline pass's object set).</summary>
     Highlight = 1 << 5,

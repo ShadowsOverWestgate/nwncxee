@@ -2,11 +2,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>The <c>dangly</c> group (spec §4.3): the storage <see cref="DanglyPhysics"/> reads once per
-/// dangly part per frame. <see cref="Cage"/> is the load-bearing one -- it widens vanilla's per-axis clamp,
-/// the only thing keeping cloaks out of the wearer's legs, so it trades sway for clipping. The master is
-/// ChatOnly (ADR 0030): since CX-111 off is "cloaks go rigid", not a look anyone picks. Touched from
-/// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.</summary>
+/// <summary>The <c>dangly</c> group (spec §4.3): the storage <see cref="DanglyPhysics"/> reads once per dangly
+/// part per frame. <see cref="Cage"/> is load-bearing -- it widens vanilla's per-axis clamp, the only thing
+/// keeping cloaks out of the wearer's legs, trading sway for clipping; the master is ChatOnly (ADR 0030), off
+/// means rigid cloaks. Touched from <see cref="RenderCommands.Register"/> so it declares on the main thread.</summary>
 internal static class Dangly
 {
     internal static readonly KnobGroup G;

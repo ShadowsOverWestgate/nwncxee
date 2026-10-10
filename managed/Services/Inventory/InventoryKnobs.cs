@@ -4,10 +4,9 @@ using CX.Ui;
 namespace CX.Services.Inventory;
 
 /// <summary>The <c>inventory</c> group: the master (off = the stock panel), the look, size and page count, the
-/// window's own typeface and outline (<see cref="Text"/>, Chat-only -- it follows the UI rows and its text size
-/// follows <see cref="Size"/>), and the window position as Hidden state (<see cref="Placed"/> false until the player first drags it, so a fresh install
-/// centres). Every row may be held by a server (<c>ServerPolicy</c>); the component-level overrides no knob exposes
-/// are documented in <c>docs/ui-policy-contract.md</c>.</summary>
+/// window's own typeface and outline (<see cref="Text"/>, Chat-only, its text size following <see cref="Size"/>), and
+/// the window position as Hidden state (<see cref="Placed"/> false until the player first drags it, so a fresh install
+/// centres). Every row may be held by a server; the overrides no knob exposes are in <c>docs/ui-policy-contract.md</c>.</summary>
 internal static class InventoryKnobs
 {
     internal static readonly KnobGroup G;

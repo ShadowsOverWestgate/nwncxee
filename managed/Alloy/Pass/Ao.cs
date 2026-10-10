@@ -4,22 +4,8 @@ namespace CX.Alloy;
 
 /// <summary>The <c>ao</c> group (spec §4.3): the storage <see cref="SsaoPass"/> reads. No master -- the
 /// game's own Ambient Occlusion video option is the switch; <see cref="On"/> is the chat-only bypass for an
-/// A/B. Touched from <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main
-/// thread.
-/// <para>Why the defaults: <c>radius</c> is world-space (NWN units are metres: a creature stands two of them)
-/// and 0.6 is contact occlusion -- corners, feet, the underside of furniture -- not a room-scale gloom.
-/// <c>strength</c> is the visibility exponent at stock intensity (GTAO's finalValuePower); the option scales
-/// it. #390: 1 slice x 3 steps (6 depth fetches a pixel) under the temporal accumulator converges on what 3x3
-/// (18 fetches) drew in one frame; only SLICES average across frames -- the horizon is a max over steps, so
-/// fewer steps per frame is biased low, not noisy (the lost-power regression). <c>temporal 0 dirs 3 steps 3</c>
-/// is the single-frame look exactly; at <c>temporal</c> 0 there is no history target, no per-frame noise phase
-/// and no reprojection, and 0.98 is the ceiling because 1 is a frozen history. <c>maxpx</c> bounds the cost
-/// when the camera is against a wall. <c>direct</c>: ADR 0021 gave the occlusion to the ambient alone, which
-/// is invisible wherever the area ambient is dark -- every interior, where the light is lamps and the corners
-/// are exactly what wants occluding; measured live, with ambient at its area value the effect did not reach
-/// the frame at all. 1 (vanilla's post-multiply) is the only setting the effect is visible indoors at; 0
-/// restores the ADR's original ambient-only rule. <c>cutout</c>: a cutout receiver (tree canopy cards a few
-/// centimetres apart) reads the card in front as a wall and wears its leaf silhouette; below 1 softens that.</para></summary>
+/// A/B. <c>radius</c> is world-space (NWN units are metres), so the 0.6 default is contact occlusion rather
+/// than room-scale gloom, and <c>direct</c> 1 is what makes the effect visible in a lamp-lit interior.</summary>
 internal static class Ao
 {
     internal static readonly KnobGroup G;

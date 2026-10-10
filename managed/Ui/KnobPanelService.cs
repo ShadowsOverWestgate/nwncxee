@@ -7,30 +7,30 @@ using CX.Graphics;
 namespace CX.Ui;
 
 /// <summary>
-/// Hosts the settings panel (#588): one registered <see cref="Window"/> (the registry is immutable after the
-/// first frame, so it registers at Initialize and gates its content on <see cref="KnobPanel.Open"/>), the
-/// <c>/settings</c> door, the panel's own faces (design <see cref="KnobPanel.FacePx"/> × the game's GUI scale,
-/// requested cold at open), keyboard ownership while open, and the per-frame draw: <see cref="KnobPanel.Emit"/>
-/// into a reused batch, uploaded through the shared text rig. Escape closes; a module unload closes. It shows in
-/// game, at the main menu and under the in-game Options panel (#593, the gear's two doors) -- never on the loading
-/// screen -- and closes when the surface it was opened on goes away.
+/// Hosts the settings panel: one registered <see cref="Window"/>, the <c>/settings</c> door, the panel's own
+/// faces (design <see cref="KnobPanel.FacePx"/> × the game's GUI scale, requested cold at open), keyboard
+/// ownership while open, and the per-frame draw -- <see cref="KnobPanel.Emit"/> into a reused batch, uploaded
+/// through the shared text rig. Escape, a module unload, or losing the surface it opened on closes it.
 /// </summary>
 public sealed unsafe class KnobPanelService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static readonly KnobPanel _panel = new();
+    /// <summary>The panel's registry entry. The window registry is immutable after the first frame, so this
+    /// registers at Initialize and gates its content on <see cref="KnobPanel.Open"/>.</summary>
     private static Window? _window;
     private static VertexBatch? _batch;
     private static int _epoch = -1;
     private static float _facePx, _smallPx;
     private static GlyphAtlas? _body, _small;
 
-    /// <summary>The live panel, for the gear (#5) and the sibling tickets.</summary>
+    /// <summary>The live panel, for the gear and any other caller that drives it.</summary>
     public static KnobPanel Panel => _panel;
     public static bool IsOpen => _panel.Open;
 
-    /// <summary>Where the panel draws and takes input: in game, at the main menu, or over the in-game Options panel
-    /// (#593, the gear's two surfaces). The ESC menu with a sub-panel up hides it; Resume brings it back in game.</summary>
+    /// <summary>Where the panel draws and takes input: in game, at the main menu, or over the in-game Options
+    /// panel (the gear's two surfaces) -- never the loading screen. The ESC menu with a sub-panel up hides it;
+    /// Resume brings it back in game.</summary>
     private static bool Visible => GameGate.InGame || GameGate.AtMainMenu || GameGate.OptionsOpen;
     private static bool _wasInModule, _wasAtMenu;
 

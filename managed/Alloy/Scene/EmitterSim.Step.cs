@@ -6,19 +6,10 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-86: one emitter's step. Ported from <c>PartEmitter::AnimateParticles</c> @0x4ac660 (the inherit basis),
-/// the four <c>Update</c> overrides (<c>FountainEmitter</c> @0x4b1c70, <c>SingleEmitter</c> @0x4b2740,
-/// <c>ExplosionEmitter</c> @0x4b23a0, <c>LightningEmitter</c> @0x4b29b0), the three movers
-/// (<c>moveParticleStandard</c>'s body @0x4afa90, <c>moveParticleP2PBezier</c> @0x4b0230,
-/// <c>moveParticleP2PGrav</c> @0x4b0d40), <c>chkParticleLife</c> @0x4b1b50, <c>chkRandom</c> @0x4acd10,
-/// <c>RecursiveFractal</c> @0x4acda0 and the spawn (<c>Particle::initialize</c> @0x4abbf0,
-/// <c>randomPosition</c> @0x4ab7e0, <c>randomDirection</c> @0x4ab160, <c>inheritVelocity</c> @0x4ab950).
-/// <para>Behaviour, not transcription. Where the engine's arithmetic is the feature it is kept exactly (the
-/// bezier weights, the gravity term, the inherited-velocity decay, the fractal's midpoint displacement);
-/// where it is an artefact of C++ in 2002 it is not (four <c>Vector</c> temporaries per particle, eleven
-/// virtual flag reads per emitter, a <c>rand()</c> the renderer shares with the game).</para>
-/// <para>CX-120: every parameter arrives in an <see cref="Emitter"/> snapshot rather than through the engine's
-/// views, so the same step runs over the engine's objects and over the scene database.</para>
+/// One emitter's step, ported from <c>PartEmitter::AnimateParticles</c> @0x4ac660, the four <c>Update</c>
+/// overrides, the three movers, <c>chkParticleLife</c>, <c>chkRandom</c>, <c>RecursiveFractal</c> and the
+/// spawn. Behaviour, not transcription: the engine's arithmetic is kept exactly where it IS the feature (the
+/// bezier weights, gravity, inherited-velocity decay, the fractal displacement) and not where it is not.
 /// </summary>
 internal static unsafe partial class EmitterSim
 {
@@ -66,11 +57,9 @@ internal static unsafe partial class EmitterSim
     }
 
     /// <summary>The inherit basis, from <c>AnimateParticles</c>. Two distinct records move here and conflating
-    /// them is the bug this is easiest to write: <see cref="EmitMut.PrevWorldPos"/> tracks the OWNER's
-    /// motion (what an <c>inherit_local</c> particle is dragged by) while
-    /// <see cref="EmitMut.PrevPos"/> is the frame the particles are currently expressed in (what an
-    /// <c>inherit</c> particle is rebased THROUGH). The order is the engine's: the previous frame is recorded
-    /// off the OLD transform, and only then is the transform refreshed.</summary>
+    /// them is the easy bug: <see cref="EmitMut.PrevWorldPos"/> tracks the OWNER's motion (what an
+    /// <c>inherit_local</c> particle is dragged by), <see cref="EmitMut.PrevPos"/> the frame the particles are
+    /// expressed in. Order is the engine's: record off the OLD transform, only then refresh it.</summary>
     private static void Rebase(ref Emitter e)
     {
         int flags = e.Flags;
@@ -114,11 +103,10 @@ internal static unsafe partial class EmitterSim
 
     // ---- the four update modes -----------------------------------------------------------------------
 
-    /// <summary><c>FountainEmitter::Update</c> @0x4b1c70, in its two halves: age and spin what is alive, and
-    /// -- after the mover has run -- birth this frame's share.
-    /// <para>The accumulator is the whole of why a slow emitter works at all: 3 births a second at 60fps is
-    /// 0.05 of a particle a frame, and the engine carries the remainder in
-    /// <see cref="EmitMut.SpawnAcc"/> until it reaches one whole spacing.</para></summary>
+    /// <summary><c>FountainEmitter::Update</c> @0x4b1c70, in its two halves: age and spin what is alive, and --
+    /// after the mover has run -- birth this frame's share. The accumulator is why a slow emitter works at
+    /// all: 3 births a second at 60fps is 0.05 of a particle a frame, and the remainder is carried in
+    /// <see cref="EmitMut.SpawnAcc"/> until it reaches one whole spacing.</summary>
     private static void FountainAge(ref Slot slot, ref Emitter e, float dt)
     {
         e.M.Birthing = (byte)(e.BirthRate > 0f ? 1 : 0);
@@ -199,11 +187,10 @@ internal static unsafe partial class EmitterSim
         return true;
     }
 
-    /// <summary><c>ExplosionEmitter::Update</c> @0x4b23a0, in its two halves: nothing at all until the
-    /// model's <c>Detonate</c> event fires, then the whole population at once, then nothing again.
-    /// <para>The latch and the byte are both the engine's and both matter. The byte is the REQUEST, written
-    /// by the gob callback and cleared here -- left set, the explosion re-fires every frame. The latch is
-    /// "already fired", so one detonate event cannot spawn twice.</para></summary>
+    /// <summary><c>ExplosionEmitter::Update</c> @0x4b23a0, in its two halves: nothing until the model's
+    /// <c>Detonate</c> event fires, then the whole population at once, then nothing again. The byte is the
+    /// REQUEST, written by the gob callback and cleared here -- left set, the explosion re-fires every frame;
+    /// the latch is "already fired", so one detonate event cannot spawn twice.</summary>
     private static void ExplosionAge(ref Slot slot, ref Emitter e, float dt)
     {
         Reap(ref slot, ref e, dt);
@@ -358,11 +345,10 @@ internal static unsafe partial class EmitterSim
 
     // ---- shared per-frame passes ---------------------------------------------------------------------
 
-    /// <summary><c>chkParticleLife</c>: age every particle and retire the ones past their life, stably --
-    /// the live slice stays oldest-first, because an index-domain fade and the linked render types both read
-    /// it as an ORDER.
-    /// <para>A negative lifespan is the engine's "never die" and an age it would drive below zero is pinned
-    /// at zero along with the UV clock, which is what freezes a landed splat's animation.</para></summary>
+    /// <summary><c>chkParticleLife</c>: age every particle and retire the ones past their life, stably -- the
+    /// live slice stays oldest-first, because an index-domain fade and the linked render types read it as an
+    /// ORDER. A negative lifespan is the engine's "never die", and an age it would drive below zero is pinned
+    /// at zero along with the UV clock, which freezes a landed splat's animation.</summary>
     private static void Reap(ref Slot slot, ref Emitter e, float dt)
     {
         float life = e.Life;
@@ -438,11 +424,9 @@ internal static unsafe partial class EmitterSim
     }
 
     /// <summary>Take the next free record, or null when the block is full -- which the caller treats as "no
-    /// birth this frame" and which is ALWAYS a particle vanilla would have drawn. The engine births from its
-    /// recycle list and, when that is empty, from <c>operator new</c> with nothing to stop it
-    /// (<c>FountainEmitter::Update</c> @0x4b1c70), so there is no such thing as a refusal here that is parity
-    /// with it: a full block is either a burst <see cref="Want"/> failed to size for or our own
-    /// <see cref="MaxPerEmitter"/> ceiling, and both cost a particle. Counted and named once (CX-45).</summary>
+    /// birth this frame" and which is ALWAYS a particle vanilla would have drawn: the engine births from
+    /// <c>operator new</c> with nothing to stop it, so a full block is either a burst <see cref="Want"/>
+    /// failed to size for or our <see cref="MaxPerEmitter"/> ceiling. Counted and named once.</summary>
     private static Particle Take(ref Slot slot)
     {
         if (slot.Live >= slot.Cap)

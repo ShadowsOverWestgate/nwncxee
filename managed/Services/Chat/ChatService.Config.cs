@@ -14,7 +14,7 @@ namespace CX.Services.Chat;
 public sealed unsafe partial class ChatService
 {
     // *g_pAppManager, for the game clock (below) and the Tell player resolver. The in-game gate that used to
-    // walk this chain now lives in UiHostService (#62); chat reads GameGate.InGame / GameGate.InModule instead.
+    // walk this chain now lives in UiHostService; chat reads GameGate.InGame / GameGate.InModule instead.
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
 
     // In-game game clock (chat game-time timestamps). The server syncs ONLY the game HOUR to the client, into
@@ -52,11 +52,10 @@ public sealed unsafe partial class ChatService
         if (hour != _gmHour) { _gmHour = hour; _gmHourMs = Environment.TickCount64; }   // hour edge -> re-anchor
     }
 
-    /// <summary>Current in-game time, or an invalid <see cref="GameStamp"/> (-> the caller uses local) before
-    /// any server hour is seen. The HOUR is authoritative (server-synced); the minute/second are extrapolated
-    /// from real time since the hour edge and self-correct at each rollover. Cold (ingest). ponytail: the wire
-    /// carries only the hour, so minute/second are an estimate -- they drift/pin under pause/timestop (the
-    /// engine's own lighting interpolator has the same limit); HH-only is the fallback if this reads wrong live.</summary>
+    /// <summary>Current in-game time, or an invalid <see cref="GameStamp"/> (caller falls back to local) before
+    /// any server hour is seen. The hour is server-synced; minute/second are extrapolated from real time since
+    /// the hour edge and self-correct at each rollover. Cold (ingest). ponytail: the wire carries only the hour,
+    /// so minute/second drift or pin under pause/timestop; fall back to HH-only if this reads wrong live.</summary>
     private static GameStamp GameNow()
     {
         int hour = _gmHour;

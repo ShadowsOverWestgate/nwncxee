@@ -3,23 +3,20 @@ using System.Runtime.CompilerServices;
 
 namespace CX.Framework;
 
-/// <summary>Injected logger. Writes stderr + a log file. Under the Steam Linux Runtime the game
-/// runs in a container with a private /tmp, so the file lands in $HOME (mapped into the container,
-/// so it stays visible on the host) -- falling back to /tmp only if $HOME is unset.
-/// <para>Never blocks the caller: <see cref="Info(string)"/> enqueues and a background thread writes. A line
-/// queued microseconds before a crash can be lost; the engine's own crash file is the forensic record.</para></summary>
+/// <summary>Injected logger, writing stderr plus a log file. The file lands in $HOME (/tmp only if $HOME is unset)
+/// because the Steam Linux Runtime gives the game a container-private /tmp the host cannot see. Never blocks the
+/// caller: <see cref="Info(string)"/> enqueues and a background thread writes, so a line queued microseconds
+/// before a crash can be lost -- the engine's own crash file is the forensic record.</summary>
 public sealed class ExtenderLog
 {
     private static readonly string LogPath = OperatingSystem.IsWindows()
         ? Path.Combine(Native.DefaultUserDirectory(), "cx.log")
         : Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", "cx.log");
 
-    /// <summary>The one gate every line passes: <c>general.logs=1</c> in cx.cfg keeps it open, the default closes
-    /// it once <see cref="Settings.Load"/> has read the file, so a stock install writes only the boot lines;
-    /// <c>General.Logs</c> flips it live. Off
-    /// means off at the CALL SITE too: an interpolated argument goes through <see cref="Line"/>, whose holes
-    /// the compiler never evaluates when this is false -- a period census that is never walked, not a string
-    /// that is thrown away. A silent default is what proves the log is not the hitch.</summary>
+    /// <summary>The one gate every line passes: <c>general.logs=1</c> keeps it open, the default closes it once
+    /// <see cref="Settings.Load"/> has read cx.cfg, and <c>General.Logs</c> flips it live. Off means off at the CALL
+    /// SITE too -- an interpolated argument goes through <see cref="Line"/>, whose holes the compiler never
+    /// evaluates when this is false, so a census behind a closed gate is never walked at all.</summary>
     public static bool Enabled = true;
 
     private static readonly ConcurrentQueue<string> _queue = new();

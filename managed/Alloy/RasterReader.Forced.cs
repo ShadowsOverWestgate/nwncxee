@@ -6,19 +6,12 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-52 step 2: the textures the engine forces uncompressed, read from a DDS anyway.
-/// <c>CAurTextureBasic::LoadImage</c> @0x487980 (Windows RVA 0xEC570, identical) passes <c>allowCompressed = 0</c>
-/// for a cube, a <c>numx/numy</c> grid and a controller texture, and <c>AurGetImageWrapper</c> then tries only
-/// 4PC and TGA: a DDS-only one never loads, and a controller texture draws the mid-grey
-/// <c>defaultwidth</c> placeholder <c>ConstructImage</c> makes instead. Twelve server textures are exactly that
-/// (arturo water/blood/slime, potion swirls, the <c>fxpa_ice02</c>/<c>fxpa_lightning02</c> flipbooks).
-/// <para>When the wrapper comes back empty for such a texture, Alloy reads the DDS through the engine's own
-/// getter/release pair and hands back level 0 unpacked (<see cref="BcnDecode"/>) as the RGB/RGBA raster the
-/// engine's cube, grid and controller code already takes. The buffer comes from the engine's <c>new[]</c>;
-/// <c>LoadImage</c> marks every answer for <c>AurReleaseRaster</c>, so the <c>ConstructImage</c> hook clears
-/// that mark once the image is in place and <c>FreeImage</c> frees it with the engine's <c>delete[]</c>. Skipped:
-/// <c>filerange</c> sub-files and PLT layers (both free through the release, not the mark) and bump maps
-/// (<c>CheckAttributes</c> discards a multi-byte one through the release before the hook runs).</para></summary>
+/// <summary>
+/// The textures the engine forces uncompressed, read from a DDS anyway: <c>CAurTextureBasic::LoadImage</c> passes
+/// <c>allowCompressed = 0</c> for a cube, a <c>numx/numy</c> grid and a controller texture, and
+/// <c>AurGetImageWrapper</c> then tries only 4PC and TGA, so a DDS-only one never loads. Alloy unpacks level 0
+/// into a buffer from the engine's <c>new[]</c> and clears the release mark, so <c>FreeImage</c> frees it.
+/// </summary>
 public sealed unsafe partial class RasterReader
 {
     /// <summary>Under the engine-zones timer, so the unpack is counted in the <c>Image</c> zone.</summary>
@@ -74,8 +67,8 @@ public sealed unsafe partial class RasterReader
         // LoadImage's single read by the resolved name: not a filerange sub-file, not a PLT, not a bump map.
         if (name != (IntPtr)Unsafe.AsPointer(ref b.ResolvedName) || b.FileRange != 0 || b.Schemes != IntPtr.Zero || b.FlagBump != 0)
             return r;
-        // CX-54 step 0: the unpack is decode; the DDS getter inside it times its own read and decode, so both
-        // are subtracted rather than counted twice.
+        // The unpack is decode; the DDS getter inside it times its own read and decode, so both are subtracted
+        // rather than counted twice.
         long t0 = FrameZones.Now;
         long rd = FrameZones.Ticks(FrameZones.Zone.TexRead), dc = FrameZones.Ticks(FrameZones.Zone.TexDecode);
         IntPtr u = Unpack(name, b.FlagCube != 0, w, h, bpp, size, container, format, alpha);

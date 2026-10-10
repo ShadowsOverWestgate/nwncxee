@@ -12,12 +12,10 @@ public struct Quat
     public static implicit operator Quat(Quaternion q) => new() { W = q.W, X = q.X, Y = q.Y, Z = q.Z };
 }
 
-/// <summary>An engine <c>Plane</c> as it sits in memory and as it crosses the ABI: four plain floats, normal
-/// then distance. Deliberately NOT <see cref="System.Numerics.Plane"/>, whose <c>Normal</c> is the
-/// <c>[Intrinsic]</c> <see cref="System.Numerics.Vector3"/> -- a type the compiler is free to treat as a SIMD
-/// value, which is not a promise one wants underneath an <c>[UnmanagedCallersOnly]</c> signature where the
-/// classification decides whether the engine reads xmm0:xmm1 or a buffer. <see cref="Vec3"/> and
-/// <see cref="Quat"/> exist for the same reason.</summary>
+/// <summary>An engine <c>Plane</c> as it sits in memory and as it crosses the ABI: four plain floats, normal then
+/// distance. Deliberately NOT <see cref="System.Numerics.Plane"/>, whose <c>Normal</c> is an <c>[Intrinsic]</c>
+/// type the compiler may treat as a SIMD value -- no promise to want under an <c>[UnmanagedCallersOnly]</c>
+/// signature, where the classification decides whether the engine reads xmm0:xmm1 or a buffer.</summary>
 public struct AurPlane
 {
     public float X, Y, Z, D;

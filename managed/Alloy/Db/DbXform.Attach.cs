@@ -4,48 +4,16 @@ using CX.Engine;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-120 (gui): <b>the attachment placement</b> -- the one term an attached object has and the
-/// transform step did not apply. Two kinds of edge reach it, because the game places GUI controls two ways.
-///
-/// <para><b>1. The seam's own attach slots.</b> <c>Gob::AttachToObject</c> @0x43e0e0 does TWO things, and only
-/// the second is a behaviour: it writes the parent part's world transform straight into the child's placement
-/// words (<c>Part::GetWorld(part, this+0xa8, this+0xb4)</c>, the first statement after the part resolves), and
-/// then installs a <c>CAurBehaviorAttach*</c> that repeats that write every animate. The seam records the edge
-/// and builds no behaviour (ADR 0028 leaves behaviour lifetime with the game), so nothing repeated the write:
-/// a quickbar button's record said <c>pos=(0,0,0)</c> and it drew at the panel camera's origin -- the
-/// bottom-left corner of the screen -- while the panel frame it hangs from drew correctly.</para>
-///
-/// <para><b>2. A behaviour the game installed and CX has no edge for.</b> <c>CGuiObject::AddToPanel</c>
-/// places every control of every panel with
-/// <c>GuiAurAttachToObject(control, panel, "root", &amp;(Obj_X, Obj_Y, Obj_Z))</c> -- the offset read straight
-/// out of the panel's GFF. That free function @0x68b050 is NOT hooked: it runs on the facade, resolves the
-/// parent's root part through the <c>GetPart</c> slot, calls <c>Part::GetWorld</c> once, and installs a
-/// <c>CAurBehaviorCrossSceneAttach(WithOffset)</c>. It never touches <c>ObjAttachTo</c>, and its one direct
-/// write lands before the panel itself is placed, so the control's shell held <c>(0,0,0)</c> too (MEASURED,
-/// .scratch/live/gui-db8) and the per-frame <c>Control</c> that would have fixed it is game code DbAnim must
-/// not call in DB mode -- it reaches the engine's <c>Part::GetWorld</c>, which mode 0's
-/// <c>BehaviorSolvers</c> has chained, on a facade part. The behaviour is READ here instead: its part at
-/// <c>+0x30</c> and its offset at <c>+0x84</c> are declared rows carrying both OSes' values, and the
-/// placement is CX's own arithmetic.</para>
-///
-/// <para><b>It overwrites, for text objects too</b> (MEASURED, .scratch/live/gui-db5). CX keeps a text
-/// object's position offset in the same <c>ObjPos</c> the attach overwrites, so composing on top of it instead
-/// put every quickbar label hundreds of units off screen. The engine agrees with the overwrite:
-/// <c>StringGob::SetPositionOffset</c> @0x5923e0 writes the offset onto the behaviour and ONLY when that
-/// behaviour's type is <c>0x3ea</c> (<c>CAurBehaviorAttachTranslate</c>), so with no behaviour built there is
-/// no offset for the engine to apply either. A real offset needs a column of its own (text stream).</para>
-///
-/// <para>Both edges stand down the moment DbAnim itself owns the object's behaviour, because the solve would
-/// then do the same write with its own subclass offset and a second one here would cancel it.</para>
-///
-/// <para>NEW FILE, not an edit to seam-anim's <c>DbXform.cs</c>: that file keeps ONE named line.</para></summary>
+/// <summary><b>The attachment placement</b>: the one term an attached object has that the transform step does not
+/// apply, from either of two edges -- the seam's attach slots, which record the edge and build no behaviour (ADR
+/// 0028 leaves behaviour lifetime with the game), or one the game installed through the unhooked
+/// <c>GuiAurAttachToObject</c> @0x68b050, READ at <c>+0x30</c> (part) and <c>+0x84</c> (offset); it OVERWRITES <c>ObjPos</c>.</summary>
 public static unsafe partial class DbAnim
 {
     /// <summary>How deep the parent chain is followed before the placement gives up. A STACK guard, not a
-    /// budget: the character-select list attaches each <c>ctl_pre_btn_char</c> to the previous one, so the
-    /// chain is as long as the player has characters (39 on the harness's profile, which a cap of 32 cut off
-    /// -- the 2242 "TOO DEEP" placements a session). A true cycle is caught exactly by
-    /// <see cref="_inSnap"/> at any depth, so this only has to be past any chain content can build.</summary>
+    /// budget: the character-select list attaches each <c>ctl_pre_btn_char</c> to the previous one, so the chain
+    /// is as long as the player has characters. A true cycle is caught exactly by <see cref="_inSnap"/> at any
+    /// depth, so this only has to be past any chain content can build.</summary>
     private const int MaxAttachSnap = 256;
 
     private static int _snapDepth;
@@ -54,7 +22,7 @@ public static unsafe partial class DbAnim
     /// the depth.</summary>
     private static readonly bool[] _inSnap = new bool[SceneDb.MaxObjects];
 
-    /// <summary>Text position offsets applied at compose this session (CX-119).</summary>
+    /// <summary>Text position offsets applied at compose this session.</summary>
     internal static long TextOffsetsApplied => _textOffsets;
 
     /// <summary>Place <paramref name="i"/> on the part it rides, from whichever of the two edges it has.
@@ -110,12 +78,10 @@ public static unsafe partial class DbAnim
         Moved(i);
     }
 
-    /// <summary>CX-119: a text object's position offset, applied the way
-    /// <c>CAurBehaviorAttachTranslate::Control</c> @0x4a2960 applies it -- rotated into the frame the base
-    /// attach has just snapped onto, then added to the position:
-    /// <c>SetPosition(GetPosition() + GetOrientation() * offset)</c>. Zero for everything else.
-    /// <para>The offset lives on the behaviour in the engine, so it is applied only while the behaviour it was
-    /// set for is still the installed one -- one pointer load, no vtable call on the compose path.</para></summary>
+    /// <summary>A text object's position offset, applied as <c>CAurBehaviorAttachTranslate::Control</c>
+    /// @0x4a2960 applies it -- rotated into the frame the base attach just snapped onto, then added:
+    /// <c>SetPosition(GetPosition() + GetOrientation() * offset)</c>. Zero for everything else, and applied
+    /// only while the behaviour it was set for is the installed one -- one pointer load, no vtable call.</summary>
     private static Vector3 TextOffset(int i, in Quaternion q)
     {
         nint owner = SceneDb.TextOffsetBehavior[i];
@@ -169,22 +135,10 @@ public static unsafe partial class DbAnim
         return true;
     }
 
-    /// <summary>The part an attachment rides, or -1 for an attachment that is not one.
-    /// <para><b>A <c>-1</c> is NOT "the root"</b>, and reading it that way is what put every main-menu button's
-    /// label on its button's bottom-left corner. <c>Gob::AttachToObject</c> @0x43e0e0 resolves a NULL part name
-    /// to the parent's root (<c>*(CAurPart**)(parent+0x90)</c>) and attaches; a name that does NOT resolve makes
-    /// it clear the behaviour and <c>return 0</c> WITHOUT touching the owner's placement. Both of CX's resolvers
-    /// answer the root's index for a null or empty name, so a <c>-1</c> can only be the second case -- and the
-    /// menu's labels are exactly that: <c>CGuiCharGenRadioButton</c> and its kin attach the label to a part
-    /// named <c>"text"</c>, which <c>ctl_btn_pre_176</c> does not have (its nodes are the root, <c>text0</c>,
-    /// <c>text1</c>, <c>Plane248</c>, <c>Plane40</c>). Vanilla leaves such a label where its own
-    /// <c>SetPosition</c> put it; placing it on the parent's root moved it to the button's origin every
-    /// frame.</para>
-    /// <para>A named part that has since gone is refused for the same reason: the object is not riding
-    /// anything any more, and the root is not where it was.</para></summary>
-    /// <summary>No-silent-fallbacks: a rider whose anchor no longer resolves is NOT placed, and it keeps the
-    /// world matrix it last had -- which looks like a body part standing beside its creature, with nothing in
-    /// the log. Said once per object, with the anchor it wanted and what that index holds now.</summary>
+    /// <summary>No-silent-fallbacks: a rider whose anchor no longer resolves is NOT placed and keeps the world
+    /// matrix it last had, which looks like a body part standing beside its creature. Said once per object,
+    /// with the anchor it wanted and what that index holds now. A <c>-1</c> part is NOT "the root": both
+    /// resolvers answer the root for a null or empty name, so it can only be a name that did not resolve.</summary>
     private static void ReportLostAnchor(int i, DbId up)
     {
         if (_saidLost.Count >= MaxLostSaid || !_saidLost.Add(i)) return;
@@ -217,11 +171,10 @@ public static unsafe partial class DbAnim
 
     private static readonly System.Collections.Generic.HashSet<int> _saidRooted = new();
 
-    /// <summary>Is <paramref name="part"/> a part of <paramref name="up"/>'s tree? The engine grew ONE part
-    /// range per gob, so "belongs to the parent" was a single compare; CX makes every <c>Gob::Append</c>ed
-    /// piece a child OBJECT, so a name the game resolved on a grafted body part answers with a part the parent
-    /// does not own -- and the attachment was then refused as a lost anchor. A part of the parent's
-    /// COMPOSITION is a part of the parent, which is what the engine's one tree says.</summary>
+    /// <summary>Is <paramref name="part"/> a part of <paramref name="up"/>'s tree? The engine grows ONE part
+    /// range per gob, so "belongs to the parent" is a single compare; CX makes every <c>Gob::Append</c>ed piece
+    /// a child OBJECT, so a part of the parent's COMPOSITION counts as a part of the parent -- otherwise a name
+    /// the game resolved on a grafted body part is refused as a lost anchor.</summary>
     private static int ParentPart(DbId up, int part)
     {
         if (part < 0 || part >= SceneDb.MaxParts || !SceneDb.Parts.LiveAt(part)) return -1;
@@ -240,16 +193,7 @@ public static unsafe partial class DbAnim
     /// of a creature the game addresses through a grafted piece, and zero if it never does.</summary>
     private static long _composedAnchors;
 
-    /// <summary>The parent's root part, which is what <c>Gob::AttachToObject</c> resolves a NULL part name to.
-    /// <para><b>The label's box, not its origin, is what is still wrong at the main menu.</b> With the origin
-    /// here -- the button's root, its left edge at x 5.51 -- and the label's own <c>AlignH</c> of 0.5, a
-    /// <c>MaxWidth</c> of the button's 1.74 would centre the text at 6.38, which is mode 0's 639 px. The box
-    /// arrives as 0 (measured: <c>box=0.000x-0.000 align=0.50/0.50</c>), so <c>TextQuads</c> centres each
-    /// label on its own origin instead and three labels of different lengths share one centre.
-    /// <c>AttachCornersToObjects(parent, "text0", "text1")</c> is what fills it -- the engine's own idiom for
-    /// this control family (<c>CGuiCharGenRadioButton</c> @0x4d9a40 and its kin do exactly
-    /// <c>AttachToObject(label, parent, "text", 0)</c> then that call) and <c>ctl_btn_pre_176</c> carries both
-    /// dummies. It never reaches CX for these buttons: TEXT stream.</para></summary>
+    /// <summary>The parent's root part, which is what <c>Gob::AttachToObject</c> resolves a NULL part name to.</summary>
     private static int RootPart(DbId up)
     {
         int first = SceneDb.ObjPartFirst[up.Index];
@@ -287,11 +231,9 @@ public static unsafe partial class DbAnim
 
     private static readonly System.Collections.Generic.HashSet<int> _saidDeep = new();
 
-    /// <summary>Placements by attach VARIANT (<see cref="SceneDb.ObjAttachMode"/>), so "which subclass does
-    /// the game actually install" is a measurement rather than a guess. <c>Gob::AttachToObject</c> @0x43e0e0's
-    /// switch has five arms and CX composes all of them as the plain one plus, for translate, the position
-    /// offset -- what rotate's euler offset, no-orientation's kept orientation and GUI-scale's divide are worth
-    /// is exactly what these counts say.</summary>
+    /// <summary>Placements by attach VARIANT (<see cref="SceneDb.ObjAttachMode"/>), so "which subclass the game
+    /// installs" is a measurement rather than a guess. <c>Gob::AttachToObject</c> @0x43e0e0's switch has five
+    /// arms and CX composes all of them as the plain one plus, for translate, the position offset.</summary>
     private static readonly long[] _byMode = new long[8];
 
     private static string Variants()
@@ -310,16 +252,9 @@ public static unsafe partial class DbAnim
     // ---- the parent's side of the edge: who has to be carried when this object moves ----
 
     /// <summary>Parent -&gt; its first attached child, and child -&gt; the next child of the same parent: the
-    /// attachment list vanilla keeps on the gob itself (<c>Gob::AddAttachment</c> @0x4424a0, called from every
-    /// <c>CAurBehaviorAttach</c> constructor and dropped by its destructor). CX needs it for the engine's own
-    /// reason: <c>CAurBehaviorAttach::Control</c> @0x4a2810 re-derives the child's placement from the parent's
-    /// part EVERY animate, so a parent that moves carries its children with it. The compose visits only what
-    /// changed, and a child is not marked by its parent's move -- without this list a GUI label was placed once,
-    /// at the attach, and stayed there when <c>CGuiMan::SetGuiSize</c> @0x57efc0 re-centred the panel under it
-    /// on a window resize (the user's repro: halve the window and the text floats where the centre used to be).
-    /// <para>Index 0 is the sentinel, never a live record, so the lists need no initialisation pass.
-    /// <see cref="_kidOf"/> is the parent a child is linked under right now, so a re-attach MOVES the link
-    /// instead of leaving the child on two lists.</para></summary>
+    /// attachment list vanilla keeps on the gob (<c>Gob::AddAttachment</c> @0x4424a0). Needed because a parent's
+    /// move does not mark its children and the compose visits only what changed. Index 0 is the sentinel, never
+    /// a live record; <see cref="_kidOf"/> is the parent a child is linked under now, so a re-attach MOVES it.</summary>
     private static readonly int[] _kidHead = new int[SceneDb.MaxObjects];
     private static readonly int[] _kidNext = new int[SceneDb.MaxObjects];
     private static readonly int[] _kidOf = new int[SceneDb.MaxObjects];

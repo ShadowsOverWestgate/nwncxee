@@ -7,12 +7,10 @@ using CX.Framework;
 
 namespace CX.Alloy.Seam;
 
-/// <summary>Everything about the seam that can be proven in a stub host -- no engine, no GL, no game
-/// (run-demo.sh). What it covers: the measured slot order on BOTH OS layouts (counts, the collapsed destructor
-/// pair, MSVC's reversed overloads, the secondary-base overrides MSVC does not duplicate), the shell's layout
-/// against the engine's offsets, the <c>DbId</c> round trip through the header, the pointer normalisation of a
-/// sub-object vptr, the SafePointer back-reference nulling over a synthetic list, the poison path and the
-/// two-frame quarantine, and that a setter leaves the shell's mirrored word and the column agreeing.</summary>
+/// <summary>Everything about the seam that can be proven in a stub host -- no engine, no GL, no game. Covers
+/// the measured slot order on BOTH OS layouts, the shell's layout against the engine's offsets, the <c>DbId</c>
+/// round trip through the header, pointer normalisation of a sub-object vptr, SafePointer back-reference
+/// nulling, the poison path and two-frame quarantine, and a setter leaving shell word and column agreeing.</summary>
 internal static unsafe class FacadeSelfCheck
 {
     internal static bool Run(ExtenderLog log)
@@ -80,12 +78,9 @@ internal static unsafe class FacadeSelfCheck
     }
 
     /// <summary>What <c>NewCAurObject</c> answers when the model does not load, which is two different answers.
-    /// A model the engine's resource lookup does not know is a NULL, as the engine's own factory answers it and
-    /// as every call site null-checks. A model whose resource IS there and CX could not read is CX's own
-    /// failure, and a NULL for it is fatal: <c>CGuiObject::SetModel</c> @0x586520 falls back to
-    /// <c>GUI_empty</c> and then dereferences the result at +0x45 unchecked, which is the DB-mode SIGSEGV an
-    /// item radial hit (<c>CNWCItem::ActivateRadialMenu</c> -&gt; <c>CRadialMenu::CRadialMenu</c> -&gt;
-    /// <c>SetModel("GUI_RA_MENU")</c>). So that case mints a record with NO model instead.</summary>
+    /// A model the resource lookup does not know is a NULL, as the engine's own factory answers it. A model
+    /// whose resource IS there and CX could not read mints a record with NO model instead: <c>CGuiObject::SetModel</c>
+    /// @0x586520 falls back to <c>GUI_empty</c> and dereferences it at +0x45 unchecked, so a NULL there faults.</summary>
     private static void Factory(Checker check)
     {
         Func<string, bool> was = ObjectFns.ResourcePresent;

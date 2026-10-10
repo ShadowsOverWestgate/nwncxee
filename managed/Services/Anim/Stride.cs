@@ -6,30 +6,10 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Stride matching and foot locking, a <see cref="PoseService"/> module (CX-159).
-/// <para><b>Stride.</b> The engine already paces walk and run: <c>CNWCCreature::WalkUpdateLocation</c> sets the
-/// run's rate (<c>AnimRun+0x08</c>) to the ground speed over <c>appearance.2da</c>'s WALKDIST/RUNDIST, a stride
-/// length per appearance that a custom cycle, a slope or the two-clock step does not match. Here the stance
-/// foot's model-space speed is measured per unit of the engine's own rate and the rate multiplied so it equals
-/// the gob's measured ground speed. No table, no content contract: any walk cycle is paced by its own feet.
-/// Every run on the gob is scaled alike, so a torso overlay (<c>walk_swordl</c>) stays in step with its walk.
-/// <see cref="Skating"/> (CX-70) adds the clip the engine never paces at all -- the combat shuffle, by the gap
-/// its position correction still has to close -- and the pose test that stands both this and the lock down when
-/// the body is not walking on the ground.</para>
-/// <para><b>Attachments follow.</b> A cloak, robe, tail or wings is a gob of its own (<c>CNWCAnimBaseTW::LoadModel</c>
-/// attaches it to the body's root) playing the body's clip on its own run list, which the engine paces equal to
-/// the body's on every AI update but never re-syncs in time (CX-136). Scaling the body
-/// alone drifts them apart -- and vanilla drifts them too, without any help (a cloak equipped mid-stride starts
-/// at time 0, rate 1). So each attachment is phase-locked to the body in its own <c>Gob::Animate</c>, just
-/// before the body's: <see cref="Sync"/>.</para>
-/// <para><b>The rate is not restored</b> like the pose: the engine rewrites it on every AI update, and a frame
-/// without one leaves this module's own value, which <see cref="Pre"/> recognises and multiplies from the
-/// engine value it kept rather than compounding.</para>
-/// <para><b>Lock.</b> While locomoting, a foot within <see cref="PlantTol"/> of the stance height is planted:
-/// its world XY is held from the frame it lands until the animation lifts it (or it is dragged
-/// <see cref="MaxSlip"/> away), then eased back to the animated foot over <see cref="ReleaseTime"/>; the
-/// offset is a spring both ways (<see cref="Foot"/>). A foot planted while the hips turn (<see cref="Diagonal"/>) is
-/// the pivot: it holds however far the turn drags it, until the animation lifts it.</para>
+/// Stride matching and foot locking, a <see cref="PoseService"/> module. The engine paces a cycle by
+/// <c>appearance.2da</c>'s WALKDIST/RUNDIST (<c>CNWCCreature::WalkUpdateLocation</c> writes the run's rate,
+/// <c>AnimRun+0x08</c>); here the stance foot's own model-space speed is measured and every run on the gob scaled so
+/// the feet match the measured ground speed, while a planted foot's world XY is held until the animation lifts it.
 /// </summary>
 internal static unsafe class Stride
 {
@@ -70,7 +50,9 @@ internal static unsafe class Stride
     internal static int Strided, Locked, Pinned, Dragged, Synced;
 
     /// <summary>Before the engine animates: every run gets the engine's rate times the gob's stride factor
-    /// (1 when not locomoting or the knob is off, which puts the engine's own value back).</summary>
+    /// (1 when not locomoting or the knob is off, which puts the engine's own value back). The rate is NOT restored
+    /// like the pose -- the engine rewrites it on every AI update, and a frame without one leaves this module's own
+    /// value, which <see cref="Scale"/> tells from the engine's and multiplies from rather than compounding.</summary>
     internal static void Pre(ref PoseService.Slot s, IntPtr gob)
     {
         float f = Of(s);
@@ -118,13 +100,10 @@ internal static unsafe class Stride
         }
     }
 
-    /// <summary>Before an attachment animates: each of its runs takes the rate of the body's run playing the
-    /// same animation (the engine's value, times <paramref name="f"/>), and with <c>anim.syncattach</c> its time
-    /// and, when both fade the same way, its blend. The attachment then advances exactly as the body is about
-    /// to, so the two end every frame in phase whatever put them out of it. <paramref name="b"/> is the body's
-    /// slot when <paramref name="tracked"/>, to tell the engine's rate from this module's last write.
-    /// <paramref name="lead"/> is the seconds the body has ALREADY advanced this frame (DB mode steps the body
-    /// first), taken back off the copied time so the attachment's own advance lands on the body's.</summary>
+    /// <summary>Before an attachment animates (a cloak, robe, tail or wings is a gob of its own, attached to the
+    /// body's root by <c>CNWCAnimBaseTW::LoadModel</c>): each of its runs takes the rate of the body's run playing the
+    /// same animation (the engine's value times <paramref name="f"/>), and with <c>anim.syncattach</c> its time and
+    /// blend. <paramref name="lead"/> is the seconds the body ALREADY advanced this frame, taken back off that time.</summary>
     internal static void Sync(IntPtr gob, IntPtr body, ref PoseService.Slot b, bool tracked, float f, float lead = 0f)
     {
         int n = PoseRig.RunCount(gob), bn = PoseRig.RunCount(body);
@@ -180,16 +159,9 @@ internal static unsafe class Stride
     }
 
     /// <summary>After the engine animates, before any correction: samples the stance foot's model-space speed
-    /// (<paramref name="mr"/>/<paramref name="ml"/>, the ankles in model units) and eases the factor toward
-    /// ground speed over it. <paramref name="travel"/> is the body's horizontal travel direction in the same
-    /// model frame (unit, or zero when it is not moving) and <paramref name="groundSpeed"/> its speed, in model
-    /// units per second.
-    /// <para>The sample is the lower ankle's travel <b>against</b> that direction, and only while it bears the
-    /// body's weight (<see cref="Skating.Bears"/>): a swinging foot comes forward, and one the body is carrying
-    /// -- a swim, a crawl, an Arcane float -- hardly moves in the model frame at all. Taking the speed's
-    /// magnitude instead sampled a run through its 41 % flight, where the lower ankle is airborne and moving the
-    /// wrong way. Nothing bearing weight for <see cref="Skating.Liftoff"/> stands the correction down. While the
-    /// gait winds up or down (<see cref="Transient"/>) the factor and the stance speed both hold.</para></summary>
+    /// (<paramref name="mr"/>/<paramref name="ml"/>, the ankles in model units) against the body's travel direction
+    /// <paramref name="travel"/> and eases the factor toward <paramref name="groundSpeed"/>. The sample is the lower
+    /// ankle's travel against that direction, only while it bears weight (<see cref="Skating.Bears"/>); a <see cref="Transient"/> gait holds the factor and the stance speed.</summary>
     internal static void Measure(ref PoseService.Slot s, Vector3 mr, Vector3 ml, Vector3 travel, float groundSpeed, bool fading, float dt)
     {
         bool paced = s.Loco || s.Shuffling;
@@ -237,12 +209,10 @@ internal static unsafe class Stride
         dl = Foot(ref s.LockL, ref s.HeldL, ref s.SlipL, ref s.PinL, ref s.LockDL, ref s.LockVL, ankleL, active && mlz - s.PlantZ < PlantTol, s.Pivot, snap, MaxSlip * scale, dt);
     }
 
-    /// <summary>One foot's lock: the XY offset from the animated ankle to where it is drawn. The offset is a
-    /// spring, never a switch: while held it chases the held point over <see cref="HoldTime"/> (a landing foot
-    /// settles rather than stopping dead), and let go it returns to 0 over <see cref="ReleaseTime"/>. A lock
-    /// dragged past <paramref name="slip"/> lets go and stays let go (<paramref name="slipped"/>) until the foot
-    /// lifts -- unless it was held while the hips turned (<paramref name="pivot"/>): that foot is
-    /// <paramref name="pinned"/> and holds until it lifts, however far.</summary>
+    /// <summary>One foot's lock: the XY offset from the animated ankle to where it is drawn, a spring and never a
+    /// switch -- held, it chases the held point over <see cref="HoldTime"/>; let go, it returns to 0 over
+    /// <see cref="ReleaseTime"/>. A lock dragged past <paramref name="slip"/> lets go and stays let go
+    /// (<paramref name="slipped"/>) until the foot lifts, unless a <paramref name="pivot"/> <paramref name="pinned"/> it.</summary>
     internal static Vector3 Foot(ref Vector3 lockAt, ref bool held, ref bool slipped, ref bool pinned, ref Vector2 d, ref Vector2 vd,
                                  Vector3 ankle, bool planted, bool pivot, bool snap, float slip, float dt)
     {
@@ -265,9 +235,8 @@ internal static unsafe class Stride
 
     /// <summary>A moving body's legs went round by <paramref name="angle"/> radians (positive = left) about
     /// <paramref name="about"/> with its facing (<see cref="PoseService.Slot.Walked"/>): each held foot that is not a
-    /// pivot goes round with them, point and drawn offset alike. The lock is there to stop the feet sliding along the
-    /// ground, not to stand them still while the body turns over them: held against a walked turn a planted foot
-    /// strains until it slips or is dragged, and the step stutters. A pinned foot is the turn's pivot and stays.</summary>
+    /// pivot goes round with them, point and drawn offset alike -- held against a walked turn a planted foot strains
+    /// until it slips or is dragged, and the step stutters. A pinned foot is the turn's pivot and stays.</summary>
     internal static void Turn(ref PoseService.Slot s, Vector3 about, float angle)
     {
         if (angle == 0f) return;

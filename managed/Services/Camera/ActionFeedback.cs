@@ -8,27 +8,17 @@ using CX.Ui;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// "Did that land?" at the crosshair (the mode's <c>feedback</c>). Not a service: it is the action camera's, so
-/// <see cref="MouseLookService"/> owns its lifetime (<see cref="Init"/>) and its knob is the camera mode's
-/// Mouse-look row; <see cref="Crosshair"/> calls <see cref="Draw"/> inside its own reticle draw.
-/// <para>One cold hook and two field reads. <c>CNWCMessage::SendPlayerToServerMessage</c> is the funnel every
-/// player-&gt;server action request passes through, so chaining it latches <c>{kind, target, when}</c> the instant
-/// the order goes out -- a whole round trip before the server's echo. The engine's own message writer keeps
-/// byte-sized fields and bit-sized fields in two streams and starts the byte cursor at 7, so the target object
-/// id sits at a fixed offset per minor (<see cref="TargetOffset"/>) and a <c>BOOL</c>-guarded field never shifts
-/// the ones before it.</para>
-/// <para>The persistent half is state, not a hook: the player creature says whether it is attacking and whom
-/// (<see cref="EngineLayout.CreatureAiState"/>), and <c>CGuiInGame</c>'s action-queue panel says how much is
-/// still pending. That mirror lags the click by a round trip, which is why the latch exists.</para>
-/// <para>The latch is written on the input thread and read on the render thread: three independent statics, so a
-/// torn pair costs one frame of a wrong glyph and nothing else. Both paths allocate nothing.</para>
+/// Crosshair feedback for the action camera: <see cref="MouseLookService"/> owns it, <see cref="Crosshair"/> draws it.
+/// Chaining the one player-&gt;server send funnel latches <c>{kind, target, when}</c> a round trip before the server's
+/// echo; the creature's AI state and <c>CGuiInGame</c>'s action-queue panel are the lagging half. The latch is written
+/// on the input thread and read on the render thread, so a torn read costs one wrong glyph. Allocates nothing.
 /// </summary>
 internal static unsafe class ActionFeedback
 {
     private static bool _ready;
     private static SendPlayerToServerMessageFn* _next;
 
-    // ---- the wire frame (CX-123 §1) ----
+    // ---- the wire frame ----
 
     /// <summary>Major 0x06 is player input; 0x26 is the shift-click party-group twin of the same payload, same
     /// minor and the same leading object id.</summary>
@@ -108,14 +98,10 @@ internal static unsafe class ActionFeedback
         _sent++;
     }
 
-    /// <summary>Where this minor's target object id sits in the frame: 0 for an action that carries none, -1 for
-    /// a minor this feature does not name. Every row read off that sender's decompilation -- the byte-stream
-    /// writers (<c>WriteOBJECTIDClient</c>, <c>WriteBYTE(_, 8, _)</c>, <c>WriteWORD</c>, <c>WriteDWORD</c>) advance
-    /// the cursor in call order and the <c>BOOL</c>s do not. Past the <see cref="HeaderBytes"/> header: attack,
-    /// talk, use and target-selected put the OBJECTID first; use-skill writes BYTE skill + BYTE sub before it;
-    /// use-feat writes WORD feat + WORD sub; use-item writes OBJECTID item + BYTE, then a sub-item BYTE only when
-    /// it is not 0xff; cast-spell writes DWORD spell + 3 BYTEs and then the object only if
-    /// <see cref="CastSpellFlagsOff"/> bit 0 says so.</summary>
+    /// <summary>Where this minor's target object id sits in the frame, past <see cref="HeaderBytes"/>: 0 when the
+    /// action carries none, -1 for a minor this feature does not name. Byte-stream writers advance the cursor in
+    /// call order and the <c>BOOL</c>s do not, so a row is whatever precedes the OBJECTID: skill BYTE+BYTE, feat
+    /// WORD+WORD, item OBJECTID+BYTE (+a sub-item BYTE unless 0xff), cast DWORD+3 BYTEs then a flag-gated object.</summary>
     private static int TargetOffset(byte minor, byte* buf, uint bytes)
     {
         switch (minor)

@@ -6,17 +6,10 @@ using Row = CX.Ui.KnobPanel.Row;
 namespace CX.Services.Chat.Core;
 
 /// <summary>
-/// The chat settings window: the chat-side consumer of the shared <see cref="KnobPanel"/> (CX-683, CX-696). It owns
-/// the content only -- the category list (<c>Window settings</c>, one entry per kept tab, <c>Add new tab...</c>),
-/// which rows the chosen category holds (toggles, dropdowns, sliders, expandable RGBA colour pickers, the tab
-/// editor, "copy from window") and what each press does to the <see cref="ChatWindow"/>. The one shared knob it
-/// still fronts (<c>chat.tellopen</c>) is seeded from the knob and a pick is handed back to the shell
-/// (<see cref="TellOpenPicked"/>, like <see cref="CopyRequested"/>); the font rows are the window's own
-/// (<see cref="ChatWindow.FontPx"/> / <see cref="ChatWindow.Typeface"/>) and a pick raises <see cref="FontChanged"/>
-/// so the shell bakes the face, cold. The pure core never sets a live knob and never touches the text rig.
-/// The panel owns everything else: placement, the header drag, the columns, the row layout, hit-test-to-row,
-/// the dropdown list, the inline text buffer, and the draw. Pure -- pixels in, hit-tests + value edits out, no
-/// native refs -- so it self-checks off-device.
+/// The chat settings window: the chat-side consumer of the shared <see cref="KnobPanel"/>. It owns the content
+/// only -- the category list, which rows each category holds, and what a press does to the
+/// <see cref="ChatWindow"/>; the panel owns placement, drag, layout, hit-test-to-row and the draw. A pick on a
+/// shared knob or a font is raised to the shell: this pure core never sets a live knob nor touches the text rig.
 /// </summary>
 public sealed partial class SettingsWindow
 {
@@ -221,7 +214,7 @@ public sealed partial class SettingsWindow
                                Key = wi.ToString(System.Globalization.CultureInfo.InvariantCulture) });
         }
 
-        // Closing lives here (the tab bar's [×] went with CX-683); Main is undeletable, so it gets no row.
+        // Closing lives here, not on the tab bar; Main is undeletable, so it gets no row.
         if (win.Closeable)
         {
             AddSection(rows, "Close");
@@ -231,7 +224,7 @@ public sealed partial class SettingsWindow
         }
     }
 
-    /// <summary>The tab editor (#39): label, the channel filter, remove. The tell pin is the tab bar's own affordance, not a setting.</summary>
+    /// <summary>The tab editor: label, the channel filter, remove. The tell pin is the tab bar's own affordance, not a setting.</summary>
     private static void LayoutTab(List<Row> rows, ChatWindow win, int ti)
     {
         Tab tab = win.Tabs[ti];

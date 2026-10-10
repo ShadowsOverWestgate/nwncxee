@@ -174,7 +174,7 @@ public sealed partial class SettingsWindow
         check.Expect(s.MouseDown(s.X + 5, s.Y + s.H + 40, win) && !s.Open && s.MouseUp(), "click-off closes and owns the press (the shell saves on the release)");
         s.Reset();
 
-        // ---- Tab editing (#39) as categories ----
+        // ---- Tab editing as categories ----
         Open(s, win);
         check.Expect(win.Tabs.Count == 1, "pre-tab: one default tab");
         PressCat(s, win, 2);   // Add new tab...
@@ -247,7 +247,7 @@ public sealed partial class SettingsWindow
         win.RemoveTab(1);
         s.Reset();
 
-        // ---- Copy from (#41) ----
+        // ---- Copy from ----
         Open(s, win, winIndex: 0, winCount: 2);
         Row? copyRow = s.Rows.Find(r => r.Act == SetAct.CopyFrom);
         check.Expect(copyRow != null && copyRow.Text == "Copy from Window 2", "copy row shown for the other window");

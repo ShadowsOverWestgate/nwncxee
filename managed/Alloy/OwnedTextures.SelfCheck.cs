@@ -12,10 +12,9 @@ namespace CX.Alloy;
 
 internal static unsafe partial class OwnedTextures
 {
-    /// <summary>Off-device: the residency contract, with no GL and no engine. What it pins is everything
-    /// #259 changed about the keying -- that identity is content, that the engine's GL name is an index
-    /// rewritten at both of its edges, and that a re-upload retires the old texture instead of respecifying
-    /// it. The upload itself needs a client; #227 can only be re-tested live.</summary>
+    /// <summary>Off-device: the residency contract, with no GL and no engine -- that identity is content, that
+    /// the engine's GL name is an index rewritten at both of its edges, and that a re-upload retires the old
+    /// texture instead of respecifying it. The upload itself needs a client, and is only testable live.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         if (!TexScan.SelfCheck(log)) return false;

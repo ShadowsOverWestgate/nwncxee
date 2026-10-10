@@ -8,29 +8,10 @@ using CX.Services.Camera;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Weighty keyboard movement (<c>anim.drive</c>), the one pose module that changes how the player moves rather than
-/// how it is drawn. Keyboard driving is bang-bang in the engine: full speed on the first frame, and once the keys
-/// are up a coast at full speed over whatever is left of the path <c>DrivePlayer</c> laid -- it re-lays a 0.4 s lead
-/// only every 250 ms, so 0.15-0.4 s of travel -- then a dead stop (CX-148 §3.3).
-/// Click-to-move already ramps and eases. This gives the drive the same shape through the engine's own lever:
-/// <c>WalkUpdateLocation</c> multiplies a driving body's rate by the special-walk field (<c>CNWCCreature+0x300</c>,
-/// which only the constructor and <c>ClientSideWalkCommand</c> ever write, both to 1), and the cycle's playback
-/// rate with it -- so the legs wind up and down with the body, and a run slowed under half its rate plays the walk
-/// exactly as the engine's own path ease does.
-/// <list type="bullet">
-/// <item><b>Start</b>: from <see cref="Start"/> of full speed, up to it over <see cref="RampTime"/>.</item>
-/// <item><b>Stop</b>: once the keys are up (<see cref="CameraDriveService.Held"/>), an even deceleration over exactly
-/// the path the engine was going to coast -- the same end point, reached twice as late -- under the engine's own
-/// ease law, <c>sqrt(remaining / distance)</c> down to <see cref="Gait.Floor"/>. Keys pressed again mid-stop ramp up
-/// from the speed it had got down to.</item>
-/// <item><b>Walk and run</b>: a change of rate keeps the speed, and the ramp carries it to the new one.</item>
-/// </list>
-/// <para><b>The server</b> still drives the creature at full speed from each packet and adopts the client's claimed
-/// position only past 0.5 m (<c>AIActionDrive</c>). The start leaves the client <c>(1 - Start) × RampTime / 2</c> =
-/// 0.14 s of travel behind it -- 0.3 m walking, 0.6 m running at SoW's rates -- of which the server's own late start
-/// (half a round trip after the key) takes back the network's share; the stop adds nothing.</para>
-/// <para><b>Hot.</b> Chained on <c>WalkUpdateLocation</c>: a walking creature pays a load and a compare; the driven
-/// player a waypoint walk and a square root. No allocation.</para>
+/// Weighty keyboard movement (<c>anim.drive</c>): a drive ramps up and eases to a stop like click-to-move, through the
+/// engine's own lever -- <c>WalkUpdateLocation</c> multiplies a driving body's rate, and the cycle's playback rate with
+/// it, by the special-walk field (<c>CNWCCreature+0x300</c>, which only the constructor and <c>ClientSideWalkCommand</c>
+/// ever write, both to 1). <b>Hot</b>, chained on that call: a waypoint walk and a square root, no allocation.
 /// </summary>
 internal static unsafe class DriveEase
 {

@@ -10,7 +10,7 @@ public struct Vec3
 }
 
 /// <summary>
-/// An engine <c>Vector</c> crossing BY VALUE, in the one shape both ABIs lower correctly (#420): SysV puts a
+/// An engine <c>Vector</c> crossing BY VALUE, in the one shape both ABIs lower correctly: SysV puts a
 /// 12-byte all-float aggregate in xmm0 (x, y) + xmm1 (z), Win64 passes any by-value aggregate over 8 bytes as a
 /// pointer to a caller-made copy. Because the C# TYPE NAME is the same on both, one declared <c>[Fn]</c> or
 /// <c>sig:</c> signature names the parameter for both platforms.

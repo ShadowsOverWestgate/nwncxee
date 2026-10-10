@@ -7,27 +7,11 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-110: the area's environment map -- the reflection vanilla's water and every shiny material sample -- is
-/// ALLOY's choice and Alloy's fallback.
-/// <para><c>Scene::Render</c> @0x4762d0 picks it as: the module's current area's tileset names a resref
-/// (<c>CNWTileSet::GetEnvMapResRef</c> @0x5e10a0, a 17-byte <c>CResRef</c> at <c>CNWTileSet+0x32</c>), else
-/// <c>AurTextureGetFallbackEnvironmentMap</c> @0x48e430, which is <c>chrome1</c>. Alloy makes the same choice
-/// from the tileset the area load hands it, keeps the answer, and never reads
-/// <c>Scene+0x1e8</c>.</para>
+/// The area's environment map -- what water and every shiny material reflect -- chosen by ALLOY: the area's
+/// tileset names a resref (<c>CNWTileSet::GetEnvMapResRef</c> @0x5e10a0), else the engine's <c>chrome1</c>
+/// fallback @0x48e430. The <c>CNWTileSetManager::GetTileSet</c> hook only COPIES the 17-byte name, being deep
+/// in the area load; <see cref="Present"/> acquires the texture, holds it for the area, drops it at the next adopt.
 /// </summary>
-/// <remarks>
-/// <para><b>The ticket's premise was half wrong and it matters.</b> The engine does not resolve this every
-/// frame: the whole block is gated on <c>Scene+0x1e8 == 0</c>, so it runs once per Scene and again only when
-/// the <c>SafePointer</c> drops (the texture died). What runs per frame is the BIND. So "move the per-frame
-/// lookup into Alloy" is really "own the choice and the fallback", which is what this does.</para>
-/// <para><b>Where the tileset comes from.</b> The <c>CNWTileSetManager::GetTileSet</c> chain, which CX already
-/// subscribes to twice (<see cref="ModelLoad"/>, <see cref="Weather"/>) and which <c>CNWCArea::LoadArea</c>
-/// calls exactly once per area load. That avoids needing <c>CNWCArea+0x290</c> at all, and it is the natural
-/// invalidation edge: a new area means a new resref.</para>
-/// <para><b>Two-step on purpose.</b> The hook only COPIES the resref -- 17 bytes of data with no lifetime --
-/// because it runs deep inside the area load. The texture is acquired from <see cref="TexRegistry"/> at the
-/// next world frame (<see cref="Present"/>), which holds it for the area and releases it at the next adopt.</para>
-/// </remarks>
 internal static unsafe class AlloyEnvMap
 {
     /// <summary>A <c>CResRef</c> is 16 characters and a NUL: <c>GetEnvMapResRef</c> copies 16 bytes plus the
@@ -113,11 +97,9 @@ internal static unsafe class AlloyEnvMap
         return tileset;
     }
 
-    /// <summary>Note the resref the next <see cref="Present"/> should adopt, or null for the fallback. Nothing is
-    /// looked up here.
-    /// <para>ALWAYS dirty, even for a name identical to the one in force: an area edge is what clears the
-    /// "this name does not resolve" latch, and two adjacent areas sharing a tileset must still re-adopt (the
-    /// first cut compared the names and skipped, which is how a stale answer survived a transition).</para></summary>
+    /// <summary>Note the resref the next <see cref="Present"/> should adopt, or null for the fallback; nothing
+    /// is looked up here. ALWAYS dirty, even for the name already in force: an area edge is what clears the
+    /// "this name does not resolve" latch, and two adjacent areas sharing a tileset must still re-adopt.</summary>
     private static void Want(byte* name)
     {
         for (int i = 0; i < ResRefBytes; i++) _wanted[i] = name != null ? name[i] : (byte)0;
@@ -268,8 +250,7 @@ internal static unsafe class AlloyEnvMap
         Want(null);
         Choose();
         check.Expect(_onFallback && Same(_resref, _fallback), "an empty tileset name adopts chrome1");
-        check.Expect(Same(_wanted, _resref) == false || _wanted[0] == 0, "...without pretending the tileset asked for it");
-        check.Expect(FallbackResref == "chrome1", "the fallback is the engine's own chrome1");
+        check.Expect(_wanted[0] == 0, "...without pretending the tileset asked for it: the wanted name stays empty");
 
         // A refusal latches and a world edge lifts it -- otherwise a missing resref is probed every frame.
         _missing = true;

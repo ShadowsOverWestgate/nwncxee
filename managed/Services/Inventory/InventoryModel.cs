@@ -23,15 +23,14 @@ internal struct InvItem
 }
 
 /// <summary>One equip slot of the vanilla panel: its policy id, label, <c>INVENTORY_SLOT_*</c> mask, its box in the
-/// vanilla layout (px, y-down, relative to the equip area; <c>inv_equip.gui</c> × 100, CX-146
-/// §2.5) and its empty-slot silhouette.</summary>
+/// vanilla layout (px, y-down, relative to the equip area; <c>inv_equip.gui</c> × 100) and its empty-slot
+/// silhouette.</summary>
 internal readonly record struct SlotDef(string Id, string Label, uint Mask, float X, float Y, float W, float H, string Silhouette);
 
 /// <summary>A paged item grid: <see cref="GridCols"/> × <see cref="GridRows"/> cells a page, the pages stacked in global
-/// rows (<c>page * GridRows + localRow</c>, row 0 on top as displayed). A footprint never crosses a page, as the stock
-/// grid holds one page at a time. The backpack and an open container share it, and share how their pages arrive: the
-/// server streams one page, and every switch costs it a full resend of the new one (CX-146
-/// §12), so a page is asked for only where the view rests or an action lands -- one request in flight at a time.</summary>
+/// rows (<c>page * GridRows + localRow</c>, row 0 on top as displayed); a footprint never crosses a page, as the stock
+/// grid holds one page at a time. The backpack and an open container share it: the server streams one page and every
+/// switch costs a full resend, so a page is asked for only where the view rests or an action lands, one request at a time.</summary>
 internal class ItemGrid
 {
     public readonly int GridCols, GridRows;
@@ -228,8 +227,8 @@ internal sealed class InventoryModel : ItemGrid
 /// <see cref="InventoryNative.FillLoot"/>; no engine reference.</summary>
 internal sealed class LootModel : ItemGrid
 {
-    /// <summary>The stock container grid: <c>CGuiContainer</c>, <c>SetSize(7, 5)</c> (CX-146 §2.3),
-    /// and the server's page math agrees (<c>CItemRepository::CalculatePage</c> = <c>(width * y + x) / 35</c>).</summary>
+    /// <summary>The stock container grid: <c>CGuiContainer</c>, <c>SetSize(7, 5)</c>, and the server's page math
+    /// agrees (<c>CItemRepository::CalculatePage</c> = <c>(width * y + x) / 35</c>).</summary>
     public const int Cols = 7, Rows = 5;
     /// <summary>The page count is a byte on the wire (<c>Update_GuiContainer</c> <c>'P'</c>).</summary>
     public const int MaxPages = 255;

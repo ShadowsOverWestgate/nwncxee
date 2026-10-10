@@ -505,7 +505,7 @@ has to answer "which symbol is wrong" on its own. `cx.cfg` goes beside `nwn.ini`
 
 ## Regenerating after a client patch
 
-Both binaries are analyzed in the one Ghidra project `~/ghidra/nwn-linux.rep`
+Both binaries are analyzed in the one Ghidra project `$GHIDRA_PROJECT/nwn-linux.rep`
 (programs `nwmain-linux`, `nwmain.exe`). The tables above ARE the regen path: each RVA
 row's "How anchored" column is the recipe for that symbol, and each offset row names
 the function it was read from. `tools/update/` now does the first pass

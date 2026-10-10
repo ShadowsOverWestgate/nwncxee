@@ -7,9 +7,8 @@ namespace CX.Alloy.Db;
 
 /// <summary>The tooltip's one display funnel, <c>CGuiMan::ShowTooltipText</c>, chained always: it names the scene the
 /// tooltip bubble landed in (<see cref="Scene"/>), because that bubble shares the <c>sceneGUI_PNL_BUBBLE*</c> prefix
-/// DbGui refuses for the in-world chat bubbles under the nameplate suppression.
-/// <para><c>alloy.hitcheck=1</c> also chains the delay (<c>CGuiMan::HandleGuiTimer</c>) and says, budgeted, when it
-/// fires and what it hit, and where the bubble and its text landed. Both hooks are cold.</para></summary>
+/// DbGui refuses for the in-world chat bubbles under the nameplate suppression. <c>alloy.hitcheck=1</c> also chains
+/// the delay (<c>CGuiMan::HandleGuiTimer</c>) and traces it, budgeted. Both hooks are cold.</summary>
 internal static unsafe class TooltipProbe
 {
     private const int Budget = 30;
@@ -37,28 +36,29 @@ internal static unsafe class TooltipProbe
     [UnmanagedCallersOnly]
     private static void OnTimer(nint gm, int dt)
     {
-        int before = *(int*)(gm + EngineLayout.GuiManTipTimer);
+        var man = new CGuiMan(gm);
+        int before = man.TooltipTimer;
         if (_timer != null && *_timer != null) (*_timer)(gm, dt);
         if (before <= 0 || before - dt >= 1 || _fired >= Budget) return;
         _fired++;
-        nint hit = *(nint*)(gm + EngineLayout.GuiManTipObject);
-        _log?.Always($"[tooltip] delay fired (dt={dt}) at mouse ({*(int*)(gm + EngineLayout.GuiManMouseX)},"
-            + $"{*(int*)(gm + EngineLayout.GuiManMouseY)}): hit {(hit == 0 ? "NOTHING" : Obj(*(nint*)(hit + EngineLayout.GuiObjectModel)))}"
-            + $", timer now {*(int*)(gm + EngineLayout.GuiManTipTimer)}");
+        nint hit = man.TooltipObject;
+        _log?.Always($"[tooltip] delay fired (dt={dt}) at mouse ({man.MouseX},"
+            + $"{man.MouseY}): hit {(hit == 0 ? "NOTHING" : Obj(new CGuiObject(hit).Model))}"
+            + $", timer now {man.TooltipTimer}");
     }
 
     [UnmanagedCallersOnly]
     private static void OnShow(nint gm, nint text, int instant)
     {
         if (_show != null && *_show != null) (*_show)(gm, text, instant);
-        nint bubble = *(nint*)(gm + EngineLayout.GuiManTipBubble);
-        nint model = bubble == 0 ? 0 : *(nint*)(bubble + EngineLayout.GuiObjectModel);
+        nint bubble = new CGuiMan(gm).TooltipBubble;
+        nint model = bubble == 0 ? 0 : new CGuiObject(bubble).Model;
         DbId mid = model == 0 ? default : Facade.ObjectId(model);
         Scene = !mid.IsNull && SceneDb.Objects.Valid(mid) ? SceneDb.ObjScene[mid.Index].Value : 0;
         if (!Renderer.HitCheck.Boot || _shown >= Budget) return;
         _shown++;
         nint chars = text == 0 ? 0 : *(nint*)text;
-        nint str = bubble == 0 ? 0 : *(nint*)(bubble + EngineLayout.TextBubbleString);
+        nint str = bubble == 0 ? 0 : new CGuiTextBubble(bubble).AurString.Ptr;
         DbId sid = str == 0 ? default : Facade.StringId(str);
         TextDoc? d = sid.IsNull ? null : TextObjects.Of(sid);
         _log?.Always($"[tooltip] show \"{(chars == 0 ? "" : Marshal.PtrToStringUTF8(chars))}\" instant={instant} "

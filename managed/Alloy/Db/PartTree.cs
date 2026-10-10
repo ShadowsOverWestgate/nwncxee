@@ -7,36 +7,19 @@ using CX.Framework;
 namespace CX.Alloy.Db;
 
 /// <summary>
-/// CX-114: builds an object's part range from its <see cref="ModelDef"/> -- CX's <c>CreateInstanceTree</c>
-/// @0x43c7c0 / <c>CreateInstanceTreeR</c> @0x43c6b0, <c>CreateReferenceObjects</c> @0x4421e0 /
-/// <c>ExpandReferenceParts</c> @0x462f70, <c>CollapsePartTree</c> @0x462ff0, <c>CombineParts</c> @0x473d30
-/// (with <c>CreatePartBuckets</c> @0x473570), <c>PartInitMaterial</c> @0x43de50 and
-/// <c>ComputePartBBox</c> @0x461370.
-///
-/// <para><b>The engine's two paths, kept apart as the engine keeps them.</b> An OBJECT
-/// (<c>NewCAurObject</c> / <c>Gob::Append</c>) gets <c>CreateInstanceTree</c> + <c>PartInitMaterial</c> +
-/// <c>CreateReferenceObjects</c>: a reference node spawns a SEPARATE object of the referenced model, attached
-/// to the reference part -- so this builder reports it through <see cref="OnReference"/> and the seam creates
-/// that object. A TILE (<c>SpawnPartsForTile</c> / <c>Scene::SpawnTile</c>) gets <c>ExpandReferenceParts</c>
-/// (the referenced model instanced IN PLACE under the node), then <c>CollapsePartTree</c> (the tree flattened,
-/// each pose baked, the one <c>&lt;model&gt;a</c> subtree left under the root for the animated tile gob), then
-/// <c>CombineParts</c> (compatible meshes merged into one).</para>
-///
-/// <para><b>Parts are a RANGE, not handles.</b> <see cref="SceneDb.PartParent"/> is an absolute part index by
-/// contract, so the index space is allocated here in contiguous per-object chunks -- size-class free lists, so
-/// an alloc and a free are O(1) and a dead object's chunk is reused by the next object of its size.
-/// ponytail: the chunk is rounded up to a power of two (at most 2x waste) and there is no compaction; at
-/// <see cref="SceneDb.MaxParts"/> = 512k slots that covers an area of 3k objects at ~170 parts each, and the
-/// ceiling is a counted refusal with a log line, never a quiet drop.</para>
+/// Builds an object's part range from its <see cref="ModelDef"/>: the port of <c>CreateInstanceTree</c>
+/// @0x43c7c0, <c>ExpandReferenceParts</c> @0x462f70, <c>CollapsePartTree</c> @0x462ff0 and <c>CombineParts</c>
+/// @0x473d30. An OBJECT spawns a reference node as its own object (<see cref="OnReference"/>); a TILE
+/// instances it in place, collapses, merges. Parts are a contiguous RANGE of ABSOLUTE indices.
 /// </summary>
 public static class PartTree
 {
     /// <summary>A reference node the OBJECT path found: the engine spawns <c>model</c> as its own object and
-    /// attaches it to part <c>part</c> of <c>obj</c>. Set by the seam (CX-120), the only layer that may create
-    /// an object; null leaves reference nodes inert, which is what the off-device checks run with.</summary>
+    /// attaches it to part <c>part</c> of <c>obj</c>. Set by the seam, the only layer that may create an
+    /// object; null leaves reference nodes inert, which is what the off-device checks run with.</summary>
     public static Action<DbId, int, string>? OnReference;
 
-    /// <summary>How a reference node's model name becomes a model. The model cache (CX-113) by default; the
+    /// <summary>How a reference node's model name becomes a model. The model cache by default; the
     /// seam or a check may point it at its own table, which is how the off-device suite exercises
     /// <c>ExpandReferenceParts</c> before the cache exists.</summary>
     public static Func<string, ModelDef?> ResolveModel = ModelCache.Acquire;
@@ -63,7 +46,10 @@ public static class PartTree
     /// <summary>Highest part index ever handed out, plus one: a dense column walk's bound.</summary>
     public static int High => SceneDb.Parts.High;
 
-    /// <summary>Part slots held by live chunks, straight off the ONE allocator that hands them out.</summary>
+    /// <summary>Part slots held by live chunks, straight off the ONE allocator that hands them out.
+    /// ponytail: a chunk is rounded up to a power of two (at most 2x waste) and there is no compaction; at
+    /// <see cref="SceneDb.MaxParts"/> = 512k slots that covers an area of 3k objects at ~170 parts each, and
+    /// the ceiling is a counted refusal with a log line, never a quiet drop.</summary>
     internal static long HeldSlots => SceneDb.Parts.RangeHeld;
 
     // ---------------------------------------------------------------- the two entry points
@@ -73,13 +59,10 @@ public static class PartTree
     /// <c>CreateReferenceObjects</c>). False means the part table could not hold it -- logged and counted.</summary>
     public static bool Build(DbId obj, ModelDef model) => Build(obj, model, default);
 
-    /// <summary>THE CALL THE TILE PATH MAKES (CONTRACTS.md). One tile placement's part range: the reference
-    /// nodes expanded in place, the tree collapsed to model space, and CX-116's shared
-    /// <c>TileBuild.Plan(model)</c> applied -- so the merged geometry is uploaded ONCE per model and every
-    /// placement references it. <paramref name="keepSubtree"/> is the engine's <c>&lt;model&gt;a</c> node,
-    /// the animated half a tile gob keeps; empty keeps nothing back.
-    /// <para>The placement itself belongs in the OBJECT transform, not in the parts: the collapse runs at
-    /// identity so one arena copy serves every placement of the tile.</para></summary>
+    /// <summary>THE CALL THE TILE PATH MAKES. One tile placement's part range: the reference nodes expanded in
+    /// place, the tree collapsed to model space at IDENTITY, and the shared <c>TileBuild.Plan(model)</c>
+    /// applied, so the merged geometry is uploaded ONCE per model and every placement references it -- the
+    /// placement itself belongs in the OBJECT transform. <paramref name="keepSubtree"/> is <c>&lt;model&gt;a</c>.</summary>
     public static bool BuildTile(DbId obj, ModelDef model, string keepSubtree = "")
         => Build(obj, model, new TreeOptions
         {
@@ -176,8 +159,7 @@ public static class PartTree
         /// <summary><c>CollapsePartTree</c>: flatten the tree, baking each part's pose into it.</summary>
         public bool Collapse;
         /// <summary>Merge the compatible meshes of the flattened tree through <c>TileBuild.Plan</c> -- the
-        /// per-model plan CX-116 builds once and every placement of that tile shares (CONTRACTS.md). The tile
-        /// path uses this.</summary>
+        /// per-model plan built once and shared by every placement of that tile. The tile path uses this.</summary>
         public bool Combine;
         /// <summary>Merge through the <c>CombineParts</c> port in THIS file instead. It is the reference the
         /// shared plan agrees with and what the off-device suite drives; a caller with a tile model wants
@@ -234,10 +216,8 @@ public static class PartTree
 
     /// <summary>A few merged tile meshes, once: are the normals the lit stage will read unit-length and
     /// pointing where the source geometry pointed? A tile that renders BLACK under correct ambient is almost
-    /// always a normal problem, and the merge is the only step that rotates them. Also states the vertex
-    /// streams, so "the merge dropped a lane" is answered rather than assumed.
-    /// <para>The arena's Static format is pos3 nrm3 uv2 chart2 -- there is NO colour lane -- so a merged
-    /// mesh's per-vertex colours cannot darken anything on this path whatever they hold.</para></summary>
+    /// always a normal problem, and the merge is the only step that rotates them. It also states the vertex
+    /// streams -- the arena's Static format is pos3 nrm3 uv2 chart2, with NO colour lane.</summary>
     private static void ProbeMerged(ModelDef model, int node, MeshDef m, int range)
     {
         // the off-device fixtures merge too, and they would otherwise spend the whole budget at boot
@@ -264,17 +244,10 @@ public static class PartTree
                   + $"ambient=({m.Ambient.X:F2},{m.Ambient.Y:F2},{m.Ambient.Z:F2}) render={m.Render}");
     }
 
-    /// <summary>What a node of a TILE model actually draws, for whoever builds the draw record. CX-116's plan
-    /// merges a tile's meshes per MODEL, so the geometry a node draws is not always the geometry its
-    /// <see cref="NodeDef.Mesh"/> names:
-    /// <list type="bullet">
-    /// <item>a bucket HEAD draws the merged mesh -- model space, one upload for every placement of the tile,
-    /// which is why <see cref="CombinePlan"/> zeroes its pose;</item>
-    /// <item>a node the bucket SWALLOWED draws nothing: its triangles are already in the head's mesh;</item>
-    /// <item>anything else draws its own mesh (null here).</item>
-    /// </list>
-    /// The plan is per <see cref="ModelDef"/> and deterministic, so this is a pure function of (model, node)
-    /// and a draw record interned on that pair stays correct.</summary>
+    /// <summary>What a node of a TILE model actually draws, which is not always what its
+    /// <see cref="NodeDef.Mesh"/> names: the plan merges per MODEL, so a bucket HEAD draws the merged mesh in
+    /// model space (hence <see cref="CombinePlan"/> zeroing its pose), a node the bucket SWALLOWED draws
+    /// nothing, anything else its own mesh (null here). Deterministic, so a record interned on (model, node) holds.</summary>
     public static MeshDef? PlanMeshFor(ModelDef model, int node, out bool swallowed)
     {
         swallowed = false;
@@ -294,7 +267,7 @@ public static class PartTree
         return null;
     }
 
-    /// <summary>Which of <paramref name="model"/>'s nodes CX-116's plan folds into another node's mesh: they
+    /// <summary>Which of <paramref name="model"/>'s nodes the shared plan folds into another node's mesh: they
     /// get no range of their own, because the merged mesh already carries their triangles.</summary>
     private static bool[]? Swallowed(ModelDef model, string? keepSubtree)
     {
@@ -361,22 +334,17 @@ public static class PartTree
         SceneDb.PartRadius[p] = 0f;
     }
 
-    /// <summary>CX-120: the node's REST alpha -- its <c>alpha</c> controller at key 0, 1 when it has none.
-    /// <para>The engine seeds it the same way the rest pose is seeded: <c>Gob::Reset</c> @0x499bd0 runs
-    /// <c>AnimateHierarchy(rootPart, rootPart-&gt;node, 0, 0, 1)</c> over the MODEL's own node tree, so every
-    /// base controller -- position, orientation, scale AND alpha/self-illumination -- lands on the part before
-    /// any animation plays. <c>PartTriMesh::Mat</c> @0x450960 then sends that value as the vertex colour's
-    /// alpha and the diffuse material's alpha, which is why an <c>alpha 0</c> node draws nothing in vanilla.
-    /// A flat 1 here made every such node OPAQUE: the door-sized <c>sam</c> box inside each <c>T_Door*</c>
-    /// (<c>alpha 0</c>, <c>bitmap NULL</c>) stood in the middle of the inn as a grey slab mode 0 never draws.
-    /// </para></summary>
+    /// <summary>The node's REST alpha -- its <c>alpha</c> controller at key 0, 1 when it has none. The engine
+    /// seeds it with the rest pose (<c>Gob::Reset</c> @0x499bd0 runs <c>AnimateHierarchy</c> at time 0 over the
+    /// model's own nodes), and <c>PartTriMesh::Mat</c> @0x450960 sends that value as BOTH the vertex colour's
+    /// alpha and the diffuse material's alpha, which is why an <c>alpha 0</c> node draws nothing.</summary>
     private static float RestAlpha(NodeDef n)
     {
         ControllerTrack? c = n.Controller(Ctl.Alpha);
         return c is { Values.Length: > 0 } ? c.Values[0] : 1f;
     }
 
-    /// <summary>CX-120: the node's REST self-illumination, zero when it has none.
+    /// <summary>The node's REST self-illumination, zero when it has none.
     /// <inheritdoc cref="RestAlpha"/></summary>
     private static Vector3 RestSelfIllum(NodeDef n)
     {
@@ -521,9 +489,8 @@ public static class PartTree
 
     /// <summary><c>CollapsePartTree</c> @0x462ff0: every part's pose is composed with its parent's and written
     /// back as its own, then the hierarchy links are cut, so the range becomes a FLAT list of placed parts.
-    /// The one exception is the subtree named by <see cref="TreeOptions.KeepSubtree"/> (the engine's
-    /// <c>&lt;model&gt;a</c>): it is left hanging off the root with its local pose intact, which is the
-    /// animated half of a tile the engine keeps as a gob.</summary>
+    /// The one exception is <see cref="TreeOptions.KeepSubtree"/> (the engine's <c>&lt;model&gt;a</c>), left
+    /// hanging off the root with its local pose intact -- the animated half of a tile.</summary>
     private static void Collapse(DbId obj, in TreeOptions opt)
     {
         int i = obj.Index;
@@ -635,14 +602,13 @@ public static class PartTree
     /// member whose vertices would take the bucket's total to 65535 or past it.</summary>
     private const int MergeVertexCeiling = 0xffff;   // not-an-offset: the engine's 16-bit index ceiling
 
-    /// <summary><c>CombineParts</c> @0x473d30: the eligible mesh parts are bucketed by
-    /// <see cref="MergeKey"/>, each bucket's first part absorbs the others' geometry as ONE new
-    /// <see cref="MeshDef"/>, and every absorbed part is marked merged away -- the engine's
-    /// <c>part+0x96 = 0</c>, which is <c>PartTriMesh::renderFlag</c>, so the part stays in the tree and draws
-    /// nothing.</summary>
+    /// <summary><c>CombineParts</c> @0x473d30: the eligible mesh parts are bucketed by <see cref="MergeKey"/>,
+    /// each bucket's first part absorbs the others' geometry as ONE new <see cref="MeshDef"/>, and every
+    /// absorbed part is marked merged away -- the engine's <c>part+0x96 = 0</c>
+    /// (<c>PartTriMesh::renderFlag</c>), so the part stays in the tree and draws nothing.</summary>
     private static void Combine(DbId obj)
     {
-        // DIFFERENCE FROM VANILLA (review finding 31): the engine buckets in the order CollapsePartTree's
+        // DIFFERENCE FROM VANILLA: the engine buckets in the order CollapsePartTree's
         // breadth-first flatten produced, so for two parts of one material it may pick the other one as the
         // bucket head. The head only decides whose LOCAL FRAME the merged vertices land in, which the part's
         // own transform then undoes, so the drawn geometry is the same in the same place either way.
@@ -680,11 +646,10 @@ public static class PartTree
         }
     }
 
-    /// <summary>Apply CX-116's shared merge plan: each bucket's first node becomes the part that draws the
-    /// merged mesh (model space, so its own pose folds away), every other node the bucket swallowed is marked
-    /// merged -- the engine's <c>part+0x96 = 0</c> -- and the plan's arena range is REFERENCED, not rebuilt,
-    /// so one upload serves every placement of the tile. The census follows the geometry: the node meshes
-    /// <see cref="Write"/> placed are dropped and the merged mesh is placed once.</summary>
+    /// <summary>Apply the shared merge plan: each bucket's first node becomes the part that draws the merged
+    /// mesh (model space, so its own pose folds away), every node the bucket swallowed is marked merged -- the
+    /// engine's <c>part+0x96 = 0</c> -- and the plan's arena range is REFERENCED, not rebuilt, so one upload
+    /// serves every placement. The census follows: the node meshes are dropped, the merged mesh placed once.</summary>
     private static void CombinePlan(DbId obj, ModelDef model, bool collapsed)
     {
         int i = obj.Index;
@@ -773,12 +738,9 @@ public static class PartTree
     }
 
     /// <summary>Concatenate the members' geometry into a NEW <see cref="MeshDef"/> in the head's own space,
-    /// swap the head onto it, and mark each member merged away.
-    /// <para>The engine does it by reference rather than by copy: <c>VertexPrimitive::MergePart</c> adds the
-    /// member PART to the head primitive's own part list (+0x88 / +0x90) and repoints the member's primitive
-    /// pointer (+0x98) at the head's, then <c>CombineParts</c> grows the head's box (+0x64..+0x78) and the
-    /// shared node's radius (+0xd8) to cover it. CX builds the combined vertex data instead, because the
-    /// arena holds one immutable copy per distinct mesh and the draw has no per-part pool to point at.</para></summary>
+    /// swap the head onto it, and mark each member merged away. The engine does it by REFERENCE instead
+    /// (<c>VertexPrimitive::MergePart</c> repoints the member's primitive at the head's); CX builds the
+    /// combined vertex data, because the arena holds one immutable copy per distinct mesh.</summary>
     private static void MergeInto(int head, List<int> members)
     {
         MeshDef h = SceneDb.PartMeshDef[head]!;

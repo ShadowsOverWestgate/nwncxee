@@ -1,20 +1,16 @@
 using System;
 using System.Numerics;
 using CX.Engine;
+using CX.Framework;
 using static CX.Services.Anim.PoseMath;
 
 namespace CX.Services.Anim;
 
 /// <summary>
 /// Movement changes blended, a <see cref="PoseService"/> module (<c>anim.blend</c>). The engine crossfades only a
-/// change of animation NAME, over its authored transtime; a change that keeps the name -- walk to walk-back, which is
-/// the walk cycle at negative speed, or a diagonal swapped for the straight cycle -- flips the pace in one frame, and
-/// a short transtime reads as a snap.
-/// <para>Dead blending: when the creature's anim id changes between two movement anims (<see cref="Movement"/>), each
-/// tracked bone's last pose keeps moving with its own angular velocity, decaying over <see cref="SpinHalfLife"/>, and
-/// is crossfaded into what the engine now poses over <see cref="BlendTime"/> (smoothstep). The first blended frame is
-/// last frame's pose carried one step, so nothing jumps; a reversal slows through zero instead of flipping. It is the
-/// ANIMATION layer: the other modules' corrections go on top every frame and are never carried in the blend.</para>
+/// change of animation NAME, so a change that keeps it -- walk to walk-back, or a diagonal swapped for the straight
+/// cycle -- flips the pace in one frame; here each tracked bone's last pose keeps moving with its own decaying angular
+/// velocity and is crossfaded into what the engine now poses. This is the ANIMATION layer: corrections go on top.
 /// </summary>
 internal static unsafe class Transition
 {
@@ -91,29 +87,70 @@ internal static unsafe class Transition
         return l > MaxSpin ? v * (MaxSpin / l) : v;
     }
 
-    /// <summary>A knee swinging forward at 4 rad/s reverses (walk to walk-back): the blend starts where the swing was,
-    /// carries it on, turns round with no frame's step past twice the swing's own (a snap is the whole gap at once),
-    /// and lands on the new motion.</summary>
+    /// <summary>A knee swinging at 4 rad/s reverses (walk to walk-back) through the real <see cref="Begin"/>
+    /// and <see cref="Pose"/> over a fake engine part: the blend starts where the swing was, carries it on
+    /// with no frame's step past twice the swing's own, and hands over. Oracle: hand-written bounds on the
+    /// angle read back off the part the layer writes -- nothing here recomputes the blend.</summary>
     internal static bool SelfCheck()
     {
-        float dt = 1f / 60f, spin = 4f, prev = 0f, maxStep = 0f;
-        Quaternion from = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.5f);
-        Vector3 v = Vector3.UnitX * spin;
-        float t = 0f, angle = 0f, target = 0.5f;
-        bool first = true, landed = false, carried = false;
-        for (int i = 0; i < 40; i++)
+        // Staged: the master and the blend toggle both, so the player's cx.cfg cannot decide whether the
+        // blend under test runs at all.
+        bool en0 = AnimKnobs.Enabled.V;
+        var bk = AnimKnobs.G.Get("blend") as Knob<bool>;
+        bool bv0 = bk?.V ?? false;
+        AnimKnobs.Enabled.V = true;
+        if (bk != null) bk.V = true;
+        try
         {
-            t += dt;
-            target -= spin * dt;
-            v *= MathF.Exp(-dt * MathF.Log(2f) / SpinHalfLife);
-            from = Quaternion.Normalize(Exp(v * dt) * from);
-            Quaternion q = Quaternion.Slerp(from, Quaternion.CreateFromAxisAngle(Vector3.UnitX, target), Ease01(t / BlendTime));
-            angle = 2f * MathF.Atan2(q.X, q.W);
-            if (first) { carried = angle > 0.5f; first = false; }
-            else maxStep = MathF.Max(maxStep, MathF.Abs(angle - prev));
-            prev = angle;
-            if (t >= BlendTime) landed = MathF.Abs(angle - target) < 1e-3f;
+            const int Walk = 2, WalkBack = 3;
+            float dt = 1f / 60f, spin = 4f;
+            int bytes = EngineLayout.PartRot + 16;
+            byte* part = stackalloc byte[bytes];
+            for (int i = 0; i < bytes; i++) part[i] = 0;
+            IntPtr p = (IntPtr)part;
+            PoseService.Bones b = default;
+            b.RThigh = p;                       // bone 0 is the knee this models; the rest stay absent
+            PoseService.Slot s = default;
+            s.LastAnim = Walk;
+
+            // The swing, measured: five frames of the walk cycle carrying the knee forward, so the layer has
+            // a velocity to carry on with when the movement changes.
+            float a = 0f;
+            for (int i = 0; i < 5; i++)
+            {
+                a += spin * dt;
+                SetLocal(p, Quaternion.CreateFromAxisAngle(Vector3.UnitX, a));
+                Pose(ref s, in b, Begin(ref s, Walk, tracked: true, dt), tracked: true, dt);
+            }
+            float swung = a;
+
+            // ...and the reversal: the same cycle played backward, so the authored pose travels the other way
+            // while the carried swing is still going forward.
+            float prev = 0f, maxStep = 0f, gap = 0f;
+            bool first = true, carried = false, blended = false;
+            for (int i = 0; i < 40; i++)
+            {
+                a -= spin * dt;
+                SetLocal(p, Quaternion.CreateFromAxisAngle(Vector3.UnitX, a));
+                bool blending = Begin(ref s, WalkBack, tracked: true, dt);
+                Pose(ref s, in b, blending, tracked: true, dt);
+                Quaternion q = Local(p);
+                float angle = 2f * MathF.Atan2(q.X, q.W);
+                if (first) { carried = angle > swung; first = false; }
+                else maxStep = MathF.Max(maxStep, MathF.Abs(angle - prev));
+                prev = angle;
+                if (blending) { blended = true; gap = MathF.Abs(angle - a); }
+            }
+            // The hand-over is complete by its last frame: within 3 degrees of the authored pose, which the
+            // carried swing had drifted more than a radian away from.
+            bool landed = blended && gap < 0.05f;
+            return bk != null && carried && maxStep <= 2f * spin * dt && landed
+                   && Movement(2) && Movement(3) && Movement(0) && !Movement(0x2f);
         }
-        return carried && maxStep <= 2f * spin * dt && landed && Movement(2) && Movement(3) && Movement(0) && !Movement(0x2f);
+        finally
+        {
+            AnimKnobs.Enabled.V = en0;
+            if (bk != null) bk.V = bv0;
+        }
     }
 }

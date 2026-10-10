@@ -4,15 +4,10 @@ using System.Globalization;
 
 namespace CX.Alloy.Db;
 
-/// <summary>CX-119: the loaded-font table, CX's <c>CAurFont::s_LoadedFontList</c>. A font is keyed on the name the
-/// game asks for -- for a TTF font that name IS the token string, e.g. <c>"ttf fnt_default 14"</c> -- and its
-/// index is its position here, which is what <c>GetCurrentFontIndex</c> returns.
-/// <para>Metrics come from a <c>.txi</c> (<see cref="ParseTxi"/>) for a bitmap font and, for a TTF font, from the
-/// atlas bake. BINDING TO THE ENGINE'S OWN <c>CAurFont</c> IS NOT IN THIS STREAM: reading
-/// <c>CAurFontInfo</c> live needs <c>EngineLayout</c> rows with both platforms' offsets, and reusing the engine's
-/// atlas texture name needs CX-117's texture identity. Until one of those lands, a font is registered by whoever
-/// owns it and an unregistered name resolves to nothing -- a document with no font measures and draws nothing,
-/// which is exactly what the engine does for a failed <c>SetFont</c>.</para></summary>
+/// <summary>The loaded-font table, CX's <c>CAurFont::s_LoadedFontList</c>. A font is keyed on the name the game
+/// asks for -- for a TTF font that name IS the token string, e.g. <c>"ttf fnt_default 14"</c> -- and its index
+/// is its position here, which is what <c>GetCurrentFontIndex</c> returns. A font is registered by whoever owns
+/// it; an unregistered name resolves to nothing, as the engine does for a failed <c>SetFont</c>.</summary>
 public static class TextFonts
 {
     private static readonly List<TextFont> _fonts = new(8);
@@ -20,11 +15,10 @@ public static class TextFonts
 
     public static int Count => _fonts.Count;
 
-    /// <summary>Add or replace a font by name; returns its index.</summary>
     /// <summary>GL names of atlases no font refers to any more -- a replaced font's, or every font's after a
     /// context loss. Drained by <c>TextAtlas.Pump</c>, which is the only place that may call GL.</summary>
     public static readonly System.Collections.Generic.List<uint> Orphans = new(4);
-
+    /// <summary>Add or replace a font by name; returns its index.</summary>
     public static int Register(TextFont f)
     {
         if (_byName.TryGetValue(f.Name, out int at))
@@ -110,10 +104,9 @@ public static class TextFonts
     }
 
     /// <summary>Parse a font's <c>.txi</c> the way <c>CAurTextureBasic::Init</c> @0x488940 and
-    /// <c>CAurFontInfo::ParseField</c> @0x487e00 do: a key, then its value, keys matched case-insensitively, and
-    /// the two coordinate lists as <c>&lt;key&gt; &lt;count&gt;</c> followed by that many <c>x y z</c> lines and an
-    /// <c>endlist</c>. Unknown keys are ignored. Returns false when the file declares no glyphs, which is the
-    /// engine's "this texture is not a font".</summary>
+    /// <c>CAurFontInfo::ParseField</c> @0x487e00 do: a key then its value, matched case-insensitively, with
+    /// the two coordinate lists as <c>&lt;key&gt; &lt;count&gt;</c>, that many <c>x y z</c> lines and an
+    /// <c>endlist</c>. Unknown keys are ignored; false means no glyphs -- "this texture is not a font".</summary>
     public static bool ParseTxi(string name, string txi, out TextFont font)
     {
         font = new TextFont { Name = name };
