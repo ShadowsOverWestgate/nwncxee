@@ -1,7 +1,7 @@
 # Issue tracker: Gitea (self-hosted)
 
 Issues and specs for this repo live as issues on the self-hosted Gitea at
-`git.westgate.pw`, repo `ShadowsOverWestgate/sow-client-extender`. Use the
+`git.westgate.pw`, repo `ShadowsOverWestgate/sow-client-extender-archive` (private since the public release). Use the
 [`tea`](https://gitea.com/gitea/tea) CLI for all operations. Run inside a clone
 so `tea` auto-detects the repo and login (`westgate` / user `xtul`).
 

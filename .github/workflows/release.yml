@@ -2,7 +2,7 @@
 # Linux extender on ubuntu-24.04 and the Windows one on windows-2025-vs2026, then
 # uploads both zips + SHA256SUMS to the GITEA release for the tag over its REST
 # API. GitHub is only the worker (it has the Windows runner); players download from
-# https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/releases, which
+# https://git.westgate.pw/ShadowsOverWestgate/nwncxee/releases, which
 # only works while that repo stays publicly readable. Tag-gated, never on PR.
 #
 # Windows is a NATIVE build on windows-2025-vs2026 (#504, build-win-native.sh); the Linux cross-build
@@ -32,7 +32,7 @@ concurrency:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
-  GITEA_API: https://git.westgate.pw/api/v1/repos/ShadowsOverWestgate/sow-client-extender
+  GITEA_API: https://git.westgate.pw/api/v1/repos/ShadowsOverWestgate/nwncxee
 
 jobs:
   linux:
