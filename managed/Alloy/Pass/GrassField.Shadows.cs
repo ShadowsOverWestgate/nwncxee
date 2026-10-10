@@ -27,7 +27,7 @@ internal static unsafe partial class GrassField
     private static int _dumpN;
 
     /// <summary>Does cascade <paramref name="i"/> take the blades as casters this frame?</summary>
-    internal static bool CastsInto(int i) => i < Grass.Shadow.V && _shadowN > 0 && Grass.Enabled.V && !_off && _progDepth != 0;
+    internal static bool CastsInto(int i) => i < Grass.Shadow.V && _shadowN > 0 && Grass.Enabled.V && !_off && _gl.ProgDepth != 0;
 
     /// <summary>Draw last frame's scattered cards into every re-baked sun cascade under
     /// <see cref="Grass.Shadow"/>, as alpha-tested depth. The stream still holds last frame's scatter (the
@@ -36,8 +36,8 @@ internal static unsafe partial class GrassField
     internal static void DrawShadows(uint fbo, uint tex, int size, bool[] rebaked, int cascades)
     {
         int want = Math.Min(Grass.Shadow.V, cascades);
-        bool blades = _bladeNear + _bladeFar > 0 && _progBladeDepth != 0, cards = _slotCount > 0 && _progDepth != 0;
-        if (want <= 0 || _shadowN <= 0 || !(blades || cards) || _vao == 0 || _off || !Grass.Enabled.V || _down.Failed) return;
+        bool blades = _bladeNear + _bladeFar > 0 && _gl.ProgBladeDepth != 0, cards = _slotCount > 0 && _gl.ProgDepth != 0;
+        if (want <= 0 || _shadowN <= 0 || !(blades || cards) || _gl.Vao == 0 || _off || !Grass.Enabled.V || _down.Failed) return;
         if (_binBucket.IsNull || *_grassEnabled == 0 || Grass.Density.V <= 0f) return;
         bool any = false;
         for (int i = 0; i < want && !any; i++) any = rebaked[i];
@@ -52,18 +52,18 @@ internal static unsafe partial class GrassField
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, fbo);
         Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
         Gl.Viewport(0, 0, size, size);
-        Gl.BindVertexArray(_vao);
+        Gl.BindVertexArray(_gl.Vao);
         // the caster gather leaves its layered commands bound; hand them back as found
         int prevCmd = 0;
         Gl.GetIntegerv(DrawIndirectBinding, &prevCmd);
-        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _cmdBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMats, _matBuf);
+        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _gl.CmdBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMats, _gl.MatBuf);
         new PassState(depth: true, depthWrite: true, cull: false).Apply();
         Gl.DepthFunc(Gl.LEQUAL);
         // the push field's unit is the post stack's HDR unit (TextureSlots.GrassPush == PostHdr): by the
         // shadow bracket its 2D binding is last frame's picture, and the blades would be displaced by it
         Gl.ActiveTexture(Gl.TEXTURE0 + PushUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _pushTex);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.PushTex);
         Gl.ActiveTexture(Gl.TEXTURE0);
         for (int i = 0; i < want; i++)
         {
@@ -73,24 +73,24 @@ internal static unsafe partial class GrassField
             fixed (float* pub = CasterPass.CascadeVp) vp = *(Matrix4x4*)(pub + i * 16);
             if (blades)
             {
-                Gl.UseProgram(_progBladeDepth);
-                SharedUniforms(in _locBD, in _featLocBD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
-                Gl.Uniform1i(_locBD.Cast, 1);
-                DrawBlades(in _locBD);
+                Gl.UseProgram(_gl.ProgBladeDepth);
+                SharedUniforms(in _gl.LocBD, in _gl.FeatLocBD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
+                Gl.Uniform1i(_gl.LocBD.Cast, 1);
+                DrawBlades(in _gl.LocBD);
             }
             if (cards)
             {
-                Gl.UseProgram(_progDepth);
-                SharedUniforms(in _locD, in _featLocD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
-                Gl.Uniform1i(_locD.Cast, 1);
-                Gl.Uniform1i(_locD.Frame, 0);   // a cascade bake is held across frames: a moving dither would freeze mid-step
-                Gl.Uniform1i(_locD.SoftEdge, 0);
-                DrawSlots(tids, in _locD, depth: true);
+                Gl.UseProgram(_gl.ProgDepth);
+                SharedUniforms(in _gl.LocD, in _gl.FeatLocD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
+                Gl.Uniform1i(_gl.LocD.Cast, 1);
+                Gl.Uniform1i(_gl.LocD.Frame, 0);   // a cascade bake is held across frames: a moving dither would freeze mid-step
+                Gl.Uniform1i(_gl.LocD.SoftEdge, 0);
+                DrawSlots(tids, in _gl.LocD, depth: true);
             }
             _shadowDraws++;
             if (_dumpShadow) { _dumpShadow = false; DumpLayer(tex, i, size); }
         }
-        if (_sampMip != 0) Gl.BindSampler(0, 0);
+        if (_gl.SampMip != 0) Gl.BindSampler(0, 0);
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, (uint)prevCmd);
         Gl.BindVertexArray(0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);

@@ -60,44 +60,44 @@ internal static unsafe class CullPass
     /// after <see cref="Revoke"/>, after a resize) -- phase one was frustum-only and marked nothing.</summary>
     internal static bool RetestPending;
 
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it.</summary>
+    private sealed class CullGlState
+    {
+        public uint Prog, ProgHiZ, ProgSort;
+        public bool Failed;
+        public int UDrawN, UPlanes, UHiZ, UVP, UPyr, UPyrSize, UMaxLod;
+        public int ULodPx, ULodScale, UCompactBelow, UEye, UFogCull, UFogOrigin, UPyrVP, URej, UClipZ;
+        public int SDrawN, SCompactBelow;
+        public int HSrc, HLevel;
+        public uint SphBuf, KeyBuf, RejBuf;
+        /// <summary>The source list as <see cref="Begin"/> streamed it; the dispatches of the same pass rebind it.</summary>
+        public StreamRing.Range Src;
+        public readonly uint[] CmdBuf = new uint[Phases], SlotBuf = new uint[Phases], CntBuf = new uint[Phases];
+        public int CmdCap, CntCap, SphCap;
+        public uint PyrTex, PyrFbo, PyrVao;
+        public int PyrW, PyrH, PyrLevels;
+        /// <summary>The pass generation the pyramid was last BUILT for -- what gates the colour dispatch and
+        /// phase two, which must test the FRESH pyramid. A declined build (no depth texture, a zero viewport)
+        /// would otherwise hand the same-frame test the previous frame's pyramid.</summary>
+        public int PyrGen = -1;
+        /// <summary>A pyramid from a PRIOR pass is resident and <see cref="PyrVp"/> is the view-projection it
+        /// was built under, so phase one may reproject against it. Separate from <see cref="PyrGen"/>: phase one
+        /// wants exactly the pyramid a declined build leaves behind. Cleared on recreate and the world edge.</summary>
+        public bool PyrStale;
+        public Matrix4x4 PyrVp;
+        /// <summary>What the last readable dispatch kept, copied out of the count buffer two samples late
+        /// through a mapped ring, so the period line reports culled-vs-drawn without a readback near submission.</summary>
+        public GpuReadback SampleRead;
+        /// <summary>Count words each ring slot actually holds, so a shorter batch cut never reads an older
+        /// copy's tail as counts.</summary>
+        public readonly int[] ReadN = new int[3], ReadDrawN = new int[3];
+        public GpuReadback WatchRead;
+        public readonly int[] WatchN = new int[3], WatchDraws = new int[3], WatchFrame = new int[3];
+    }
+
+    private static CullGlState _gl = new();
     private static ExtenderLog? _log;
-    private static uint _prog, _progHiZ, _progSort;
-    private static bool _failed;
-    private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
-    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull, _uFogOrigin, _uPyrVP, _uRej, _uClipZ;
-    private static int _sDrawN, _sCompactBelow;
-    private static int _hSrc, _hLevel;
 
-    private static uint _sphBuf, _keyBuf, _rejBuf;
-    /// <summary>The source list as <see cref="Begin"/> streamed it; the dispatches of the same pass rebind it.</summary>
-    private static StreamRing.Range _src;
-    private static readonly uint[] _cmdBuf = new uint[Phases];
-    private static readonly uint[] _slotBuf = new uint[Phases];
-    private static readonly uint[] _cntBuf = new uint[Phases];
-    private static int _cmdCap, _cntCap, _sphCap;
-
-    private static uint _pyrTex, _pyrFbo, _pyrVao;
-    private static int _pyrW, _pyrH, _pyrLevels;
-    /// <summary>The pass generation the pyramid was last BUILT for -- what gates the colour dispatch and
-    /// phase two, which must test the FRESH pyramid. Not "a pyramid exists": a declined build (no depth
-    /// texture, a zero viewport) would otherwise hand the same-frame test the previous frame's pyramid.</summary>
-    private static int _pyrGen = -1;
-    /// <summary>A pyramid from a PRIOR pass is resident and <see cref="_pyrVp"/> is the view-projection it
-    /// was built under, so phase one may reproject against it. Deliberately separate from
-    /// <see cref="_pyrGen"/>: a declined build resets that, and phase one wants exactly the pyramid a decline
-    /// leaves behind. Cleared where the texels stop being a scene -- recreate, context loss, world edge.</summary>
-    private static bool _pyrStale;
-    private static Matrix4x4 _pyrVp;
-
-    /// <summary>What the last readable dispatch actually kept. Copied out of the count buffer
-    /// two samples late through a mapped ring, so the period line can report culled-vs-drawn without a
-    /// readback anywhere near the submission path.</summary>
-    private static GpuReadback _sampleRead;
-    /// <summary>How many count words each ring slot actually holds. Without it a frame whose batch cut came
-    /// out shorter reads the tail of a copy three frames older as if it were counts -- which is exactly the
-    /// "keeps 7474870/frame" nonsense the first live run printed.</summary>
-    private static readonly int[] _readN = new int[3];
-    private static readonly int[] _readDrawN = new int[3];
     /// <summary>Capacity tracker for a sample slot: <see cref="RingPhases"/> ranges of per-batch counts.</summary>
     private static uint[] _counts = new uint[1024];
     private static int _readSeq;
@@ -145,7 +145,7 @@ internal static unsafe class CullPass
     private static Vector3 _eye;
 
     /// <summary>The pass can actually run: the programs built and every entry point it needs exists.</summary>
-    internal static bool Ready => _prog != 0;
+    internal static bool Ready => _gl.Prog != 0;
 
     /// <summary>The extent of the staged sphere CENTRES, and the eye they were culled against. A diagnostic
     /// with one job: the bounds come from <c>PartTriMesh</c>'s bbox, which is world-space for a world-space
@@ -170,20 +170,14 @@ internal static unsafe class CullPass
     /// dead context) and everything rebuilds on the next pass. See docs/owned-resource-lifetimes.md.</summary>
     internal static void ContextLost()
     {
-        _prog = 0; _progHiZ = 0; _progSort = 0; _failed = false;
-        _src = default; _sphBuf = 0; _keyBuf = 0; _rejBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
-        Array.Clear(_cmdBuf); Array.Clear(_slotBuf); Array.Clear(_cntBuf);
-        _sampleRead.ContextLost(); Array.Clear(_readN); Array.Clear(_readDrawN);
-        _watchRead.ContextLost(); Array.Clear(_watchN);
-        _pyrTex = 0; _pyrFbo = 0; _pyrVao = 0; _pyrW = 0; _pyrH = 0; _pyrLevels = 0; _pyrGen = -1;
-        _pyrStale = false; RetestPending = false;
+        _gl = new CullGlState(); RetestPending = false;
         _phase = -1; _compactBelow = 0;
     }
 
     /// <summary>The world edge (area transition, module unload). The resident pyramid is a scene that
     /// no longer exists, so the next pass's phase one is frustum-only rather than reprojecting against it.
     /// Phase two would correct the rejections anyway; this only spares it the whole area's worth.</summary>
-    internal static void Revoke() { _pyrStale = false; RetestPending = false; }
+    internal static void Revoke() { _gl.PyrStale = false; RetestPending = false; }
 
     /// <summary>Everything the dispatch needs from GL -- a BOOT term: with the engine's bucket walk gone
     /// there is no other visibility test in the frame, so a driver that cannot run the dispatch cannot run
@@ -198,40 +192,40 @@ internal static unsafe class CullPass
     /// look to restyle.</summary>
     private static bool Ensure()
     {
-        if (_prog != 0) return true;
-        if (_failed || !Capable()) return false;
-        _prog = GlProgram.Compute(CullCs, _log, "CullPass frustum/hi-Z cull");
-        _progSort = GlProgram.Compute(SortCs, _log, "CullPass back-to-front rank sort");
-        _progHiZ = GlProgram.Graphics(PostChain.FullscreenVs, HiZFs, _log, "CullPass hi-Z pyramid");
-        if (_prog == 0 || _progHiZ == 0 || _progSort == 0)
+        if (_gl.Prog != 0) return true;
+        if (_gl.Failed || !Capable()) return false;
+        _gl.Prog = GlProgram.Compute(CullCs, _log, "CullPass frustum/hi-Z cull");
+        _gl.ProgSort = GlProgram.Compute(SortCs, _log, "CullPass back-to-front rank sort");
+        _gl.ProgHiZ = GlProgram.Graphics(PostChain.FullscreenVs, HiZFs, _log, "CullPass hi-Z pyramid");
+        if (_gl.Prog == 0 || _gl.ProgHiZ == 0 || _gl.ProgSort == 0)
         {
-            _failed = true; _prog = 0;
+            _gl.Failed = true; _gl.Prog = 0;
             // #264: hard, not a downgrade. The frame has no other visibility test, and the boot verdict has
             // already frozen on Alloy by the time a program can fail to build.
             AlloyGate.Fail("the cull compute program did not build -- Alloy has no visibility test");
             return false;
         }
-        _uDrawN = GlProgram.Loc(_prog, "uDrawN");
-        _uPlanes = GlProgram.Loc(_prog, "uPlanes");
-        _uHiZ = GlProgram.Loc(_prog, "uHiZ");
-        _uVP = GlProgram.Loc(_prog, "uVP");
-        _uPyr = GlProgram.Loc(_prog, "uPyramid");
-        _uPyrSize = GlProgram.Loc(_prog, "uPyrSize");
-        _uMaxLod = GlProgram.Loc(_prog, "uMaxLod");
-        _uLodPx = GlProgram.Loc(_prog, "uLodPx");
-        _uLodScale = GlProgram.Loc(_prog, "uLodScale");
-        _uCompactBelow = GlProgram.Loc(_prog, "uCompactBelow");
-        _uEye = GlProgram.Loc(_prog, "uEye");
-        _uFogCull = GlProgram.Loc(_prog, "uFogCull");
-        _uFogOrigin = GlProgram.Loc(_prog, "uFogOrigin");
-        _uClipZ = GlProgram.Loc(_prog, "uClipZ");
-        _uPyrVP = GlProgram.Loc(_prog, "uPyrVP");
-        _uRej = GlProgram.Loc(_prog, "uRej");
-        _sDrawN = GlProgram.Loc(_progSort, "uDrawN");
-        _sCompactBelow = GlProgram.Loc(_progSort, "uCompactBelow");
-        _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
-        _hLevel = GlProgram.Loc(_progHiZ, "uLevel");
-        if (_pyrVao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _pyrVao = v; }
+        _gl.UDrawN = GlProgram.Loc(_gl.Prog, "uDrawN");
+        _gl.UPlanes = GlProgram.Loc(_gl.Prog, "uPlanes");
+        _gl.UHiZ = GlProgram.Loc(_gl.Prog, "uHiZ");
+        _gl.UVP = GlProgram.Loc(_gl.Prog, "uVP");
+        _gl.UPyr = GlProgram.Loc(_gl.Prog, "uPyramid");
+        _gl.UPyrSize = GlProgram.Loc(_gl.Prog, "uPyrSize");
+        _gl.UMaxLod = GlProgram.Loc(_gl.Prog, "uMaxLod");
+        _gl.ULodPx = GlProgram.Loc(_gl.Prog, "uLodPx");
+        _gl.ULodScale = GlProgram.Loc(_gl.Prog, "uLodScale");
+        _gl.UCompactBelow = GlProgram.Loc(_gl.Prog, "uCompactBelow");
+        _gl.UEye = GlProgram.Loc(_gl.Prog, "uEye");
+        _gl.UFogCull = GlProgram.Loc(_gl.Prog, "uFogCull");
+        _gl.UFogOrigin = GlProgram.Loc(_gl.Prog, "uFogOrigin");
+        _gl.UClipZ = GlProgram.Loc(_gl.Prog, "uClipZ");
+        _gl.UPyrVP = GlProgram.Loc(_gl.Prog, "uPyrVP");
+        _gl.URej = GlProgram.Loc(_gl.Prog, "uRej");
+        _gl.SDrawN = GlProgram.Loc(_gl.ProgSort, "uDrawN");
+        _gl.SCompactBelow = GlProgram.Loc(_gl.ProgSort, "uCompactBelow");
+        _gl.HSrc = GlProgram.Loc(_gl.ProgHiZ, "uSrc");
+        _gl.HLevel = GlProgram.Loc(_gl.ProgHiZ, "uLevel");
+        if (_gl.PyrVao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _gl.PyrVao = v; }
         _log?.Info("CullPass: armed -- GPU frustum + hi-Z cull, GPU back-to-front sort of the blending "
                    + "ranges, glMultiDrawElementsIndirectCount submission");
         return true;
@@ -250,7 +244,7 @@ internal static unsafe class CullPass
     {
         _phase = -1;
         RetestPending = false;   // a pass that declines below must not inherit the last one's phase two
-        if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || _sphBuf == 0 || !Ensure()) return false;
+        if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || _gl.SphBuf == 0 || !Ensure()) return false;
         // The per-batch count array is indexed by batch; the zero-fill in Dispatch is what resets it. GROWN
         // rather than capped: a refusal here would be a refusal AFTER the staging walk had already dropped
         // the engine's visibility gate on the strength of Ready, and the frame would then draw the whole
@@ -267,26 +261,26 @@ internal static unsafe class CullPass
         _compactBelow = Math.Clamp(compactBelow, 0, groups);
         _eye = eye;
 
-        if (!StreamRing.Stream(StreamRing.Site.CullSource, BindSrc, src, (long)drawN * SrcUints * sizeof(uint), out _src))
+        if (!StreamRing.Stream(StreamRing.Site.CullSource, BindSrc, src, (long)drawN * SrcUints * sizeof(uint), out _gl.Src))
             return false;   // CX-45: the cull sits this pass out, loudly (StreamRing logs and paints it)
 
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _gl.SphBuf);
 
         for (int i = 0; i < Phases; i++)
         {
-            Gl.EnsureStorage(ref _cmdBuf[i], (long)drawN * CmdUints * sizeof(uint), drawN > _cmdCap);
-            Gl.EnsureStorage(ref _slotBuf[i], (long)drawN * sizeof(uint), drawN > _cmdCap);
-            Gl.EnsureStorage(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
+            Gl.EnsureStorage(ref _gl.CmdBuf[i], (long)drawN * CmdUints * sizeof(uint), drawN > _gl.CmdCap);
+            Gl.EnsureStorage(ref _gl.SlotBuf[i], (long)drawN * sizeof(uint), drawN > _gl.CmdCap);
+            Gl.EnsureStorage(ref _gl.CntBuf[i], (long)groups * sizeof(uint), groups > _gl.CntCap);
         }
         // #489: phase one's per-draw verdict, read back by phase two. One word per draw, written for EVERY
         // draw of phase one so a mark from an older list cannot linger under a shorter one.
-        Gl.EnsureStorage(ref _rejBuf, (long)drawN * sizeof(uint), drawN > _cmdCap);
+        Gl.EnsureStorage(ref _gl.RejBuf, (long)drawN * sizeof(uint), drawN > _gl.CmdCap);
         // #290: the sort's scratch -- one key per draw, negative for a draw the cull dropped. One buffer
         // rather than a key array beside a keep array: distances are never negative, so the sign IS the
         // verdict, and the rank scan reads one word per neighbour instead of two.
-        Gl.EnsureStorage(ref _keyBuf, (long)drawN * sizeof(float), drawN > _cmdCap);
-        if (drawN > _cmdCap) _cmdCap = drawN;
-        if (groups > _cntCap) _cntCap = groups;
+        Gl.EnsureStorage(ref _gl.KeyBuf, (long)drawN * sizeof(float), drawN > _gl.CmdCap);
+        if (drawN > _gl.CmdCap) _gl.CmdCap = drawN;
+        if (groups > _gl.CntCap) _gl.CntCap = groups;
         _phase = -2;   // staged; the first Dispatch publishes a phase
         return true;
     }
@@ -298,15 +292,15 @@ internal static unsafe class CullPass
     internal static void UploadSpheres(float* spheres, int sphereSlots)
     {
         if (sphereSlots <= 0 || Gl.NamedBufferSubData == null) return;
-        if (_sphBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _sphBuf = b; }
+        if (_gl.SphBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _gl.SphBuf = b; }
         var sphSize = (IntPtr)((long)sphereSlots * 4 * sizeof(float));
-        if (sphereSlots > _sphCap) { Gl.NamedBufferData(_sphBuf, sphSize, null, Gl.DYNAMIC_DRAW); _sphCap = sphereSlots; }
-        Gl.NamedBufferSubData(_sphBuf, IntPtr.Zero, sphSize, spheres);
+        if (sphereSlots > _gl.SphCap) { Gl.NamedBufferData(_gl.SphBuf, sphSize, null, Gl.DYNAMIC_DRAW); _gl.SphCap = sphereSlots; }
+        Gl.NamedBufferSubData(_gl.SphBuf, IntPtr.Zero, sphSize, spheres);
     }
 
     /// <summary>The shared sphere buffer's GL name, for the shadow gather's dispatch. 0 until the first
     /// colour build uploads it, and the gather stands down for that frame.</summary>
-    internal static uint SphereBuf => _sphBuf;
+    internal static uint SphereBuf => _gl.SphBuf;
 
     /// <summary>Run one dispatch into output set <paramref name="phase"/>. <paramref name="hiZ"/> false is a
     /// frustum-only dispatch; true adds the occlusion test -- for <see cref="PhaseColour"/> and
@@ -317,53 +311,53 @@ internal static unsafe class CullPass
         bool stale = phase == PhasePrepass;
         if (stale) RetestPending = false;
         if (_phase == -1 || _drawN <= 0) return false;
-        if (!StreamRing.Rebind(StreamRing.Site.CullSource, BindSrc, in _src)) return false;   // logged and painted; _phase stays unpublished, so the pass draws unculled
-        Gl.ZeroBuffer(_cntBuf[phase], (long)_groups * sizeof(uint));
-        bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0
-                      && (stale ? Retest && _pyrStale : _pyrGen == gen);
+        if (!StreamRing.Rebind(StreamRing.Site.CullSource, BindSrc, in _gl.Src)) return false;   // logged and painted; _phase stays unpublished, so the pass draws unculled
+        Gl.ZeroBuffer(_gl.CntBuf[phase], (long)_groups * sizeof(uint));
+        bool useHiZ = hiZ && Mode >= ModeHiZ && _gl.PyrTex != 0 && _gl.PyrLevels > 0
+                      && (stale ? Retest && _gl.PyrStale : _gl.PyrGen == gen);
         if (stale)
         {
             RetestPending = useHiZ;
             // A frame without a phase two leaves phase two's counts from an older frame; Sample would read them.
-            if (!useHiZ) Gl.ZeroBuffer(_cntBuf[PhaseRetest], (long)_groups * sizeof(uint));
+            if (!useHiZ) Gl.ZeroBuffer(_gl.CntBuf[PhaseRetest], (long)_groups * sizeof(uint));
         }
 
-        Gl.UseProgram(_prog);
-        _src.Bind(BindSrc);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[phase]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _cntBuf[phase]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _keyBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRej, _rejBuf);
-        Gl.Uniform1i(_uDrawN, _drawN);
-        Gl.UniformMatrix4fv(_uVP, 1, 0, (float*)vp);
+        Gl.UseProgram(_gl.Prog);
+        _gl.Src.Bind(BindSrc);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _gl.SphBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _gl.CmdBuf[phase]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _gl.SlotBuf[phase]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _gl.CntBuf[phase]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _gl.KeyBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRej, _gl.RejBuf);
+        Gl.Uniform1i(_gl.UDrawN, _drawN);
+        Gl.UniformMatrix4fv(_gl.UVP, 1, 0, (float*)vp);
         // The pyramid's own clip space: this pass's for the same-frame phases, the prior pass's for phase one.
-        if (stale && useHiZ) fixed (Matrix4x4* pv = &_pyrVp) Gl.UniformMatrix4fv(_uPyrVP, 1, 0, (float*)pv);
-        else Gl.UniformMatrix4fv(_uPyrVP, 1, 0, (float*)vp);
-        Gl.Uniform1i(_uRej, stale ? RejWrite : phase == PhaseRetest ? RejRead : RejOff);
+        if (stale && useHiZ) fixed (Matrix4x4* pv = &_gl.PyrVp) Gl.UniformMatrix4fv(_gl.UPyrVP, 1, 0, (float*)pv);
+        else Gl.UniformMatrix4fv(_gl.UPyrVP, 1, 0, (float*)vp);
+        Gl.Uniform1i(_gl.URej, stale ? RejWrite : phase == PhaseRetest ? RejRead : RejOff);
         float* planes = stackalloc float[24];
         Planes((float*)vp, planes, _eye);
-        Gl.Uniform4fv(_uPlanes, 6, planes);
-        Gl.Uniform1f(_uLodPx, MathF.Max(lodPx >= 0f ? lodPx : LodPx, 0f));
-        Gl.Uniform1f(_uClipZ, clipZ);
-        Gl.Uniform1f(_uLodScale, _lodScale);
-        Gl.Uniform1i(_uCompactBelow, _compactBelow);
-        fixed (Vector3* e = &_eye) Gl.Uniform3fv(_uEye, 1, (float*)e);
+        Gl.Uniform4fv(_gl.UPlanes, 6, planes);
+        Gl.Uniform1f(_gl.ULodPx, MathF.Max(lodPx >= 0f ? lodPx : LodPx, 0f));
+        Gl.Uniform1f(_gl.UClipZ, clipZ);
+        Gl.Uniform1f(_gl.ULodScale, _lodScale);
+        Gl.Uniform1i(_gl.UCompactBelow, _compactBelow);
+        fixed (Vector3* e = &_eye) Gl.Uniform3fv(_gl.UEye, 1, (float*)e);
         // 0 = no fog cull at all, which is what an infinite opaque distance means: nothing past the frustum
         // is provably fogged out.
         float opaque = FogCull ? SceneFog.OpaqueDistance() : float.PositiveInfinity;
-        Gl.Uniform1f(_uFogCull, float.IsInfinity(opaque) ? 0f : opaque);
+        Gl.Uniform1f(_gl.UFogCull, float.IsInfinity(opaque) ? 0f : opaque);
         Vector3 origin = SceneFog.Origin(out bool radial);
-        Gl.Uniform4f(_uFogOrigin, origin.X, origin.Y, origin.Z, radial ? 1f : 0f);
-        Gl.Uniform1i(_uHiZ, useHiZ ? 1 : 0);
+        Gl.Uniform4f(_gl.UFogOrigin, origin.X, origin.Y, origin.Z, radial ? 1f : 0f);
+        Gl.Uniform1i(_gl.UHiZ, useHiZ ? 1 : 0);
         if (useHiZ)
         {
-            Gl.Uniform1i(_uPyr, (int)PyramidUnit);
-            Gl.Uniform2f(_uPyrSize, _pyrW, _pyrH);
-            Gl.Uniform1f(_uMaxLod, _pyrLevels - 1);
+            Gl.Uniform1i(_gl.UPyr, (int)PyramidUnit);
+            Gl.Uniform2f(_gl.UPyrSize, _gl.PyrW, _gl.PyrH);
+            Gl.Uniform1f(_gl.UMaxLod, _gl.PyrLevels - 1);
             Gl.ActiveTexture(Gl.TEXTURE0 + PyramidUnit);
-            Gl.BindTexture(Gl.TEXTURE_2D, _pyrTex);
+            Gl.BindTexture(Gl.TEXTURE_2D, _gl.PyrTex);
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
         uint groups1D = (uint)((_drawN + GroupSize - 1) / GroupSize);
@@ -376,13 +370,13 @@ internal static unsafe class CullPass
         if (_compactBelow < _groups && phase != PhaseRetest && phase != PhaseMirror)
         {
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
-            Gl.UseProgram(_progSort);
-            _src.Bind(BindSrc);
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[phase]);
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _keyBuf);
-            Gl.Uniform1i(_sDrawN, _drawN);
-            Gl.Uniform1i(_sCompactBelow, _compactBelow);
+            Gl.UseProgram(_gl.ProgSort);
+            _gl.Src.Bind(BindSrc);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _gl.CmdBuf[phase]);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _gl.SlotBuf[phase]);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _gl.KeyBuf);
+            Gl.Uniform1i(_gl.SDrawN, _drawN);
+            Gl.Uniform1i(_gl.SCompactBelow, _compactBelow);
             Gl.DispatchCompute(groups1D, 1, 1);
         }
         // Both consumers are outside the shader-storage class: the commands are read as indirect state and
@@ -408,8 +402,6 @@ internal static unsafe class CullPass
     /// dispatch's per-batch kept counts, read once its fence has passed and never waited on. A frame whose
     /// cull kept almost nothing of a full draw list is logged with its <see cref="AlloyRenderer.FrameSeq"/>,
     /// the number the CPU-side [vischeck] line carries too.</summary>
-    private static GpuReadback _watchRead;
-    private static readonly int[] _watchN = new int[3], _watchDraws = new int[3], _watchFrame = new int[3];
     private static int _watchSeq, _watchLogged;
     internal static long WatchReads, WatchLate, WatchCollapses;
 
@@ -417,32 +409,32 @@ internal static unsafe class CullPass
     {
         int w = _watchSeq % GpuReadback.Slots, r = (_watchSeq + 1) % GpuReadback.Slots;
         _watchSeq++;
-        if (_watchN[r] > 0)
+        if (_gl.WatchN[r] > 0)
         {
-            uint* c = (uint*)_watchRead.Ready(r);
+            uint* c = (uint*)_gl.WatchRead.Ready(r);
             if (c != null)
             {
-                int n = _watchN[r];
+                int n = _gl.WatchN[r];
                 long kept = 0;
                 for (int i = 0; i < n; i++) kept += c[i];
                 WatchReads++;
-                if (_watchDraws[r] > 400 && kept * 8 < _watchDraws[r])
+                if (_gl.WatchDraws[r] > 400 && kept * 8 < _gl.WatchDraws[r])
                 {
                     WatchCollapses++;
                     if (_watchLogged++ < 6)
-                        _log?.Always($"CullPass: [cullwatch] COLLAPSE frame {_watchFrame[r]}: the colour cull kept {kept} of "
-                                   + $"{_watchDraws[r]} draws over {n} batches (mode {Mode}, hi-Z {(Mode >= ModeHiZ ? "on" : "off")})");
+                        _log?.Always($"CullPass: [cullwatch] COLLAPSE frame {_gl.WatchFrame[r]}: the colour cull kept {kept} of "
+                                   + $"{_gl.WatchDraws[r]} draws over {n} batches (mode {Mode}, hi-Z {(Mode >= ModeHiZ ? "on" : "off")})");
                 }
-                _watchN[r] = 0;
+                _gl.WatchN[r] = 0;
             }
             else WatchLate++;
         }
         if (_groups <= 0 || !GpuReadback.EntryPoints) return;
         long need = (long)_counts.Length * sizeof(uint);
-        if (need > _watchRead.SlotBytes) { Array.Clear(_watchN); if (!_watchRead.Ensure(need)) return; }
-        _watchRead.Copy(_cntBuf[PhaseColour], 0, w, 0, (long)_groups * sizeof(uint));
-        _watchRead.Fence(w);
-        _watchN[w] = _groups; _watchDraws[w] = _drawN; _watchFrame[w] = AlloyRenderer.FrameSeq;
+        if (need > _gl.WatchRead.SlotBytes) { Array.Clear(_gl.WatchN); if (!_gl.WatchRead.Ensure(need)) return; }
+        _gl.WatchRead.Copy(_gl.CntBuf[PhaseColour], 0, w, 0, (long)_groups * sizeof(uint));
+        _gl.WatchRead.Fence(w);
+        _gl.WatchN[w] = _groups; _gl.WatchDraws[w] = _drawN; _gl.WatchFrame[w] = AlloyRenderer.FrameSeq;
     }
 
     /// <summary>Texture unit the pyramid takes for the dispatch -- see <see cref="TextureSlots.HiZ"/> for
@@ -455,9 +447,9 @@ internal static unsafe class CullPass
     /// different order, so <c>uDraw[uDrawIdx[uDrawBase + gl_DrawID]]</c> resolves exactly as it did.</summary>
     internal static void BindForDraw(int phase)
     {
-        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _cmdBuf[phase]);
-        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _cntBuf[phase]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, AlloyRenderer.BindDrawIdx, _slotBuf[phase]);
+        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _gl.CmdBuf[phase]);
+        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _gl.CntBuf[phase]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, AlloyRenderer.BindDrawIdx, _gl.SlotBuf[phase]);
     }
 
     /// <summary>...and hand the bindings back, so a later pass on the <c>BaseVertex</c> path (the blended
@@ -485,57 +477,57 @@ internal static unsafe class CullPass
     internal static void BuildHiZ(uint depthTex, int w, int h, int* viewport, uint restoreFbo, int gen,
                                   Matrix4x4* vp)
     {
-        _pyrGen = -1;
-        if (_phase == -1 || _progHiZ == 0 || depthTex == 0 || w <= 0 || h <= 0) return;
+        _gl.PyrGen = -1;
+        if (_phase == -1 || _gl.ProgHiZ == 0 || depthTex == 0 || w <= 0 || h <= 0) return;
         if (!EnsurePyramid(w / 2, h / 2)) return;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _pyrFbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.PyrFbo);
         // NOT a PassState: this runs INSIDE the colour bracket, between the prepass and the opaque pass, and
         // the bracket's own state (depth test on, depth writes on, sRGB as the target declared it) has to be
         // exactly what the opaque pass finds. Only the two things a full-screen reduction cannot tolerate
         // are touched, and both are put back below.
         Gl.Disable(Gl.DEPTH_TEST);
         Gl.DepthMask(0);
-        Gl.BindVertexArray(_pyrVao);
-        Gl.UseProgram(_progHiZ);
-        Gl.Uniform1i(_hSrc, (int)PyramidUnit);
+        Gl.BindVertexArray(_gl.PyrVao);
+        Gl.UseProgram(_gl.ProgHiZ);
+        Gl.Uniform1i(_gl.HSrc, (int)PyramidUnit);
         Gl.ActiveTexture(Gl.TEXTURE0 + PyramidUnit);
-        for (int i = 0; i < _pyrLevels; i++)
+        for (int i = 0; i < _gl.PyrLevels; i++)
         {
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _pyrTex, i);
-            Gl.Viewport(0, 0, Math.Max(_pyrW >> i, 1), Math.Max(_pyrH >> i, 1));
-            if (i == 0) { Gl.BindTexture(Gl.TEXTURE_2D, depthTex); Gl.Uniform1i(_hLevel, 0); }
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.PyrTex, i);
+            Gl.Viewport(0, 0, Math.Max(_gl.PyrW >> i, 1), Math.Max(_gl.PyrH >> i, 1));
+            if (i == 0) { Gl.BindTexture(Gl.TEXTURE_2D, depthTex); Gl.Uniform1i(_gl.HLevel, 0); }
             else
             {
                 // Reading level i-1 of the texture level i is attached to: legal only while BASE/MAX_LEVEL
                 // exclude the attachment, which is exactly what the clamp is for (PostChain's bloom chain
                 // takes the same trade for the same reason).
-                Gl.BindTexture(Gl.TEXTURE_2D, _pyrTex);
-                Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_BASE_LEVEL, i - 1);
-                Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_MAX_LEVEL, i - 1);
-                Gl.Uniform1i(_hLevel, 0);
+                Gl.BindTexture(Gl.TEXTURE_2D, _gl.PyrTex);
+                Gl.TextureParameteri(_gl.PyrTex, Gl.TEXTURE_BASE_LEVEL, i - 1);
+                Gl.TextureParameteri(_gl.PyrTex, Gl.TEXTURE_MAX_LEVEL, i - 1);
+                Gl.Uniform1i(_gl.HLevel, 0);
             }
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         }
         // The dispatch samples arbitrary LODs, so the clamp has to come back off.
-        Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_BASE_LEVEL, 0);
-        Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_MAX_LEVEL, _pyrLevels - 1);
+        Gl.TextureParameteri(_gl.PyrTex, Gl.TEXTURE_BASE_LEVEL, 0);
+        Gl.TextureParameteri(_gl.PyrTex, Gl.TEXTURE_MAX_LEVEL, _gl.PyrLevels - 1);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, restoreFbo);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.Enable(Gl.DEPTH_TEST);
         Gl.DepthMask(1);
-        _pyrGen = gen;
+        _gl.PyrGen = gen;
         // #489: and it is next pass's stale pyramid, under THIS (jittered) view-projection -- the one the
         // depth it reduces was drawn with.
-        _pyrVp = *vp; _pyrStale = true;
+        _gl.PyrVp = *vp; _gl.PyrStale = true;
     }
 
     private static bool EnsurePyramid(int w, int h)
     {
         w = Math.Max(w, 1); h = Math.Max(h, 1);
-        if (_pyrTex != 0 && w == _pyrW && h == _pyrH) return true;
-        if (_pyrTex != 0) { uint t = _pyrTex; Gl.DeleteTextures(1, &t); _pyrTex = 0; }
-        _pyrStale = false;
+        if (_gl.PyrTex != 0 && w == _gl.PyrW && h == _gl.PyrH) return true;
+        if (_gl.PyrTex != 0) { uint t = _gl.PyrTex; Gl.DeleteTextures(1, &t); _gl.PyrTex = 0; }
+        _gl.PyrStale = false;
         int levels = 1;
         while ((w >> levels) > 0 || (h >> levels) > 0) levels++;
         uint tex; Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
@@ -546,8 +538,8 @@ internal static unsafe class CullPass
         Gl.TextureParameteri(tex, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
         Gl.TextureParameteri(tex, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
         Gl.TextureParameteri(tex, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        if (_pyrFbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _pyrFbo = f; }
-        _pyrTex = tex; _pyrW = w; _pyrH = h; _pyrLevels = levels;
+        if (_gl.PyrFbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.PyrFbo = f; }
+        _gl.PyrTex = tex; _gl.PyrW = w; _gl.PyrH = h; _gl.PyrLevels = levels;
         _log?.Info($"CullPass: hi-Z pyramid {w}x{h}, {levels} levels (R32F, max reduction)");
         return true;
     }
@@ -562,23 +554,23 @@ internal static unsafe class CullPass
         _readSeq++;
         long bytes = (long)_groups * sizeof(uint);
         long need = (long)_counts.Length * sizeof(uint);
-        if (need > _sampleRead.SlotBytes) { Array.Clear(_readN); if (!_sampleRead.Ensure(need)) return; }
+        if (need > _gl.SampleRead.SlotBytes) { Array.Clear(_gl.ReadN); if (!_gl.SampleRead.Ensure(need)) return; }
         // #489: the three screen phases' counts back to back -- colour, then prepass phase one, then phase two.
         for (int ph = 0; ph < RingPhases; ph++)
-            _sampleRead.Copy(_cntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest], 0, w, ph * bytes, bytes);
-        _sampleRead.Fence(w);
-        _readN[w] = _groups; _readDrawN[w] = _drawN;
-        if (_readN[r] <= 0) return;
-        uint* c = (uint*)_sampleRead.Ready(r);
+            _gl.SampleRead.Copy(_gl.CntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest], 0, w, ph * bytes, bytes);
+        _gl.SampleRead.Fence(w);
+        _gl.ReadN[w] = _groups; _gl.ReadDrawN[w] = _drawN;
+        if (_gl.ReadN[r] <= 0) return;
+        uint* c = (uint*)_gl.SampleRead.Ready(r);
         if (c == null) return;
         long kept = 0, pre = 0, re = 0;
-        for (int i = 0; i < _readN[r]; i++)
-        { kept += c[i]; pre += c[_readN[r] + i]; re += c[2 * _readN[r] + i]; }
+        for (int i = 0; i < _gl.ReadN[r]; i++)
+        { kept += c[i]; pre += c[_gl.ReadN[r] + i]; re += c[2 * _gl.ReadN[r] + i]; }
         // Against the draw count of the frame that WROTE those counts, not this frame's.
-        KeptDraws += Math.Min(kept, _readDrawN[r]);
-        CulledDraws += Math.Max(_readDrawN[r] - kept, 0);
-        PrepassKept += Math.Min(pre + re, _readDrawN[r]);
-        RetestKept += Math.Min(re, _readDrawN[r]);
+        KeptDraws += Math.Min(kept, _gl.ReadDrawN[r]);
+        CulledDraws += Math.Max(_gl.ReadDrawN[r] - kept, 0);
+        PrepassKept += Math.Min(pre + re, _gl.ReadDrawN[r]);
+        RetestKept += Math.Min(re, _gl.ReadDrawN[r]);
         CullFrames++;
     }
 

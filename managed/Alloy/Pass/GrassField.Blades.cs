@@ -29,7 +29,7 @@ internal static unsafe partial class GrassField
     /// it per patch for an answer that cannot differ between two patches of one material.</summary>
     private static void ClassifyAll(int* tids, bool* live, int* bits, bool* cards)
     {
-        bool blades = Grass.Style.V == Grass.StyleBlades && _progBlade != 0;
+        bool blades = Grass.Style.V == Grass.StyleBlades && _gl.ProgBlade != 0;
         for (int m = 0; m < MaxGrassMaterials; m++)
         {
             CAurGrassInfo info = live[m] ? GrassInfo(m) : default;

@@ -20,7 +20,7 @@ internal static unsafe partial class LightmapBake
     private enum Grew { Resident, Pending, Refused }
 
     /// <summary>The migration in flight: the new arrays and the layer the slice is at. The resident names
-    /// (<see cref="_texA"/> and friends) keep naming the OLD arrays until the last layer is across, so every
+    /// (<see cref="BakeGlState.TexA"/> and friends) keep naming the OLD arrays until the last layer is across, so every
     /// read of the window runs against pages that exist -- and every WRITE stands still, see the type doc.</summary>
     private static uint _gA, _gB, _gC;
     private static int _growTo, _growAt;
@@ -39,7 +39,7 @@ internal static unsafe partial class LightmapBake
     /// <see cref="Phase"/> moves them to <see cref="Ph.Grow"/> so the split stays a partition.</summary>
     private static long _growAlloc;
 
-    private static bool AddLayer() => Grow(_layers + 1) == Grew.Resident;
+    private static bool AddLayer() => Grow(_gl.Layers + 1) == Grew.Resident;
 
     /// <summary>Grow the resident planes to <paramref name="n"/> layers. <see cref="Grew.Resident"/> = the
     /// pages are there now (nothing to do, nothing to copy, or <see cref="GrowSlice"/> 0 did it all here);
@@ -48,7 +48,7 @@ internal static unsafe partial class LightmapBake
     private static Grew Grow(int n)
     {
         if (Migrating) { _growBusy = true; return Grew.Pending; }
-        if (n <= _layers) return Grew.Resident;
+        if (n <= _gl.Layers) return Grew.Resident;
         // billed to Grow by the next Phase call: the array allocation is the one part of a migration no slice
         // can split, so whether IT or the copies dominate is what the worst-frame clause has to say
         long t0 = Stopwatch.GetTimestamp();
@@ -66,15 +66,15 @@ internal static unsafe partial class LightmapBake
         _migT0 = Stopwatch.GetTimestamp();
         // no live layer to move = no window, and nothing a writer could lose: an area's first pages, and every
         // adopted plan's, are resident in the frame that asked for them
-        if (GrowSlice > 0 && _layers > 0)
+        if (GrowSlice > 0 && _gl.Layers > 0)
         {
             // the allocation is this frame's whole share: the copies start on the next one, so the frame that
             // asked for a page never pays for the array AND for moving the old one
-            _log?.Info($"LightmapBake: pages {_layers} -> {n}/{_cap} ({n * PageMiB} MiB): {_layers} layer(s) to migrate, {GrowSlice} a frame; {AlloyRenderer.VramFreeMib} MiB of VRAM free before it");
+            _log?.Info($"LightmapBake: pages {_gl.Layers} -> {n}/{_cap} ({n * PageMiB} MiB): {_gl.Layers} layer(s) to migrate, {GrowSlice} a frame; {AlloyRenderer.VramFreeMib} MiB of VRAM free before it");
             _growBusy = true; _growWindows++;
             return Grew.Pending;
         }
-        // GrowSlice 0 is the A/B against the freeze; _layers 0 has nothing to copy, only the new layers to
+        // GrowSlice 0 is the A/B against the freeze; _gl.Layers 0 has nothing to copy, only the new layers to
         // clear. Either way it is Grow's time, not the caller's phase's.
         t0 = Stopwatch.GetTimestamp();
         GrowStep();
@@ -89,7 +89,7 @@ internal static unsafe partial class LightmapBake
     private static void GrowStep()
     {
         if (!Migrating) return;
-        int per = GrowSlice > 0 && _layers > 0 ? GrowSlice : int.MaxValue;
+        int per = GrowSlice > 0 && _gl.Layers > 0 ? GrowSlice : int.MaxValue;
         // a fresh layer is black + straight-up + no mover share: an unbaked texel that somehow gets sampled reads as no light
         float* none = stackalloc float[4] { 0f, 0f, 0f, 0f };
         float* black = stackalloc float[4] { 0f, 0f, 0f, 1f };
@@ -99,12 +99,12 @@ internal static unsafe partial class LightmapBake
         for (int k = 0; k < per && _growAt < _growTo; k++, _growAt++, _growSlices++)
         {
             int l = _growAt;
-            if (l < _layers)
+            if (l < _gl.Layers)
             {
-                CopyLayer(_texA, _gA, l); CopyLayer(_texB, _gB, l); CopyLayer(_texC, _gC, l);
+                CopyLayer(_gl.TexA, _gA, l); CopyLayer(_gl.TexB, _gB, l); CopyLayer(_gl.TexC, _gC, l);
                 continue;
             }
-            if (!bound) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo); Gl.DrawBuffers(3, bufs); bound = true; }
+            if (!bound) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo); Gl.DrawBuffers(3, bufs); bound = true; }
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, _gA, 0, l);
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, _gB, 0, l);
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, _gC, 0, l);
@@ -115,13 +115,13 @@ internal static unsafe partial class LightmapBake
         // the page bake stood still for this window: hand its wall clock back, or "ms wall per page" reports the
         // migration as the bake's own pacing
         if (_bakePage >= 0) _pageSkew += Stopwatch.GetTimestamp() - _migT0;
-        if (_texA != 0) { uint t = _texA; Gl.DeleteTextures(1, &t); }
-        if (_texB != 0) { uint t = _texB; Gl.DeleteTextures(1, &t); }
-        if (_texC != 0) { uint t = _texC; Gl.DeleteTextures(1, &t); }
-        int from = _layers;
-        _texA = _gA; _texB = _gB; _texC = _gC;
-        _gA = _gB = _gC = 0; _layers = _growTo; _growTo = 0; _growAt = 0; _growBusy = false;
-        _log?.Info($"LightmapBake: pages {from} -> {_layers}/{_cap} resident ({_layers * PageMiB} MiB)");
+        if (_gl.TexA != 0) { uint t = _gl.TexA; Gl.DeleteTextures(1, &t); }
+        if (_gl.TexB != 0) { uint t = _gl.TexB; Gl.DeleteTextures(1, &t); }
+        if (_gl.TexC != 0) { uint t = _gl.TexC; Gl.DeleteTextures(1, &t); }
+        int from = _gl.Layers;
+        _gl.TexA = _gA; _gl.TexB = _gB; _gl.TexC = _gC;
+        _gA = _gB = _gC = 0; _gl.Layers = _growTo; _growTo = 0; _growAt = 0; _growBusy = false;
+        _log?.Info($"LightmapBake: pages {from} -> {_gl.Layers}/{_cap} resident ({_gl.Layers * PageMiB} MiB)");
     }
 
     private static void CopyLayer(uint src, uint dst, int layer)
@@ -158,11 +158,11 @@ internal static unsafe partial class LightmapBake
     private static void DropPages()
     {
         GrowAbort(gl: true);
-        if (_texA != 0) { uint t = _texA; Gl.DeleteTextures(1, &t); }
-        if (_texB != 0) { uint t = _texB; Gl.DeleteTextures(1, &t); }
-        if (_texC != 0) { uint t = _texC; Gl.DeleteTextures(1, &t); }
-        if (_layers > 0) _log?.Info($"LightmapBake: {_layers} pages freed ({_layers * PageMiB} MiB)");
-        _texA = _texB = _texC = 0; _layers = 0;
+        if (_gl.TexA != 0) { uint t = _gl.TexA; Gl.DeleteTextures(1, &t); }
+        if (_gl.TexB != 0) { uint t = _gl.TexB; Gl.DeleteTextures(1, &t); }
+        if (_gl.TexC != 0) { uint t = _gl.TexC; Gl.DeleteTextures(1, &t); }
+        if (_gl.Layers > 0) _log?.Info($"LightmapBake: {_gl.Layers} pages freed ({_gl.Layers * PageMiB} MiB)");
+        _gl.TexA = _gl.TexB = _gl.TexC = 0; _gl.Layers = 0;
     }
 
     // ---------------------------------------------------------------------------------------------------

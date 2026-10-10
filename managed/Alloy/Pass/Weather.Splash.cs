@@ -30,10 +30,8 @@ internal static unsafe partial class Weather
 
     internal static Knob<float> Impacts = null!, ImpactRange = null!;
 
-    private static uint _progSplash;
     private static SpLoc _locSplash;
     private static AlloyRenderer.LitLoc _litSplash;
-    private static bool _splashFailed, _splashSaid;
     private static float _splashT;
     /// <summary>The disc centre's smoothed xy velocity, and the centre and clock it was last measured at.</summary>
     private static Vector2 _splashVel, _splashWasC;
@@ -65,7 +63,7 @@ internal static unsafe partial class Weather
     /// at the impacts knob under the shared instance budget. Split out so the self-check can drive it without
     /// a live cover bake.</summary>
     private static int SplashWanted()
-        => _splashFailed || Impacts.V <= 0f || CurrentKind != Kind.Rain || Density <= 0f ? 0
+        => _gl.SplashFailed || Impacts.V <= 0f || CurrentKind != Kind.Rain || Density <= 0f ? 0
          : (int)(MaxCount.V * SplashShare * Impacts.V * Density * DensityScale.V);
 
     /// <summary>The splash draw, inside the precipitation bracket (its blend, depth test and depth mask are
@@ -75,9 +73,9 @@ internal static unsafe partial class Weather
     {
         _splashes = 0; _footSplashes = 0;
         int crowns = SplashCount(), feet = FootLive(TrackNow);
-        if (crowns <= 0 && !_splashSaid && SplashWanted() > 0 && Cover.V && CasterPass.CoverFresh && CoverDepthView == 0)
+        if (crowns <= 0 && !_gl.SplashSaid && SplashWanted() > 0 && Cover.V && CasterPass.CoverFresh && CoverDepthView == 0)
         {
-            _splashSaid = true;
+            _gl.SplashSaid = true;
             _log?.Info("Weather: no plain-depth view of the cover map -- rain splashes sit out (the landing point is unreadable without it)");
         }
         Matrix4x4 vp = default, inv = default;
@@ -86,7 +84,7 @@ internal static unsafe partial class Weather
         if (crowns + feet <= 0 || !EnsureSplash()) return;
         if (!AlloyLights.TryPerspective((float*)proj, out _, out float p11, out _, out _)) return;
         ref SpLoc l = ref _locSplash;
-        Gl.UseProgram(_progSplash);
+        Gl.UseProgram(_gl.ProgSplash);
         Gl.UniformMatrix4fv(l.View, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(l.Proj, 1, 0, (float*)proj);
         Gl.Uniform3f(l.Eye, eye.X, eye.Y, eye.Z);
@@ -124,21 +122,21 @@ internal static unsafe partial class Weather
 
     private static bool EnsureSplash()
     {
-        if (_splashFailed || Gl.DrawArraysInstancedBaseInstance == null) return false;
-        if (_progSplash != 0) return true;
-        _progSplash = GlProgram.Graphics(ShdSplashVs, ShaderStages.Source(ShdSplashVs), ShdSplashFs, ShaderStages.Source(ShdSplashFs), _log, "Weather splash");
-        if (_progSplash == 0)
-        { _splashFailed = true; _log?.Info("Weather: splash program build failed -- no rain impacts this session"); return false; }
+        if (_gl.SplashFailed || Gl.DrawArraysInstancedBaseInstance == null) return false;
+        if (_gl.ProgSplash != 0) return true;
+        _gl.ProgSplash = GlProgram.Graphics(ShdSplashVs, ShaderStages.Source(ShdSplashVs), ShdSplashFs, ShaderStages.Source(ShdSplashFs), _log, "Weather splash");
+        if (_gl.ProgSplash == 0)
+        { _gl.SplashFailed = true; _log?.Info("Weather: splash program build failed -- no rain impacts this session"); return false; }
         ref SpLoc l = ref _locSplash;
-        l.View = GlProgram.Loc(_progSplash, "uView"); l.Proj = GlProgram.Loc(_progSplash, "uProj");
-        l.Eye = GlProgram.Loc(_progSplash, "uEye"); l.Lit = GlProgram.Loc(_progSplash, "uLit");
-        l.P = GlProgram.Loc(_progSplash, "uSplashP"); l.C = GlProgram.Loc(_progSplash, "uSplashC"); l.V = GlProgram.Loc(_progSplash, "uSplashV");
-        l.CoverDepth = GlProgram.Loc(_progSplash, "uCoverDepth");
-        l.CoverVp = GlProgram.Loc(_progSplash, "uCoverVp"); l.CoverVpInv = GlProgram.Loc(_progSplash, "uCoverVpInv");
-        l.Tint = GlProgram.Loc(_progSplash, "uTint"); l.Alpha = GlProgram.Loc(_progSplash, "uAlpha");
-        l.Rain = GlProgram.Loc(_progSplash, "uSplashRain"); l.Foot = GlProgram.Loc(_progSplash, "uFoot"); l.FootW = GlProgram.Loc(_progSplash, "uFootW");
-        l.WxMapXf = GlProgram.Loc(_progSplash, "uWxMapXf"); l.WxMapP = GlProgram.Loc(_progSplash, "uWxMapP");
-        _litSplash = Programs.LitLocs(_progSplash);
+        l.View = GlProgram.Loc(_gl.ProgSplash, "uView"); l.Proj = GlProgram.Loc(_gl.ProgSplash, "uProj");
+        l.Eye = GlProgram.Loc(_gl.ProgSplash, "uEye"); l.Lit = GlProgram.Loc(_gl.ProgSplash, "uLit");
+        l.P = GlProgram.Loc(_gl.ProgSplash, "uSplashP"); l.C = GlProgram.Loc(_gl.ProgSplash, "uSplashC"); l.V = GlProgram.Loc(_gl.ProgSplash, "uSplashV");
+        l.CoverDepth = GlProgram.Loc(_gl.ProgSplash, "uCoverDepth");
+        l.CoverVp = GlProgram.Loc(_gl.ProgSplash, "uCoverVp"); l.CoverVpInv = GlProgram.Loc(_gl.ProgSplash, "uCoverVpInv");
+        l.Tint = GlProgram.Loc(_gl.ProgSplash, "uTint"); l.Alpha = GlProgram.Loc(_gl.ProgSplash, "uAlpha");
+        l.Rain = GlProgram.Loc(_gl.ProgSplash, "uSplashRain"); l.Foot = GlProgram.Loc(_gl.ProgSplash, "uFoot"); l.FootW = GlProgram.Loc(_gl.ProgSplash, "uFootW");
+        l.WxMapXf = GlProgram.Loc(_gl.ProgSplash, "uWxMapXf"); l.WxMapP = GlProgram.Loc(_gl.ProgSplash, "uWxMapP");
+        _litSplash = Programs.LitLocs(_gl.ProgSplash);
         return true;
     }
 
@@ -159,8 +157,6 @@ internal static unsafe partial class Weather
     }
 
     private static void SplashTick(float dt) => _splashT = (_splashT + dt) % (SplashLifeSec * SplashWrapSlices);
-
-    private static void SplashLost() { _progSplash = 0; _splashFailed = false; _splashSaid = false; }
 
     private static string SplashStats() => Impacts.V <= 0f ? "" : $", {_splashes} splashes";
 

@@ -165,7 +165,7 @@ internal static unsafe partial class LightmapBake
         End();
         float first = _firstLandT == 0 ? -1f : (_firstLandT - _holdT0) / (float)Stopwatch.Frequency;
         _log?.Info($"LightmapBake: hold released after {s:F1} s ({why}) -- first bake at {(first < 0 ? "never" : $"{first:F1} s")}, "
-                 + $"{_landed} rects landed ({_landedHits} cached) / {_pending} pending, pages {_layers}, set {(_closed ? $"closed at walk {_walks}" : "OPEN")} "
+                 + $"{_landed} rects landed ({_landedHits} cached) / {_pending} pending, pages {_gl.Layers}, set {(_closed ? $"closed at walk {_walks}" : "OPEN")} "
                  + $"SetHash {SetHash:x16}, "
                  + $"charts {MeshChart.Done}/{MeshChart.Offered}, {_sharedEnrols} enrols shared a standing rect; census at the close static={_closeStatic} dynamic={_closeDynamic}, now static {CensusStatic} dynamic {CensusDynamic}"
                  + stages + AreaStats());
@@ -234,7 +234,7 @@ internal static unsafe partial class LightmapBake
         if (_silentHold) { if (s >= SilentCapSeconds) Release($"silent hold ceiling -- {_areaClaimed} of {_areaBase} baseline rects claimed"); return; }
         _skipOpen = s >= Lightmap.HoldSeconds.V;
         int phase = _closed && MeshChart.InFlight == 0 ? 1 : 0;
-        int n = phase == 0 ? MeshChart.Done : PagesDone(), m = phase == 0 ? MeshChart.Offered : _layers;
+        int n = phase == 0 ? MeshChart.Done : PagesDone(), m = phase == 0 ? MeshChart.Offered : _gl.Layers;
         if (n != _captionN || m != _captionM || phase != _captionPhase)
         {
             _captionN = n; _captionM = m; _captionPhase = phase;
@@ -292,7 +292,7 @@ internal static unsafe partial class LightmapBake
             if ((st == RState.Queued || st == RState.Probing) && (uint)_rects[ri].Page < MaxPages) busy[_rects[ri].Page] = true;
         }
         int done = 0;
-        for (int p = 0; p < _layers; p++) if (!busy[p]) done++;
+        for (int p = 0; p < _gl.Layers; p++) if (!busy[p]) done++;
         return done;
     }
 

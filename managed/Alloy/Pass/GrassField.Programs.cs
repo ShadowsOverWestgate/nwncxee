@@ -13,11 +13,32 @@ namespace CX.Alloy;
 /// programs with their uniform locations, and the shader resrefs an override replaces.</summary>
 internal static unsafe partial class GrassField
 {
-    private static uint _vao, _faceBuf, _patchBuf, _matBuf, _outBuf, _cmdBuf, _statBuf, _prog, _progDepth;
-    private static uint _progScatter, _progBlade, _progBladeDepth;
-    /// <summary>The persistent map of <see cref="_statBuf"/>: the command counts copied after every draw, read
-    /// by <see cref="Stats"/> a frame or more late without a sync.</summary>
-    private static uint* _stat;
+    /// <summary>Everything the GL context owns, in one object: <see cref="ContextLost"/> replaces it.</summary>
+    private sealed class GrassGlState
+    {
+        public uint Vao, FaceBuf, PatchBuf, MatBuf, OutBuf, CmdBuf, StatBuf, Prog, ProgDepth;
+        public uint ProgScatter, ProgBlade, ProgBladeDepth;
+        /// <summary>The persistent map of <see cref="StatBuf"/>: the command counts copied after every draw, read
+        /// by <see cref="Stats"/> a frame or more late without a sync.</summary>
+        public uint* Stat;
+        public Loc Loc, LocD, LocB, LocBD;
+        public AlloyRenderer.FeatLoc FeatLoc, FeatLocD, FeatLocB, FeatLocBD;
+        public ScatterLoc LocS;
+        /// <summary>Two sampler objects because a texture with no mip chain is mipmap-INCOMPLETE under a mipmap
+        /// min filter and samples black, so the filter follows the texture; a sampler leaves the engine's own sampling alone.</summary>
+        public uint SampMip, SampFlat;
+        public uint PushTex;
+        /// <summary>Does the push texture hold what <see cref="_push"/> holds? False before the first upload,
+        /// where a fresh texture's storage is undefined rather than neutral.</summary>
+        public bool PushSynced;
+        /// <summary>Pushers in the list the field currently holds (-1 = none that can be trusted).</summary>
+        public int PushWasN = -1;
+        /// <summary>The DEFAULT framebuffer's sample count, latched for the life of the context (0 = not yet
+        /// read): the only multisampled surface the grass pass can land on.</summary>
+        public int Fb0Samples;
+    }
+
+    private static GrassGlState _gl = new();
 
     private struct Loc
     {
@@ -28,17 +49,14 @@ internal static unsafe partial class GrassField
         public int PushTex, PushGain, PushWindow;
         public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
     }
-    private static Loc _loc, _locD, _locB, _locBD;
-    private static AlloyRenderer.FeatLoc _featLoc, _featLocD, _featLocB, _featLocBD;
     /// <summary>The scatter's uniforms.</summary>
     private struct ScatterLoc { public int Planes, Eye, Lod, Fade, SnowThin, Clamp, PushTex, PushWindow, Near, Clump, CardKeep, BladeCap; }
-    private static ScatterLoc _locS;
 
     // ---- GL resources ------------------------------------------------------------------------
 
     private static bool EnsureBuffers()
     {
-        if (_vao != 0) return true;
+        if (_gl.Vao != 0) return true;
         _faces ??= new float[MaxFaces * FaceFloats];
 
         // The card template: two crossed quads in blade-local space. x/y span [-0.5, 0.5] (one quad along x,
@@ -71,12 +89,12 @@ internal static unsafe partial class GrassField
             if (b[i] == 0) return _down.Fail(_log, "the grass buffers could not be created", "no grass draws");
         if (vao == 0) return _down.Fail(_log, "the grass buffers could not be created", "no grass draws");
         uint template = b[0];
-        _faceBuf = b[1]; _patchBuf = b[2]; _matBuf = b[3]; _outBuf = b[4]; _cmdBuf = b[5]; _statBuf = b[6];
-        Gl.NamedBufferData(_faceBuf, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
-        Gl.NamedBufferData(_cmdBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        _gl.FaceBuf = b[1]; _gl.PatchBuf = b[2]; _gl.MatBuf = b[3]; _gl.OutBuf = b[4]; _gl.CmdBuf = b[5]; _gl.StatBuf = b[6];
+        Gl.NamedBufferData(_gl.FaceBuf, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.NamedBufferData(_gl.CmdBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
         const uint flags = Gl.MAP_READ_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
-        Gl.NamedBufferStorage(_statBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, flags);
-        _stat = (uint*)Gl.MapNamedBufferRange(_statBuf, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), flags);
+        Gl.NamedBufferStorage(_gl.StatBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, flags);
+        _gl.Stat = (uint*)Gl.MapNamedBufferRange(_gl.StatBuf, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), flags);
 
         // binding 0 = the template (attribs 0, 1); binding 1 = the scatter's output, read back as a divisor-1
         // instance stream (attribs 2..4): each indirect command's baseInstance is its material's region, so one
@@ -85,8 +103,8 @@ internal static unsafe partial class GrassField
         Gl.VertexArrayVertexBuffer(vao, 0, template, IntPtr.Zero, 5 * sizeof(float));
         Gl.VertexArrayAttribFormat(vao, 0, 3, Gl.FLOAT, 0, 0);
         Gl.VertexArrayAttribFormat(vao, 1, 2, Gl.FLOAT, 0, 3 * sizeof(float));
-        Gl.NamedBufferData(_outBuf, (IntPtr)((long)RecordCap * InstFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
-        Gl.VertexArrayVertexBuffer(vao, 1, _outBuf, IntPtr.Zero, InstFloats * sizeof(float));
+        Gl.NamedBufferData(_gl.OutBuf, (IntPtr)((long)RecordCap * InstFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.VertexArrayVertexBuffer(vao, 1, _gl.OutBuf, IntPtr.Zero, InstFloats * sizeof(float));
         Gl.VertexArrayBindingDivisor(vao, 1, 1);
         for (uint a = 0; a < 5; a++)
         {
@@ -94,7 +112,7 @@ internal static unsafe partial class GrassField
             Gl.VertexArrayAttribBinding(vao, a, a < 2 ? 0u : 1u);
             Gl.EnableVertexArrayAttrib(vao, a);
         }
-        _vao = vao;
+        _gl.Vao = vao;
 
         // The displacement field. LINEAR so the push varies smoothly between texels (a nearest-sampled one
         // makes blades snap between neighbouring directions as a creature walks), CLAMP_TO_EDGE so a blade
@@ -115,7 +133,7 @@ internal static unsafe partial class GrassField
         {
             Gl.TextureStorage2D(tex, 1, Gl.RGBA8, PushRes, PushRes);
             RenderTarget.Clamp(tex, Gl.LINEAR);
-            _pushTex = tex;
+            _gl.PushTex = tex;
         }
         return true;
     }
@@ -130,14 +148,14 @@ internal static unsafe partial class GrassField
     /// <summary>The grass stage splices content too; the module edge drops it for a rebuild.</summary>
     internal static void DropProgram()
     {
-        foreach (uint p in (ReadOnlySpan<uint>)[_prog, _progDepth, _progScatter, _progBlade, _progBladeDepth])
+        foreach (uint p in (ReadOnlySpan<uint>)[_gl.Prog, _gl.ProgDepth, _gl.ProgScatter, _gl.ProgBlade, _gl.ProgBladeDepth])
             if (p != 0) Gl.DeleteProgram(p);
-        _prog = 0; _progDepth = 0; _progScatter = 0; _progBlade = 0; _progBladeDepth = 0;
+        _gl.Prog = 0; _gl.ProgDepth = 0; _gl.ProgScatter = 0; _gl.ProgBlade = 0; _gl.ProgBladeDepth = 0;
     }
 
     private static bool EnsureProgram()
     {
-        if (_prog != 0) return true;
+        if (_gl.Prog != 0) return true;
         if (_down.Failed) return false;
         string fs = EmbeddedFs, vs = ShaderStages.Source(ShdGrassVs);
         uint prog = GlProgram.Graphics(ShdGrassVs, vs, ShdGrassFs, fs, _log,
@@ -156,28 +174,28 @@ internal static unsafe partial class GrassField
         if (prog == 0)
             return _down.Fail(_log, "the grass program is unavailable",
                               "grass falls back to the engine's own draw");
-        _prog = prog;
+        _gl.Prog = prog;
         // The prepass program: the SAME vertex text (an override applies to both), the alpha-only stage.
         // Not fatal: without it the colour pass writes depth itself, the pre-#355 shape.
-        _progDepth = GlProgram.Graphics(vs, GrassDepthFs, _log, "GrassField grass depth prepass");
-        if (_progDepth == 0) _log?.Info("GrassField: the depth prepass program is unavailable -- grass draws single-pass");
+        _gl.ProgDepth = GlProgram.Graphics(vs, GrassDepthFs, _log, "GrassField grass depth prepass");
+        if (_gl.ProgDepth == 0) _log?.Info("GrassField: the depth prepass program is unavailable -- grass draws single-pass");
         else
         {
-            _locD = Locate(_progDepth);
-            _featLocD = Programs.FeatLocs(_progDepth);
-            Gl.UseProgram(_progDepth);
-            Gl.Uniform1i(_locD.Tex, 0);
+            _gl.LocD = Locate(_gl.ProgDepth);
+            _gl.FeatLocD = Programs.FeatLocs(_gl.ProgDepth);
+            Gl.UseProgram(_gl.ProgDepth);
+            Gl.Uniform1i(_gl.LocD.Tex, 0);
             // the per-vertex rig's shadow samplers live in the shared vertex text: unassigned they sit on unit 0
             // beside uTex and GL refuses every depth draw
-            ShadowUnits(in _locD);
+            ShadowUnits(in _gl.LocD);
         }
         if (!EnsureScatter()) return false;
-        _loc = Locate(prog);
-        _featLoc = Programs.FeatLocs(prog);
+        _gl.Loc = Locate(prog);
+        _gl.FeatLoc = Programs.FeatLocs(prog);
         // Same reason the lit program does it here: a sampler left at its default points at unit 0, and GL
         // refuses a draw whose samplers of different types share an image unit.
         Gl.UseProgram(prog);
-        Gl.Uniform1i(_loc.Tex, 0);
+        Gl.Uniform1i(_gl.Loc.Tex, 0);
         return EnsureProgramTail(prog);
     }
 
@@ -194,27 +212,27 @@ internal static unsafe partial class GrassField
             bvsSrc = bvs;
             b = GlProgram.Graphics(bvs, bfs, _log, "GrassField procedural blades (embedded)", content: false);
         }
-        _progBlade = b;
+        _gl.ProgBlade = b;
         if (b == 0) _log?.Info("GrassField: the blade program is unavailable -- every grass atlas draws as cards");
         else
         {
-            _locB = Locate(b);
-            _featLocB = Programs.FeatLocs(b);
+            _gl.LocB = Locate(b);
+            _gl.FeatLocB = Programs.FeatLocs(b);
             Gl.UseProgram(b);
-            ShadowUnits(in _locB);
-            _progBladeDepth = GlProgram.Graphics(bvsSrc, ShaderSource.Get("cx_gblade_df.glsl"), _log, "GrassField blade cascade depth");
-            if (_progBladeDepth != 0)
+            ShadowUnits(in _gl.LocB);
+            _gl.ProgBladeDepth = GlProgram.Graphics(bvsSrc, ShaderSource.Get("cx_gblade_df.glsl"), _log, "GrassField blade cascade depth");
+            if (_gl.ProgBladeDepth != 0)
             {
-                _locBD = Locate(_progBladeDepth);
-                _featLocBD = Programs.FeatLocs(_progBladeDepth);
-                Gl.UseProgram(_progBladeDepth);
-                ShadowUnits(in _locBD);
+                _gl.LocBD = Locate(_gl.ProgBladeDepth);
+                _gl.FeatLocBD = Programs.FeatLocs(_gl.ProgBladeDepth);
+                Gl.UseProgram(_gl.ProgBladeDepth);
+                ShadowUnits(in _gl.LocBD);
             }
         }
         uint c = GlProgram.Compute(ScatterCs, _log, "GrassField scatter");
         if (c == 0) return _down.Fail(_log, "the grass scatter program is unavailable", "grass falls back to the engine's own draw");
-        _progScatter = c;
-        _locS = new ScatterLoc
+        _gl.ProgScatter = c;
+        _gl.LocS = new ScatterLoc
         {
             Planes = GlProgram.Loc(c, "uPlanes"), Eye = GlProgram.Loc(c, "uEyePos"), Lod = GlProgram.Loc(c, "uLod"),
             Fade = GlProgram.Loc(c, "uFade"), SnowThin = GlProgram.Loc(c, "uSnowThin"), Clamp = GlProgram.Loc(c, "uClamp"),
@@ -251,7 +269,7 @@ internal static unsafe partial class GrassField
 
     private static bool EnsureProgramTail(uint prog)
     {
-        ShadowUnits(in _loc);
+        ShadowUnits(in _gl.Loc);
         _log?.Info("GrassField: instanced grass program ready");
         return true;
     }

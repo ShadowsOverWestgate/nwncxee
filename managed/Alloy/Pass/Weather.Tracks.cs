@@ -41,10 +41,8 @@ internal static unsafe partial class Weather
     internal static Knob<float> TrackFill = null!, FootSplash = null!;
 
     private static float[]? _track;
-    private static uint _trackTex;
     /// <summary>Stamped texel rows not yet uploaded, in unwrapped texel coordinates; lo &gt; hi = none.</summary>
     private static int _trackLo = int.MaxValue, _trackHi = int.MinValue;
-    private static bool _trackAll = true;
     private static long _trackEpoch = Stopwatch.GetTimestamp();
     /// <summary>Which foot each recent creature put down last, direct-mapped by id: a bucket that changes hands
     /// restarts its parity rather than sharing it.</summary>
@@ -163,8 +161,8 @@ internal static unsafe partial class Weather
         // allocated here, on the first snowy lit bind, never inside the footstep hook
         if (_track == null && Tracks.V && _snow > TrackMinSnow) _track = new float[TrackSize * TrackSize * 4];
         if (_track == null || !EnsureTrack()) { Bind(TrackUnit, 0); return; }
-        if (_trackAll || _trackHi >= _trackLo) Upload();
-        Bind(TrackUnit, _trackTex);
+        if (_gl.TrackAll || _trackHi >= _trackLo) Upload();
+        Bind(TrackUnit, _gl.TrackTex);
     }
 
     /// <summary>The dirty rows, or all of them, with no pixel-unpack buffer and a tight row length: the engine's
@@ -178,7 +176,7 @@ internal static unsafe partial class Weather
         if (svRow != 0) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0);
         fixed (float* p = _track)
         {
-            if (_trackAll || _trackHi - _trackLo + 1 >= TrackSize) TrackRows(p, 0, TrackSize);
+            if (_gl.TrackAll || _trackHi - _trackLo + 1 >= TrackSize) TrackRows(p, 0, TrackSize);
             else
             {
                 int a = _trackLo - FloorDiv(_trackLo) * TrackSize, b = _trackHi - FloorDiv(_trackHi) * TrackSize;
@@ -188,23 +186,23 @@ internal static unsafe partial class Weather
         }
         if (svUnpack != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, (uint)svUnpack);
         if (svRow != 0) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, svRow);
-        _trackAll = false; _trackLo = int.MaxValue; _trackHi = int.MinValue;
+        _gl.TrackAll = false; _trackLo = int.MaxValue; _trackHi = int.MinValue;
     }
 
     private static void TrackRows(float* p, int row, int n)
-        => Gl.TextureSubImage2D(_trackTex, 0, 0, row, TrackSize, n, Gl.RGBA, Gl.FLOAT, p + row * TrackSize * 4);
+        => Gl.TextureSubImage2D(_gl.TrackTex, 0, 0, row, TrackSize, n, Gl.RGBA, Gl.FLOAT, p + row * TrackSize * 4);
 
     private static bool EnsureTrack()
     {
-        if (_trackTex != 0) return true;
+        if (_gl.TrackTex != 0) return true;
         if (Gl.CreateTextures == null || Gl.TextureStorage2D == null || Gl.TextureSubImage2D == null || Gl.TextureParameteri == null) return false;
         uint t;
         Gl.CreateTextures(Gl.TEXTURE_2D, 1, &t);
         Gl.TextureStorage2D(t, 1, GlRgba32f, TrackSize, TrackSize);
         Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
         Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        _trackTex = t;
-        _trackAll = true;
+        _gl.TrackTex = t;
+        _gl.TrackAll = true;
         return true;
     }
 
@@ -228,12 +226,10 @@ internal static unsafe partial class Weather
     private static void TrackReset()
     {
         if (_track != null) Array.Clear(_track);
-        _trackAll = true; _trackLo = int.MaxValue; _trackHi = int.MinValue;
+        _gl.TrackAll = true; _trackLo = int.MaxValue; _trackHi = int.MinValue;
         _trackEpoch = Stopwatch.GetTimestamp();
         Array.Fill(_foot, new Vector4(0f, 0f, 0f, float.NegativeInfinity));
     }
-
-    private static void TrackLost() { _trackTex = 0; _trackAll = true; }
 
     private static string TrackStats() => $", {_prints} prints, {_footSplashes} foot splashes{WetStepStats()}";
 

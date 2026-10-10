@@ -25,7 +25,28 @@ internal static unsafe partial class Weather
                                 RainSpeed = null!, SnowSpeed = null!, WindLean = null!, Soft = null!, Drips = null!, Backscatter = null!, SnowAngle = null!;
     internal static Knob<int> MaxCount = null!, Viz = null!;
 
-    private static uint _progRain, _progSnow, _vao;
+    /// <summary>Every GL name the context owns across the weather partials, in one object: <see cref="ContextLost"/>
+    /// replaces it. The flags beside the names say what the named storage holds, so they go with it.</summary>
+    private sealed class WeatherGlState
+    {
+        public uint ProgRain, ProgSnow, Vao;
+        public uint ProgSplash;
+        public bool SplashFailed, SplashSaid;
+        public uint EsmView, EsmViewOf, EsmTex0, EsmTex1, EsmFbo, EsmProg, EsmVao;
+        public int EsmSize, EsmLayer = -1, EsmLocSrc, EsmLocStep, EsmLocC;
+        public bool EsmFailed, EsmValid;
+        public uint MapTex, ProgScat, ProgInt;
+        public int MapSize;
+        public bool MapFailed;
+        public uint ShelTex, NoiseTex, RipTex, ProgShel, ProgNoise, ProgRip;
+        public int ShelSize;
+        public bool ShelValid, ShelFailed, NoiseDone;
+        public uint TrackTex;
+        /// <summary>The whole print field owes an upload: a fresh texture's storage is undefined.</summary>
+        public bool TrackAll = true;
+    }
+
+    private static WeatherGlState _gl = new();
     private static Loc _locRain, _locSnow;
     private static AlloyRenderer.LitLoc _litRain, _litSnow;
     private static bool _failed;
@@ -133,8 +154,8 @@ internal static unsafe partial class Weather
         // proportional to it, so an unlit drop is transparent instead of a dark film over the scene.
         new PassState(depth: true, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlOne, blendDst: Gl.ONE_MINUS_SRC_ALPHA).Apply();
-        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
-        Gl.BindVertexArray(_vao);
+        if (_gl.Vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _gl.Vao = v; }
+        Gl.BindVertexArray(_gl.Vao);
         if (count > 0 && Submit(snow ? 2 : 1, count, view, proj, eye, viewport, near, far, lightingOn)) { _count = count; _drawn += count; }
         if (drips > 0 && Submit(3, drips, view, proj, eye, viewport, near, far, lightingOn)) { _drips = drips; _drawn += drips; }
         DrawSplash(view, proj, viewport, eye, near, far, lightingOn);
@@ -150,7 +171,7 @@ internal static unsafe partial class Weather
         if (!EnsureProgram(snow)) return false;
         ref Loc l = ref (snow ? ref _locSnow : ref _locRain);
         ref AlloyRenderer.LitLoc L = ref (snow ? ref _litSnow : ref _litRain);
-        Gl.UseProgram(snow ? _progSnow : _progRain);
+        Gl.UseProgram(snow ? _gl.ProgSnow : _gl.ProgRain);
         Gl.UniformMatrix4fv(l.View, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(l.Proj, 1, 0, (float*)proj);
         Gl.Uniform3f(l.Eye, eye.X, eye.Y, eye.Z);
@@ -188,7 +209,7 @@ internal static unsafe partial class Weather
     {
         // The GL entry points load at the first bracket, after Install -- so this is asked per draw, as the halos do.
         if (_failed || Gl.DrawArraysInstancedBaseInstance == null) return false;
-        ref uint prog = ref (snow ? ref _progSnow : ref _progRain);
+        ref uint prog = ref (snow ? ref _gl.ProgSnow : ref _gl.ProgRain);
         if (prog != 0) return true;
         string fs = snow ? ShdSnowFs : ShdRainFs;
         prog = GlProgram.Graphics(ShdWeatherVs, ShaderStages.Source(ShdWeatherVs), fs, ShaderStages.Source(fs), _log, "Weather");
@@ -205,7 +226,7 @@ internal static unsafe partial class Weather
         return true;
     }
 
-    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; SplashLost(); EsmLost(); MapLost(); ShelterLost(); TrackLost(); }
+    internal static void ContextLost() { _gl = new WeatherGlState(); MapLost(); }
     internal static void ResetPeriod() => _drawn = 0;
     internal static string Stats() => _off ? "weather unavailable" : !Enabled.V ? "weather off"
         : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{SplashStats()}{CoverStats()}{SurfaceStats()}{MapStats()}{ShelterStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";

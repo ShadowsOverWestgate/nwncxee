@@ -113,7 +113,7 @@ internal static unsafe partial class LightmapBake
             var pos = new Vector3(pr.X, pr.Y, pr.Z);
             // the cube starts at the self-shadow skip radius: a brazier's bowl sits right under its light
             // node and blocked every steep ray, a dark disc round each one that only grazing rays escaped
-            if (!CasterPass.BakeStaticCube(_cube, _cubeSize, pos, BakeNear, pr.W)) { _bakeSkips++; return false; }
+            if (!CasterPass.BakeStaticCube(_gl.Cube, _cubeSize, pos, BakeNear, pr.W)) { _bakeSkips++; return false; }
             BakeLight(l, pos, pr.W);
             _bakeLight++; _bakeSteps++;
             return true;
@@ -156,7 +156,7 @@ internal static unsafe partial class LightmapBake
         float* zero = stackalloc float[4] { 0f, 0f, 0f, 0f };
         Gl.ClearBufferfv(Gl.COLOR, 0, zero); Gl.ClearBufferfv(Gl.COLOR, 1, zero); Gl.ClearBufferfv(Gl.COLOR, 2, zero);
         Gl.DepthMask(1); Gl.ClearBufferfv(Gl.DEPTH, 0, zero); Gl.DepthMask(0);
-        Gl.UseProgram(_progBake);
+        Gl.UseProgram(_gl.ProgBake);
         Gl.Uniform1i(_bMode, 0);
         BindNullCubes();
         Gl.Uniform1f(_bDepth, -1f);
@@ -225,19 +225,19 @@ internal static unsafe partial class LightmapBake
     /// <summary>The FBO over the three planes as its colour outputs: the scratch set (-1) or one resident layer.</summary>
     private static void AttachPair(int layer)
     {
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         if (layer < 0)
         {
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _scrA, 0);
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _scrB, 0);
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, Gl.TEXTURE_2D, _scrC, 0);
-            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _scrZ, 0);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.ScrA, 0);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _gl.ScrB, 0);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, Gl.TEXTURE_2D, _gl.ScrC, 0);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _gl.ScrZ, 0);
         }
         else
         {
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, _texA, 0, layer);
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, _texB, 0, layer);
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, _texC, 0, layer);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, _gl.TexA, 0, layer);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, _gl.TexB, 0, layer);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, _gl.TexC, 0, layer);
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, 0, 0);
         }
         uint* bufs = stackalloc uint[3] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1, Gl.COLOR_ATTACHMENT2 };
@@ -263,18 +263,18 @@ internal static unsafe partial class LightmapBake
 
     private static void BakeLight(int l, Vector3 pos, float far)
     {
-        bool q = _qBake.Begin(Gl.TIME_ELAPSED);
+        bool q = _gl.QBake.Begin(Gl.TIME_ELAPSED);
         BindScratch();
         new PassState(depth: true, depthWrite: true, blend: true, cull: false, srgb: false, blendSrc: Gl.ONE, blendDst: Gl.ONE).Apply();
         Gl.DepthFunc(Gl.GREATER);
-        Gl.UseProgram(_progBake);
+        Gl.UseProgram(_gl.ProgBake);
         Gl.Uniform1i(_bMode, 1);
         Gl.Uniform1f(_bDepth, (float)(_bakeLight + 1) / BakeDepthSteps * 2f - 1f);
         Vector3 c = _setCol[l];
         Gl.Uniform4f(_bLight, pos.X, pos.Y, pos.Z, far);
         Gl.Uniform3f(_bColor, c.X, c.Y, c.Z);
         BindNullCubes();
-        Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, _cube);
+        Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, _gl.Cube);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(_bCubeCount, 1);
         // CX-43: the scratch cube as slot 0 of the pass block; the colour pass's next bind puts its own back.
@@ -305,7 +305,7 @@ internal static unsafe partial class LightmapBake
         // the frame's own cube array back on the unit the lit programs expect it on
         Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeTex);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        if (q) _qBake.End(Gl.TIME_ELAPSED);
+        if (q) _gl.QBake.End(Gl.TIME_ELAPSED);
     }
 
     /// <summary>The page's final pass: normalise B, dilate two texels through the coverage alpha, convert
@@ -326,10 +326,10 @@ internal static unsafe partial class LightmapBake
         x0 = Math.Max(x0, 0); y0 = Math.Max(y0, 0); x1 = Math.Min(x1, PageSize); y1 = Math.Min(y1, PageSize);
         new PassState(depth: false, depthWrite: false, cull: false, scissor: true, srgb: false).Apply();
         Gl.Scissor(x0, y0, x1 - x0, y1 - y0);
-        Gl.UseProgram(_progFinish);
-        Gl.ActiveTexture(Gl.TEXTURE0); Gl.BindTexture(Gl.TEXTURE_2D, _scrA);
-        Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_2D, _scrB);
-        Gl.ActiveTexture(Gl.TEXTURE0 + 2); Gl.BindTexture(Gl.TEXTURE_2D, _scrC);
+        Gl.UseProgram(_gl.ProgFinish);
+        Gl.ActiveTexture(Gl.TEXTURE0); Gl.BindTexture(Gl.TEXTURE_2D, _gl.ScrA);
+        Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_2D, _gl.ScrB);
+        Gl.ActiveTexture(Gl.TEXTURE0 + 2); Gl.BindTexture(Gl.TEXTURE_2D, _gl.ScrC);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(_fA, 0); Gl.Uniform1i(_fB, 1); Gl.Uniform1i(_fC, 2);
         Gl.BindVertexArray(PostChain.FullscreenVao);
@@ -355,7 +355,7 @@ internal static unsafe partial class LightmapBake
         double ms = (Stopwatch.GetTimestamp() - _pageT0 - _pageSkew) * 1000.0 / Stopwatch.Frequency;
         _pageSkew = 0;
         _pageMs += ms; _pageMsN++;
-        if (_logLeft-- > 0) _log?.Info($"LightmapBake: page {page} landed -- {_bakeRects.Count} rects over {_bakeLights.Count} lights in {ms:F0} ms wall" + (_qBake.Measured ? $", {_qBake.Avg / 1e6:F2} ms GPU per light step" : ""));
+        if (_logLeft-- > 0) _log?.Info($"LightmapBake: page {page} landed -- {_bakeRects.Count} rects over {_bakeLights.Count} lights in {ms:F0} ms wall" + (_gl.QBake.Measured ? $", {_gl.QBake.Avg / 1e6:F2} ms GPU per light step" : ""));
         AbortBake();
     }
 }

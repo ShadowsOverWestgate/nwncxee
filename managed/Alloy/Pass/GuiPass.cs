@@ -22,18 +22,29 @@ internal static unsafe class GuiPass
     private const int Vec4PerRec = GuiCapture.RecFloats / 4;
 
     private static ExtenderLog? _log;
-    private static bool _armed, _progTried, _failed, _live, _dropSaid;
-    private static uint _prog, _buf, _vtxBuf, _idxBuf, _fbo, _depth;
-    private static long _bufCap, _vtxCap, _idxCap;
-    private static int _locBoneStart, _locGamma, _depthW, _depthH;
+    private static bool _armed, _failed, _live, _dropSaid;
+    /// <summary>Everything the GL context owns, in one object: <see cref="ContextLost"/> replaces it.</summary>
+    private sealed class GuiGlState
+    {
+        public bool ProgTried;
+        public uint Prog, Buf, VtxBuf, IdxBuf, Fbo, Depth;
+        public long BufCap, VtxCap, IdxCap;
+        public int LocBoneStart, LocGamma, DepthW, DepthH;
+        public readonly Dictionary<uint, uint> StreamVao = new(16);
+        /// <summary>Windows: the default framebuffer's depth format, probed once in the engine context; the GUI
+        /// depth is allocated in it so the two can be blitted into each other.</summary>
+        public uint DepthFmt, FboEngDepth;
+        public bool DepthProbed;
+    }
+
+    private static GuiGlState _gl = new();
     private static int* _screenW, _screenH;
     private static NkSdlRenderFn* _nkSlot;
-    private static readonly Dictionary<uint, uint> _streamVao = new(16);
     private static long _flushes, _drawn, _noVao;
 
     /// <summary>Is the GUI Alloy's right now? Asked by the capture hook per scene; everything it names exists before
     /// the first scene is captured, so a scene is never captured into a flush that cannot draw it.</summary>
-    internal static bool Capturing => _armed && !_failed && _prog != 0 && Renderer.Gui.V && GlContextService.Available;
+    internal static bool Capturing => _armed && !_failed && _gl.Prog != 0 && Renderer.Gui.V && GlContextService.Available;
 
     internal static void Install(ExtenderLog log, HookService hooks)
     {
@@ -68,9 +79,9 @@ internal static unsafe class GuiPass
     /// <summary>The overlay views drawn after NUI, and the one-time program build.</summary>
     private static void OnPresent()
     {
-        if (_armed && !_progTried && GlContextService.Available && GlContextService.Enter())
+        if (_armed && !_gl.ProgTried && GlContextService.Available && GlContextService.Enter())
         {
-            _progTried = true;
+            _gl.ProgTried = true;
             BuildProgram();
             GlContextService.Leave();
         }
@@ -108,14 +119,14 @@ internal static unsafe class GuiPass
         if (Gl.DrawElementsInstancedBaseVertexBaseInstance == null || Gl.DrawArraysInstancedBaseInstance == null
             || Gl.CreateBuffers == null || Gl.VertexArrayAttribFormat == null)
         { Fail("glDrawElementsInstancedBaseVertexBaseInstance or DSA is missing"); return; }
-        _prog = GlProgram.Graphics(ShaderSource.Get("cx_gui_v.glsl"), ShaderSource.Get("cx_gui_f.glsl"), _log, "Alloy GUI");
-        if (_prog == 0) { Fail("the GUI program did not build"); return; }
-        _locBoneStart = GlProgram.Loc(_prog, "uBoneStart");
-        _locGamma = GlProgram.Loc(_prog, "uGamma");
+        _gl.Prog = GlProgram.Graphics(ShaderSource.Get("cx_gui_v.glsl"), ShaderSource.Get("cx_gui_f.glsl"), _log, "Alloy GUI");
+        if (_gl.Prog == 0) { Fail("the GUI program did not build"); return; }
+        _gl.LocBoneStart = GlProgram.Loc(_gl.Prog, "uBoneStart");
+        _gl.LocGamma = GlProgram.Loc(_gl.Prog, "uGamma");
         uint b;
-        Gl.CreateBuffers(1, &b); _buf = b;
-        Gl.CreateBuffers(1, &b); _vtxBuf = b;
-        Gl.CreateBuffers(1, &b); _idxBuf = b;
+        Gl.CreateBuffers(1, &b); _gl.Buf = b;
+        Gl.CreateBuffers(1, &b); _gl.VtxBuf = b;
+        Gl.CreateBuffers(1, &b); _gl.IdxBuf = b;
         _log?.Info("GuiPass: program built -- the GUI is Alloy's from this frame");
     }
 
@@ -135,7 +146,7 @@ internal static unsafe class GuiPass
     private static void Flush()
     {
         if (GuiCapture.LayerN == 0) return;
-        if (_prog == 0 || _failed || !Draw())
+        if (_gl.Prog == 0 || _failed || !Draw())
         {
             if (!_dropSaid) { _dropSaid = true; _log?.Always("GuiPass: a GUI flush could not enter the 4.6 context -- that frame's GUI is NOT DRAWN"); }
         }
@@ -169,10 +180,10 @@ internal static unsafe class GuiPass
         Gl.DepthFunc(Gl.LEQUAL);
         Gl.FrontFace(Gl.CCW);
         Gl.CullFace(Gl.BACK);
-        Gl.UseProgram(_prog);
-        Gl.Uniform1i(_locBoneStart, GuiCapture.DrawN * Vec4PerRec);
-        Gl.Uniform1i(_locGamma, PostChain.GammaOff() ? 0 : 1);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindGui, _buf);
+        Gl.UseProgram(_gl.Prog);
+        Gl.Uniform1i(_gl.LocBoneStart, GuiCapture.DrawN * Vec4PerRec);
+        Gl.Uniform1i(_gl.LocGamma, PostChain.GammaOff() ? 0 : 1);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindGui, _gl.Buf);
         // CX-117's master palette, for the PLT item icons a GUI control draws. A no-op until a palette
         // exists (DB mode only), and the unit is nothing else's.
         Db.PltPalettes.Bind();
@@ -249,18 +260,18 @@ internal static unsafe class GuiPass
     {
         long rec = (long)GuiCapture.DrawN * GuiCapture.RecFloats * sizeof(float);
         long bones = (long)GuiCapture.SkinN * GuiCapture.BoneFloats * sizeof(float);
-        Orphan(_buf, ref _bufCap, rec + bones);
-        fixed (float* r = GuiCapture.Records) Gl.NamedBufferSubData(_buf, IntPtr.Zero, (IntPtr)rec, r);
-        if (bones > 0) fixed (float* b = GuiCapture.Bones) Gl.NamedBufferSubData(_buf, (IntPtr)rec, (IntPtr)bones, b);
+        Orphan(_gl.Buf, ref _gl.BufCap, rec + bones);
+        fixed (float* r = GuiCapture.Records) Gl.NamedBufferSubData(_gl.Buf, IntPtr.Zero, (IntPtr)rec, r);
+        if (bones > 0) fixed (float* b = GuiCapture.Bones) Gl.NamedBufferSubData(_gl.Buf, (IntPtr)rec, (IntPtr)bones, b);
         if (GuiCapture.VtxN > 0)
         {
-            Orphan(_vtxBuf, ref _vtxCap, GuiCapture.VtxN);
-            fixed (byte* v = GuiCapture.Vtx) Gl.NamedBufferSubData(_vtxBuf, IntPtr.Zero, (IntPtr)GuiCapture.VtxN, v);
+            Orphan(_gl.VtxBuf, ref _gl.VtxCap, GuiCapture.VtxN);
+            fixed (byte* v = GuiCapture.Vtx) Gl.NamedBufferSubData(_gl.VtxBuf, IntPtr.Zero, (IntPtr)GuiCapture.VtxN, v);
         }
         if (GuiCapture.IdxN > 0)
         {
-            Orphan(_idxBuf, ref _idxCap, GuiCapture.IdxN * 2L);
-            fixed (ushort* i = GuiCapture.Idx) Gl.NamedBufferSubData(_idxBuf, IntPtr.Zero, (IntPtr)(GuiCapture.IdxN * 2L), i);
+            Orphan(_gl.IdxBuf, ref _gl.IdxCap, GuiCapture.IdxN * 2L);
+            fixed (ushort* i = GuiCapture.Idx) Gl.NamedBufferSubData(_gl.IdxBuf, IntPtr.Zero, (IntPtr)(GuiCapture.IdxN * 2L), i);
         }
     }
 
@@ -274,16 +285,16 @@ internal static unsafe class GuiPass
     /// by base vertex / first vertex, which is why the capture aligns every run to its stride.</summary>
     private static uint StreamVao(uint fmt, int stride)
     {
-        if (_streamVao.TryGetValue(fmt, out uint v)) return v;
+        if (_gl.StreamVao.TryGetValue(fmt, out uint v)) return v;
         if (!GuiStream.Layout(fmt, stride, out GuiStream.Offsets o)) return 0;
         Gl.CreateVertexArrays(1, &v);
-        Gl.VertexArrayVertexBuffer(v, 0, _vtxBuf, IntPtr.Zero, stride);
-        Gl.VertexArrayElementBuffer(v, _idxBuf);
+        Gl.VertexArrayVertexBuffer(v, 0, _gl.VtxBuf, IntPtr.Zero, stride);
+        Gl.VertexArrayElementBuffer(v, _gl.IdxBuf);
         Attr(v, AlloyRenderer.LocPos, o.PosN, Gl.FLOAT, 0, o.Pos);
         if (o.Uv >= 0) Attr(v, AlloyRenderer.LocUv, 2, Gl.FLOAT, 0, o.Uv);
         if (o.Normal >= 0) Attr(v, AlloyRenderer.LocNrm, 3, Gl.FLOAT, 0, o.Normal);
         if (o.Color >= 0) Attr(v, LocColor, 4, Gl.UNSIGNED_BYTE, 1, o.Color);
-        _streamVao[fmt] = v;
+        _gl.StreamVao[fmt] = v;
         return v;
     }
 
@@ -303,28 +314,28 @@ internal static unsafe class GuiPass
     {
         uint tex = PresentTarget.Tex;
         if (tex == 0) return 0;
-        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        if (_depth == 0 || _depthW != PresentTarget.Width || _depthH != PresentTarget.Height)
+        if (_gl.Fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f; }
+        if (_gl.Depth == 0 || _gl.DepthW != PresentTarget.Width || _gl.DepthH != PresentTarget.Height)
         {
-            RenderTarget.AllocDepth(ref _depth, _depthFmt != 0 ? _depthFmt : Gl.DEPTH24_STENCIL8, PresentTarget.Width, PresentTarget.Height);
-            _depthW = PresentTarget.Width; _depthH = PresentTarget.Height;
+            RenderTarget.AllocDepth(ref _gl.Depth, _gl.DepthFmt != 0 ? _gl.DepthFmt : Gl.DEPTH24_STENCIL8, PresentTarget.Width, PresentTarget.Height);
+            _gl.DepthW = PresentTarget.Width; _gl.DepthH = PresentTarget.Height;
         }
         // Re-attached every flush, as PresentTarget does: GL reuses freed names across a resize.
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, tex, 0);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, DepthAttachment, Gl.TEXTURE_2D, _depth, 0);
-        return _fbo;
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, DepthAttachment, Gl.TEXTURE_2D, _gl.Depth, 0);
+        return _gl.Fbo;
     }
 
     /// <summary>Windows, the present texture missing or the wrong size (a frame before any world frame, or a resize):
     /// build it in the 4.6 context, then take the screen back into it.</summary>
     private static void ProbeDepth()
     {
-        if (_depthProbed) return;
-        _depthProbed = true;
+        if (_gl.DepthProbed) return;
+        _gl.DepthProbed = true;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        _depthFmt = RenderTarget.ProbeDepthFormat(0);
-        if (_depthFmt == 0) _log?.Always("GuiPass: the default framebuffer reports no depth -- on Windows a content-shader GUI draw "
+        _gl.DepthFmt = RenderTarget.ProbeDepthFormat(0);
+        if (_gl.DepthFmt == 0) _log?.Always("GuiPass: the default framebuffer reports no depth -- on Windows a content-shader GUI draw "
                                        + "will not depth-test against Alloy's GUI draws");
     }
 
@@ -336,11 +347,7 @@ internal static unsafe class GuiPass
         PresentTarget.TakeBack();
     }
 
-    /// <summary>Windows: the default framebuffer's depth format, probed once in the engine context; the GUI depth is
-    /// allocated in it so the two can be blitted into each other.</summary>
-    private static uint _depthFmt, _fboEngDepth;
-    private static bool _depthProbed;
-    private static bool HasStencil => _depthFmt == Gl.DEPTH24_STENCIL8 || _depthFmt == Gl.DEPTH32F_STENCIL8;
+    private static bool HasStencil => _gl.DepthFmt == Gl.DEPTH24_STENCIL8 || _gl.DepthFmt == Gl.DEPTH32F_STENCIL8;
     private static uint DepthAttachment => HasStencil ? Gl.DEPTH_STENCIL_ATTACHMENT : Gl.DEPTH_ATTACHMENT;
 
     /// <summary>Windows, in the ENGINE context: carry the GUI's depth between the screen and Alloy's GUI target, beside the
@@ -349,14 +356,14 @@ internal static unsafe class GuiPass
     /// its depth and Alloy's GUI depth would never meet.</summary>
     private static void Depth(bool fromScreen)
     {
-        if (_depth == 0 || _depthFmt == 0) return;
-        if (_fboEngDepth == 0) { uint f; Gl.GenFramebuffers(1, &f); _fboEngDepth = f; }
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fboEngDepth);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, DepthAttachment, Gl.TEXTURE_2D, _depth, 0);
-        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, fromScreen ? 0u : _fboEngDepth);
-        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, fromScreen ? _fboEngDepth : 0u);
+        if (_gl.Depth == 0 || _gl.DepthFmt == 0) return;
+        if (_gl.FboEngDepth == 0) { uint f; Gl.GenFramebuffers(1, &f); _gl.FboEngDepth = f; }
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.FboEngDepth);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, DepthAttachment, Gl.TEXTURE_2D, _gl.Depth, 0);
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, fromScreen ? 0u : _gl.FboEngDepth);
+        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, fromScreen ? _gl.FboEngDepth : 0u);
         uint mask = Gl.DEPTH_BUFFER_BIT | (HasStencil ? Gl.STENCIL_BUFFER_BIT : 0u);
-        Gl.BlitFramebuffer(0, 0, _depthW, _depthH, 0, 0, _depthW, _depthH, mask, (uint)Gl.NEAREST);
+        Gl.BlitFramebuffer(0, 0, _gl.DepthW, _gl.DepthH, 0, 0, _gl.DepthW, _gl.DepthH, mask, (uint)Gl.NEAREST);
         Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
@@ -365,12 +372,11 @@ internal static unsafe class GuiPass
     internal static void ContextLost()
     {
         TextAtlas.ContextLost();   // CX-119: every font atlas went with the context
-        _prog = 0; _buf = _vtxBuf = _idxBuf = _fbo = _depth = _fboEngDepth = 0; _depthProbed = false; _bufCap = _vtxCap = _idxCap = 0;
-        _streamVao.Clear(); _progTried = false;
+        _gl = new GuiGlState();
     }
 
     internal static string Stats() => !_armed ? "gui: engine (not armed)" : _failed ? "gui: engine (FAILED)"
-        : !Renderer.Gui.V ? "gui: engine (/alloy gui 0)" : _prog == 0 ? "gui: waiting for the 4.6 context"
+        : !Renderer.Gui.V ? "gui: engine (/alloy gui 0)" : _gl.Prog == 0 ? "gui: waiting for the 4.6 context"
         : $"gui: Alloy -- {_flushes} flushes, {_drawn} draws" + (_noVao == 0 ? "" : $", {_noVao} with no VAO (NOT DRAWN)")
           + "; " + GuiCapture.Stats() + "; " + ScreenOwner.Stats();
 }

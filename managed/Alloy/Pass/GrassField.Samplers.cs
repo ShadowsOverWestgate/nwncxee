@@ -14,12 +14,6 @@ namespace CX.Alloy;
 /// dump.</summary>
 internal static unsafe partial class GrassField
 {
-    /// <summary>Two sampler objects because a texture with no mip chain is mipmap-INCOMPLETE under a mipmap
-    /// min filter and samples as opaque black -- so the filter has to follow the texture, not the dial. A
-    /// sampler object is the right tool either way: it overrides filtering for OUR draw only, where setting
-    /// the parameters on the texture would change how the engine's own passes sample it.</summary>
-    private static uint _sampMip, _sampFlat;
-
     /// <summary>The dials live in <see cref="Grass"/> (ADR 0025); what stays here is the render-thread state
     /// a set arms (<see cref="SamplerDirty"/>, <see cref="Rebake"/>, <see cref="GroundDiag"/>).</summary>
     private static float _appliedScaleBias;
@@ -128,12 +122,12 @@ internal static unsafe partial class GrassField
     private static void EnsureSamplers()
     {
         if (Gl.GenSamplers == null || Gl.SamplerParameteri == null || Gl.SamplerParameterf == null) return;
-        if (_sampMip == 0)
+        if (_gl.SampMip == 0)
         {
             uint* ids = stackalloc uint[2];
             Gl.GenSamplers(2, ids);
             if (ids[0] == 0 || ids[1] == 0) return;
-            _sampMip = ids[0]; _sampFlat = ids[1];
+            _gl.SampMip = ids[0]; _gl.SampFlat = ids[1];
             _samplerDirty = true;
         }
         // #391: the render-scale bias rides the soften dial; re-applied when the scale moves
@@ -145,7 +139,7 @@ internal static unsafe partial class GrassField
         float aniso = MathF.Min(Grass.Aniso.V, maxAniso);
         for (int i = 0; i < 2; i++)
         {
-            uint sm = i == 0 ? _sampMip : _sampFlat;
+            uint sm = i == 0 ? _gl.SampMip : _gl.SampFlat;
             Gl.SamplerParameteri(sm, Gl.TEXTURE_MIN_FILTER, i == 0 ? Gl.LINEAR_MIPMAP_LINEAR : Gl.LINEAR);
             Gl.SamplerParameteri(sm, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
             Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);

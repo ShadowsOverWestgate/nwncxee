@@ -371,9 +371,9 @@ internal static unsafe partial class LightmapBake
             uploaded += (long)un.W * un.H * TexelBytes;
             fixed (byte* p = bytes)
             {
-                Gl.TextureSubImage3D(_texA, 0, un.X0, un.Y0, un.Page, un.W, un.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p + UnionOffset(0, 0, 0, un.W, un.H));
-                Gl.TextureSubImage3D(_texB, 0, un.X0, un.Y0, un.Page, un.W, un.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(1, 0, 0, un.W, un.H));
-                Gl.TextureSubImage3D(_texC, 0, un.X0, un.Y0, un.Page, un.W, un.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(2, 0, 0, un.W, un.H));
+                Gl.TextureSubImage3D(_gl.TexA, 0, un.X0, un.Y0, un.Page, un.W, un.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p + UnionOffset(0, 0, 0, un.W, un.H));
+                Gl.TextureSubImage3D(_gl.TexB, 0, un.X0, un.Y0, un.Page, un.W, un.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(1, 0, 0, un.W, un.H));
+                Gl.TextureSubImage3D(_gl.TexC, 0, un.X0, un.Y0, un.Page, un.W, un.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(2, 0, 0, un.W, un.H));
             }
             for (int k = 0; k < table.Length; k++)
             {
@@ -537,7 +537,7 @@ internal static unsafe partial class LightmapBake
         empty = false;
         // no transient test here: a busy readback is the STEP's guard, because a refusal at this point has
         // already consumed the page's turn -- the only refusals left are permanent ones
-        if (Gl.FenceSync == null || Gl.MapNamedBufferRange == null || page >= _layers) return false;
+        if (Gl.FenceSync == null || Gl.MapNamedBufferRange == null || page >= _gl.Layers) return false;
         _areaSnapRects.Clear();
         for (int ri = 0; ri < _rectN; ri++) if (_rects[ri].Page == page && _rects[ri].State == RState.Landed) _areaSnapRects.Add(ri);
         if (!AreaSnapRegion(page, out int x0, out int y0, out int w, out int h) || _areaSnapRects.Count == 0) { empty = true; return false; }
@@ -545,7 +545,7 @@ internal static unsafe partial class LightmapBake
         _uSnap = true;
         QueueReadback(page, x0, y0, w, h, _areaSnapRects);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        if (_fence != IntPtr.Zero) { _areaSnapped++; return true; }
+        if (_gl.Fence != IntPtr.Zero) { _areaSnapped++; return true; }
         _uSnap = false;
         return false;
     }
@@ -621,7 +621,7 @@ internal static unsafe partial class LightmapBake
         {
             Key = _areaKey, Settings = AreaSettingsHash(), SetHash = SetHash,
             SetPosR = new Vector4[_setN], SetCol = new Vector3[_setN],
-            Layers = _layers, AreaHalve = _areaHalve, PackPage = _packPage, FinePage = _finePage, PlacedArea = _placedArea,
+            Layers = _gl.Layers, AreaHalve = _areaHalve, PackPage = _packPage, FinePage = _finePage, PlacedArea = _placedArea,
             PageClass = (byte[])_pageClass.Clone(), ShelfX = (int[])_shelfX.Clone(), ShelfY = (int[])_shelfY.Clone(), ShelfH = (int[])_shelfH.Clone(),
             Unions = _areaUnions.ToArray(),
         };
@@ -663,7 +663,7 @@ internal static unsafe partial class LightmapBake
             AreaPlanOut(0);
             return;
         }
-        _log?.Info($"LightmapBake: area bake cache {_areaKey:x16} holds {n} rects on {_layers} pages; {want} page(s) ({snap >> 20} MiB) are read back whole "
+        _log?.Info($"LightmapBake: area bake cache {_areaKey:x16} holds {n} rects on {_gl.Layers} pages; {want} page(s) ({snap >> 20} MiB) are read back whole "
                  + "before it goes out -- their rects landed from another packing's blobs, which cannot be uploaded whole");
     }
 

@@ -16,9 +16,6 @@ internal static unsafe partial class Weather
     internal const uint ShelterUnit = 23, NoiseUnit = 24, RippleUnit = 25;
     private const int ShelterSizeMax = 2048, NoiseSize = 1024, RippleSize = 1024, ShelGroup = 8;
 
-    private static uint _shelTex, _noiseTex, _ripTex, _progShel, _progNoise, _progRip;
-    private static int _shelSize;
-    private static bool _shelValid, _shelFailed, _noiseDone;
     /// <summary>The parameters the cache was baked with; a knob that moves them re-bakes it.</summary>
     private static Vector4 _shelBaked;
     private static int _sShelVp, _sShelVpInv, _sShelSize, _sShelEdge, _sShelHollow, _sShelDepth, _sNoiseSize, _sRipTime, _sRipSize, _sRipRate;
@@ -41,53 +38,53 @@ internal static unsafe partial class Weather
     /// <summary>After a cover bake was filtered (the plain depth view in hand): bake the cache for it.</summary>
     private static void ShelterBake(uint depthView, int mapSize)
     {
-        _shelValid = false;
+        _gl.ShelValid = false;
         if (!ShelterCache.V || depthView == 0 || !EnsureShelter(Math.Min(mapSize, ShelterSizeMax))) return;
         if (!Matrix4x4.Invert(CasterPass.CoverVp, out Matrix4x4 inv)) return;
         Matrix4x4 vp = CasterPass.CoverVp;
         Vector4 p = ShelterParams();
         float radius = MathF.Max(CoverRange.V, 1f);
-        Gl.UseProgram(_progShel);
-        Gl.BindImageTexture(0, _shelTex, 0, 0, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
+        Gl.UseProgram(_gl.ProgShel);
+        Gl.BindImageTexture(0, _gl.ShelTex, 0, 0, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, depthView);
         Gl.Uniform1i(_sShelDepth, 0);
         Gl.UniformMatrix4fv(_sShelVp, 1, 0, (float*)&vp);
         Gl.UniformMatrix4fv(_sShelVpInv, 1, 0, (float*)&inv);
-        Gl.Uniform2i(_sShelSize, _shelSize, _shelSize);
+        Gl.Uniform2i(_sShelSize, _gl.ShelSize, _gl.ShelSize);
         Gl.Uniform4f(_sShelEdge, p.X, p.Y, p.Z, p.W);
         Gl.Uniform1f(_sShelHollow, HollowStepM / (CoverDepthRadii * radius));
-        uint g = (uint)((_shelSize + ShelGroup - 1) / ShelGroup);
+        uint g = (uint)((_gl.ShelSize + ShelGroup - 1) / ShelGroup);
         Gl.DispatchCompute(g, g, 1);
         Gl.MemoryBarrier(Gl.SHADER_IMAGE_ACCESS_BARRIER_BIT | Gl.TEXTURE_FETCH_BARRIER_BIT);
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.UseProgram(0);
-        _shelBaked = p; _shelValid = true; _shelBakes++;
+        _shelBaked = p; _gl.ShelValid = true; _shelBakes++;
     }
 
     /// <summary>Once per world frame from the weather draw: the noise tile on first need, a re-bake when a
     /// knob moved the cache's parameters, and this frame's ripple tile while it rains.</summary>
     private static void ShelterTick()
     {
-        if (_shelFailed || !EnsurePrograms()) return;
-        if (!_noiseDone && EnsureTile(ref _noiseTex, Gl.RGBA16F, NoiseSize, mips: true))
+        if (_gl.ShelFailed || !EnsurePrograms()) return;
+        if (!_gl.NoiseDone && EnsureTile(ref _gl.NoiseTex, Gl.RGBA16F, NoiseSize, mips: true))
         {
-            Gl.UseProgram(_progNoise);
-            Gl.BindImageTexture(0, _noiseTex, 0, 0, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
+            Gl.UseProgram(_gl.ProgNoise);
+            Gl.BindImageTexture(0, _gl.NoiseTex, 0, 0, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
             Gl.Uniform1i(_sNoiseSize, NoiseSize);
             Gl.DispatchCompute(NoiseSize / ShelGroup, NoiseSize / ShelGroup, 1);
             Gl.MemoryBarrier(Gl.SHADER_IMAGE_ACCESS_BARRIER_BIT | Gl.TEXTURE_FETCH_BARRIER_BIT | Gl.TEXTURE_UPDATE_BARRIER_BIT);
-            Gl.GenerateTextureMipmap(_noiseTex);
+            Gl.GenerateTextureMipmap(_gl.NoiseTex);
             Gl.UseProgram(0);
-            _noiseDone = true;
+            _gl.NoiseDone = true;
         }
-        if (ShelterCache.V && CoverDepthView != 0 && (!_shelValid || ShelterParams() != _shelBaked))
+        if (ShelterCache.V && CoverDepthView != 0 && (!_gl.ShelValid || ShelterParams() != _shelBaked))
             ShelterBake(CoverDepthView, _coverMapSize);
         float rate = SplashRate(false);
-        if (rate > 0f && EnsureTile(ref _ripTex, Gl.RG16F, RippleSize, mips: false))
+        if (rate > 0f && EnsureTile(ref _gl.RipTex, Gl.RG16F, RippleSize, mips: false))
         {
-            Gl.UseProgram(_progRip);
-            Gl.BindImageTexture(0, _ripTex, 0, 0, 0, Gl.WRITE_ONLY, Gl.RG16F);
+            Gl.UseProgram(_gl.ProgRip);
+            Gl.BindImageTexture(0, _gl.RipTex, 0, 0, 0, Gl.WRITE_ONLY, Gl.RG16F);
             Gl.Uniform1i(_sRipTime, AlloyRenderer.TimeOfDay);
             Gl.Uniform1i(_sRipSize, RippleSize);
             Gl.Uniform1f(_sRipRate, rate);
@@ -101,14 +98,14 @@ internal static unsafe partial class Weather
     /// <summary>Per lit / grass program bind: whether the cache belongs to the cover view the stage is reading.</summary>
     private static void UploadCache(int locCache, bool cover)
     {
-        if (locCache >= 0) Gl.Uniform1f(locCache, cover && ShelterCache.V && _shelValid ? 1f : 0f);
-        Bind(ShelterUnit, _shelValid ? _shelTex : 0);
+        if (locCache >= 0) Gl.Uniform1f(locCache, cover && ShelterCache.V && _gl.ShelValid ? 1f : 0f);
+        Bind(ShelterUnit, _gl.ShelValid ? _gl.ShelTex : 0);
     }
 
     /// <summary>The noise and ripple tiles on their units, for the lit stage; the ripple alone for the water.</summary>
-    private static void BindTiles() { Bind(NoiseUnit, _noiseDone ? _noiseTex : 0); BindRipple(); }
+    private static void BindTiles() { Bind(NoiseUnit, _gl.NoiseDone ? _gl.NoiseTex : 0); BindRipple(); }
 
-    internal static void BindRipple() => Bind(RippleUnit, _ripTex);
+    internal static void BindRipple() => Bind(RippleUnit, _gl.RipTex);
 
     private static void Bind(uint unit, uint tex)
     {
@@ -118,39 +115,33 @@ internal static unsafe partial class Weather
     }
 
     /// <summary>The cover bake is gone (area edge, flush failure): so is the cache baked from it.</summary>
-    private static void ShelterRelease() => _shelValid = false;
-
-    private static void ShelterLost()
-    {
-        _shelTex = _noiseTex = _ripTex = 0; _progShel = _progNoise = _progRip = 0;
-        _shelSize = 0; _shelValid = false; _shelFailed = false; _noiseDone = false;
-    }
+    private static void ShelterRelease() => _gl.ShelValid = false;
 
     private static bool EnsurePrograms()
     {
-        if (_progShel != 0) return true;
+        if (_gl.ProgShel != 0) return true;
         if (Gl.DispatchCompute == null || Gl.BindImageTexture == null || Gl.MemoryBarrier == null || Gl.GenerateTextureMipmap == null)
-        { _shelFailed = true; _log?.Info("Weather: no compute entry points -- the shelter cache, noise and ripple tiles stand down (shelter runs per pixel, no snow relief, no ripples)"); return false; }
-        _progShel = GlProgram.Compute(ShaderSource.Get("cx_wx_shel_c.glsl"), _log, "Weather shelter cache");
-        _progNoise = GlProgram.Compute(ShaderSource.Get("cx_wx_noise_c.glsl"), _log, "Weather noise tile");
-        _progRip = GlProgram.Compute(ShaderSource.Get("cx_wx_ripl_c.glsl"), _log, "Weather ripple tile");
-        if (_progShel == 0 || _progNoise == 0 || _progRip == 0)
-        { _shelFailed = true; _progShel = 0; _log?.Info("Weather: a surface-term program did not build -- shelter runs per pixel, no snow relief, no ripples"); return false; }
-        _sShelVp = GlProgram.Loc(_progShel, "uCoverVp"); _sShelVpInv = GlProgram.Loc(_progShel, "uCoverVpInv");
-        _sShelSize = GlProgram.Loc(_progShel, "uSize"); _sShelEdge = GlProgram.Loc(_progShel, "uEdge");
-        _sShelHollow = GlProgram.Loc(_progShel, "uHollow"); _sShelDepth = GlProgram.Loc(_progShel, "uCoverDepth");
-        _sNoiseSize = GlProgram.Loc(_progNoise, "uSize");
-        _sRipTime = GlProgram.Loc(_progRip, "uTimeOfDay"); _sRipSize = GlProgram.Loc(_progRip, "uSize"); _sRipRate = GlProgram.Loc(_progRip, "uRate");
+        { _gl.ShelFailed = true; _log?.Info("Weather: no compute entry points -- the shelter cache, noise and ripple tiles stand down (shelter runs per pixel, no snow relief, no ripples)"); return false; }
+        _gl.ProgShel = GlProgram.Compute(ShaderSource.Get("cx_wx_shel_c.glsl"), _log, "Weather shelter cache");
+        _gl.ProgNoise = GlProgram.Compute(ShaderSource.Get("cx_wx_noise_c.glsl"), _log, "Weather noise tile");
+        _gl.ProgRip = GlProgram.Compute(ShaderSource.Get("cx_wx_ripl_c.glsl"), _log, "Weather ripple tile");
+        if (_gl.ProgShel == 0 || _gl.ProgNoise == 0 || _gl.ProgRip == 0)
+        { _gl.ShelFailed = true; _gl.ProgShel = 0; _log?.Info("Weather: a surface-term program did not build -- shelter runs per pixel, no snow relief, no ripples"); return false; }
+        _sShelVp = GlProgram.Loc(_gl.ProgShel, "uCoverVp"); _sShelVpInv = GlProgram.Loc(_gl.ProgShel, "uCoverVpInv");
+        _sShelSize = GlProgram.Loc(_gl.ProgShel, "uSize"); _sShelEdge = GlProgram.Loc(_gl.ProgShel, "uEdge");
+        _sShelHollow = GlProgram.Loc(_gl.ProgShel, "uHollow"); _sShelDepth = GlProgram.Loc(_gl.ProgShel, "uCoverDepth");
+        _sNoiseSize = GlProgram.Loc(_gl.ProgNoise, "uSize");
+        _sRipTime = GlProgram.Loc(_gl.ProgRip, "uTimeOfDay"); _sRipSize = GlProgram.Loc(_gl.ProgRip, "uSize"); _sRipRate = GlProgram.Loc(_gl.ProgRip, "uRate");
         return true;
     }
 
     private static bool EnsureShelter(int size)
     {
-        if (_shelFailed || !EnsurePrograms()) return false;
-        if (_shelTex == 0 || _shelSize != size)
+        if (_gl.ShelFailed || !EnsurePrograms()) return false;
+        if (_gl.ShelTex == 0 || _gl.ShelSize != size)
         {
-            RenderTarget.Create(ref _shelTex, Gl.RGBA16F, size, size, Gl.LINEAR);
-            _shelSize = size;
+            RenderTarget.Create(ref _gl.ShelTex, Gl.RGBA16F, size, size, Gl.LINEAR);
+            _gl.ShelSize = size;
             _log?.Info($"Weather: shelter cache {size}x{size} RGBA16F");
         }
         return true;
@@ -171,5 +162,5 @@ internal static unsafe partial class Weather
         return true;
     }
 
-    private static string ShelterStats() => $", shelter cache {(_shelValid ? $"{_shelSize}^2" : "none")} ({_shelBakes} bakes), ripple tiles {_ripBakes}";
+    private static string ShelterStats() => $", shelter cache {(_gl.ShelValid ? $"{_gl.ShelSize}^2" : "none")} ({_shelBakes} bakes), ripple tiles {_ripBakes}";
 }

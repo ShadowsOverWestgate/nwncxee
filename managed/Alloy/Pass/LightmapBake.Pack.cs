@@ -212,7 +212,7 @@ internal static unsafe partial class LightmapBake
         AreaSnapAbandon();   // the pages go here: a plan waiting on one more readback is written as it stands
         if (Gl.DeleteTextures != null) DropPages();
         AbortReadback(gl: true);
-        if (_fence != IntPtr.Zero) { _uncached += _pendingRead.Count; if (Gl.DeleteSync != null) Gl.DeleteSync(_fence); _fence = IntPtr.Zero; }
+        if (_gl.Fence != IntPtr.Zero) { _uncached += _pendingRead.Count; if (Gl.DeleteSync != null) Gl.DeleteSync(_gl.Fence); _gl.Fence = IntPtr.Zero; }
         _pendingRead.Clear();
         _cache.Drain();
     }
@@ -251,7 +251,7 @@ internal static unsafe partial class LightmapBake
 
     /// <summary>The page count every growth path answers to: <see cref="VramFit"/> against the card now. The
     /// pack's density, its one-page-at-a-time overflow and an adopted plan all stop here, not at the cap.</summary>
-    private static int PageFit => VramFit(_cap, _layers, AlloyRenderer.VramFreeMib, AlloyRenderer.VramTotalMib);
+    private static int PageFit => VramFit(_cap, _gl.Layers, AlloyRenderer.VramFreeMib, AlloyRenderer.VramTotalMib);
 
     /// <summary>Shelf-pack the new rects, tallest first (so the cap drops the smallest last), once no
     /// newcomer has arrived for the settle window: an enrolment drains over many frames, and a shelf opened
@@ -273,7 +273,7 @@ internal static unsafe partial class LightmapBake
         // 1+2+..+12 layers of pages (10 GB of GPU copy, a transient double of the pages on the card)
         int need = (int)Math.Min(PageFit,
                                  (_placedArea + demand + PagePackTexels - 1) / PagePackTexels);
-        if (need > _layers && Grow(need) != Grew.Resident) return;
+        if (need > _gl.Layers && Grow(need) != Grew.Resident) return;
         _toPack.Sort((a, b) => _rects[b].H.CompareTo(_rects[a].H));
         int placedN = 0;
         for (int k = 0; k < _toPack.Count; k++)
@@ -374,7 +374,7 @@ internal static unsafe partial class LightmapBake
         while (true)
         {
             if (cursor >= _cap) return false;
-            if (cursor >= _layers && (cursor >= PageFit || !AddLayer())) return false;
+            if (cursor >= _gl.Layers && (cursor >= PageFit || !AddLayer())) return false;
             int p = cursor;
             if (_pageClass[p] != 0 && _pageClass[p] != cls) { cursor++; continue; }
             _pageClass[p] = cls;

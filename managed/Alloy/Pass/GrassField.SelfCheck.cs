@@ -169,7 +169,7 @@ internal static unsafe partial class GrassField
         check.Expect(SamePushers(1), "an unchanged pusher list compares equal");
         _pushWas[0].X = 1.01f;
         check.Expect(!SamePushers(1), "...and one texel of movement does not");
-        _pushNowN = 0; _pushWasN = -1;
+        _pushNowN = 0; _gl.PushWasN = -1;
         _pushClear = clear0;
 
         // ---- the toggle (#180). _off is the resolution latch and Grass.Enabled is the player's dial; they are

@@ -215,25 +215,30 @@ internal static unsafe partial class Particles
     /// <summary><see cref="_off"/> is the RESOLUTION latch -- a helper, a global or a hook that did not
     /// come up, so this client cannot run the Alloy pass at all. It is not the user toggle
     /// (<see cref="Enabled"/>) and <c>particles.enabled</c> must never clear it.</summary>
-    private static bool _off, _failed;
-    private static uint _prog, _vao, _recBuf, _idxBuf;
-    /// <summary>The index-build/sort compute program and its two descriptor buffers.</summary>
-    private static uint _csProg, _spanBuf, _grpBuf;
-    private static int _csEye = -1;
-    private static bool _csFailed;
-    private static int _spanCap, _grpCap;
-    private static int _locEye = -1;
-    /// <summary>The fog block's locations, as one <see cref="AlloyRenderer.FeatLoc"/> -- the
-    /// stage fogs through the world pass's own uploader, so it takes the world pass's own location set.</summary>
-    private static AlloyRenderer.FeatLoc _fogLoc;
+    private static bool _off;
+    /// <summary>Every GL name and location the context owns, in one object: <see cref="ContextLost"/> replaces it.</summary>
+    private sealed class PartGlState
+    {
+        public bool Failed;
+        public uint Prog, Vao, RecBuf, IdxBuf, Samp;
+        /// <summary>The index-build/sort compute program and its two descriptor buffers.</summary>
+        public uint CsProg, SpanBuf, GrpBuf;
+        public int CsEye = -1;
+        public bool CsFailed;
+        public int SpanCap, GrpCap;
+        public int LocEye = -1;
+        /// <summary>The fog block's locations: the stage fogs through the world pass's own uploader, so it
+        /// takes the world pass's own location set.</summary>
+        public AlloyRenderer.FeatLoc FogLoc;
+        public int LocView = -1, LocProj = -1, LocTex = -1, LocCut = -1, LocAdditive = -1,
+                   LocSoftOn = -1, LocDepthTex = -1, LocEmissive = -1, LocLit = -1, LocViz = -1;
+        /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
+        /// <see cref="AlloyRenderer"/> want them handed back.</summary>
+        public int LSunTex = -1, LSunDynTex = -1, LCubeTex = -1, LCubeCount = -1, LCubeDynTex = -1,
+                   LSunMedia = -1, LLocalMedia = -1;
+    }
 
-    private static int _locView = -1, _locProj = -1, _locTex = -1, _locCut = -1,
-                       _locAdditive = -1,
-                       _locSoftOn = -1, _locDepthTex = -1, _locEmissive = -1, _locLit = -1, _locViz = -1;
-    /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
-    /// <see cref="AlloyRenderer"/> want them handed back.</summary>
-    private static int _lSunTex = -1, _lSunDynTex = -1, _lCubeTex = -1, _lCubeCount = -1, _lCubeDynTex = -1,
-                       _lSunMedia = -1, _lLocalMedia = -1;
+    private static PartGlState _gl = new();
     /// <summary>The CPU shadow of the record buffer, addressed by <see cref="Emit.RecBase"/>. The build
     /// writes here; only the blocks whose hash moved are sent to GL.</summary>
     private static float* _recs;
@@ -264,7 +269,6 @@ internal static unsafe partial class Particles
     /// averages cells outright. ponytail: a fraction of the cell rather than a true half-texel, which would
     /// mean querying and caching every texture's dimensions; 1/128 is half a pixel at NWN's 64px cells.</summary>
     private const float CellInset = 1f / 128f;
-    private static uint _samp;
     private static readonly int[] _cType = new int[7], _cCls = new int[ClsCount];
     private static int _cSplat, _cTinted, _cGrid;
     /// <summary>The engine's own names for the render types, from <c>PartEmitter::Initialize</c> @0x4aaaa0 --
@@ -378,7 +382,7 @@ internal static unsafe partial class Particles
                               bool lightingOn)
     {
         _frame++;
-        if (_off || !Enabled.V || _failed || _orderN == 0 || Gl.DrawArrays == null) return;
+        if (_off || !Enabled.V || _gl.Failed || _orderN == 0 || Gl.DrawArrays == null) return;
         if (!EnsureProgram()) return;
 
         // The camera the billboards face: the frame's own camera block, where the seam published this view's pose.
@@ -430,7 +434,7 @@ internal static unsafe partial class Particles
             if (h != e.Hash)
             {
                 e.Hash = h;
-                Gl.NamedBufferSubData(_recBuf,
+                Gl.NamedBufferSubData(_gl.RecBuf,
                                       (IntPtr)((long)e.RecBase * RecFloats * sizeof(float)),
                                       (IntPtr)((long)wrote * RecFloats * sizeof(float)),
                                       _recs + (long)e.RecBase * RecFloats);
@@ -465,37 +469,37 @@ internal static unsafe partial class Particles
             for (int i = 0; i < _drawN; i++)
                 for (int j = 0; j < _wrote[i]; j++)
                     _idx[_span[i * 4 + 2] + j] = _span[i * 4] + (uint)j;
-            Gl.NamedBufferSubData(_idxBuf, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
+            Gl.NamedBufferSubData(_gl.IdxBuf, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
         }
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
-        Gl.UseProgram(_prog);
-        Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
-        Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
-        Gl.Uniform3fv(_locEye, 1, (float*)&eye);
-        Gl.Uniform1i(_locTex, 0);
-        AlloyRenderer.UploadFog(_fogLoc);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _gl.RecBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _gl.IdxBuf);
+        Gl.UseProgram(_gl.Prog);
+        Gl.UniformMatrix4fv(_gl.LocView, 1, 0, (float*)view);
+        Gl.UniformMatrix4fv(_gl.LocProj, 1, 0, (float*)proj);
+        Gl.Uniform3fv(_gl.LocEye, 1, (float*)&eye);
+        Gl.Uniform1i(_gl.LocTex, 0);
+        AlloyRenderer.UploadFog(_gl.FogLoc);
         if (lit)
         {
             AlloyLights.BindForDraw();
-            AlloyRenderer.BindPass(_lCubeCount, viewport, near, far);
+            AlloyRenderer.BindPass(_gl.LCubeCount, viewport, near, far);
             // #336: /particles shadows 0 -- no cube taps on particle fragments (uLocalCubes 0 makes the
             // receiver answer lit at once). The pass read 1,2-1,8ms GPU at overdraw x0,6-0,9, so the term
             // is per-fragment cost, and the lit path's cube taps are the one heavy thing in it.
-            if (!Shadows.V && _lCubeCount >= 0) Gl.Uniform1i(_lCubeCount, 0);
+            if (!Shadows.V && _gl.LCubeCount >= 0) Gl.Uniform1i(_gl.LCubeCount, 0);
             // A particle is a point in a volume, not a point on a surface: the shadow lookups' normal
             // offset is a surface remedy and applying it to a camera-facing billboard normal is what put
             // bands across the smoke. Both lookups keep their constant biases; only the offset goes.
-            Gl.Uniform1f(_lSunMedia, 1f);
-            Gl.Uniform1f(_lLocalMedia, 1f);
+            Gl.Uniform1f(_gl.LSunMedia, 1f);
+            Gl.Uniform1f(_gl.LLocalMedia, 1f);
         }
-        Gl.Uniform1i(_locViz, Viz.V);
-        Gl.Uniform1i(_locSoftOn, soft ? 1 : 0);
-        Gl.Uniform1i(_locDepthTex, (int)SceneDepth.Unit);
+        Gl.Uniform1i(_gl.LocViz, Viz.V);
+        Gl.Uniform1i(_gl.LocSoftOn, soft ? 1 : 0);
+        Gl.Uniform1i(_gl.LocDepthTex, (int)SceneDepth.Unit);
         if (soft) { SceneDepth.Bind(); _softPasses++; }
         Gl.ActiveTexture(Gl.TEXTURE0);
-        if (Sampler.Boot && EnsureSampler()) Gl.BindSampler(0, _samp);
-        Gl.BindVertexArray(_vao);
+        if (Sampler.Boot && EnsureSampler()) Gl.BindSampler(0, _gl.Samp);
+        Gl.BindVertexArray(_gl.Vao);
 
         // #237: _bindInUnit below is the ENGINE's bind wrapper, and it writes the engine's per-stage cache
         // while the glBindTexture it performs lands in ALLOY's context. Bindings are per-context, so every
@@ -528,16 +532,16 @@ internal static unsafe partial class Particles
                 {
                     Gl.Disable(Gl.BLEND); Gl.DepthMask(1);
                     SceneDepth.Invalidate();   // cutouts write depth: halos/weather must not reuse the pre-particle copy
-                    Gl.Uniform1f(_locCut, PunchDiscard); Gl.Uniform1i(_locAdditive, 0);
+                    Gl.Uniform1f(_gl.LocCut, PunchDiscard); Gl.Uniform1i(_gl.LocAdditive, 0);
                 }
                 else
                 {
                     Gl.Enable(Gl.BLEND); Gl.DepthMask(0);
                     Gl.BlendFunc(GlSrcAlpha, cls == ClsAdd ? GlOne : GlOneMinusSrcAlpha);
-                    Gl.Uniform1f(_locCut, NoDiscard);
-                    Gl.Uniform1i(_locAdditive, cls == ClsAdd ? 1 : 0);
+                    Gl.Uniform1f(_gl.LocCut, NoDiscard);
+                    Gl.Uniform1i(_gl.LocAdditive, cls == ClsAdd ? 1 : 0);
                 }
-                Gl.Uniform1i(_locLit, lit && cls == ClsBlend ? 1 : 0);
+                Gl.Uniform1i(_gl.LocLit, lit && cls == ClsBlend ? 1 : 0);
                 if (lit && cls == ClsBlend) _litGroups++;
             }
             if (_gCull[gi] != cull)
@@ -557,7 +561,7 @@ internal static unsafe partial class Particles
                 // effect's artwork.
                 else _bindInUnit(texObj, 0, -1);
             }
-            if (_gEmis[gi] != emis) { emis = _gEmis[gi]; Gl.Uniform1f(_locEmissive, emis); }
+            if (_gEmis[gi] != emis) { emis = _gEmis[gi]; Gl.Uniform1f(_gl.LocEmissive, emis); }
             // Six vertices a particle, expanded from gl_VertexID -- there is no vertex buffer any more.
             Gl.DrawArrays(Gl.TRIANGLES, _gStart[gi] * 6, _gParts[gi] * 6);
         }
@@ -568,7 +572,7 @@ internal static unsafe partial class Particles
             *_engActiveStage = engStage; *_engStageEnabled = engEnabled;
         }
 
-        if (_samp != 0) Gl.BindSampler(0, 0);
+        if (_gl.Samp != 0) Gl.BindSampler(0, 0);
         Gl.BindVertexArray(0);
         Gl.Disable(Gl.BLEND);
         Gl.Disable(Gl.CULL_FACE);
@@ -1133,38 +1137,38 @@ internal static unsafe partial class Particles
 
     private static bool EnsureProgram()
     {
-        if (_prog != 0) return true;
-        if (_failed) return false;
-        _prog = GlProgram.Graphics(ShaderSource.Get("cx_part_v.glsl"),
+        if (_gl.Prog != 0) return true;
+        if (_gl.Failed) return false;
+        _gl.Prog = GlProgram.Graphics(ShaderSource.Get("cx_part_v.glsl"),
             ShaderSource.Get("cx_part_f.glsl"), _log, "Particles");
-        if (_prog == 0)
-        { _failed = true; _log?.Info("Particles: program build failed -- no particles are drawn"); return false; }
-        _locView = GlProgram.Loc(_prog, "uView");
-        _locProj = GlProgram.Loc(_prog, "uProj");
-        _locEye = GlProgram.Loc(_prog, "uEye");
-        _locTex = GlProgram.Loc(_prog, "uTex");
-        _locCut = GlProgram.Loc(_prog, "uAlphaCut");
-        _fogLoc = Programs.FeatLocs(_prog);
-        _locAdditive = GlProgram.Loc(_prog, "uAdditive");
-        _locSoftOn = GlProgram.Loc(_prog, "uSoftOn");
-        _locDepthTex = GlProgram.Loc(_prog, "uSceneDepth");
-        _locEmissive = GlProgram.Loc(_prog, "uEmissive");
-        _locLit = GlProgram.Loc(_prog, "uLit");
-        _locViz = GlProgram.Loc(_prog, "uViz");
-        _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow");
-        _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeDynTex = GlProgram.Loc(_prog, "uLocalDynShadow");
-        _lCubeCount = GlProgram.Loc(_prog, "uLocalCubes");
-        _lSunMedia = GlProgram.Loc(_prog, "uSunMedia");
-        _lLocalMedia = GlProgram.Loc(_prog, "uLocalMedia");
+        if (_gl.Prog == 0)
+        { _gl.Failed = true; _log?.Info("Particles: program build failed -- no particles are drawn"); return false; }
+        _gl.LocView = GlProgram.Loc(_gl.Prog, "uView");
+        _gl.LocProj = GlProgram.Loc(_gl.Prog, "uProj");
+        _gl.LocEye = GlProgram.Loc(_gl.Prog, "uEye");
+        _gl.LocTex = GlProgram.Loc(_gl.Prog, "uTex");
+        _gl.LocCut = GlProgram.Loc(_gl.Prog, "uAlphaCut");
+        _gl.FogLoc = Programs.FeatLocs(_gl.Prog);
+        _gl.LocAdditive = GlProgram.Loc(_gl.Prog, "uAdditive");
+        _gl.LocSoftOn = GlProgram.Loc(_gl.Prog, "uSoftOn");
+        _gl.LocDepthTex = GlProgram.Loc(_gl.Prog, "uSceneDepth");
+        _gl.LocEmissive = GlProgram.Loc(_gl.Prog, "uEmissive");
+        _gl.LocLit = GlProgram.Loc(_gl.Prog, "uLit");
+        _gl.LocViz = GlProgram.Loc(_gl.Prog, "uViz");
+        _gl.LSunTex = GlProgram.Loc(_gl.Prog, "uSunShadow"); _gl.LSunDynTex = GlProgram.Loc(_gl.Prog, "uSunDynShadow");
+        _gl.LCubeTex = GlProgram.Loc(_gl.Prog, "uLocalShadow"); _gl.LCubeDynTex = GlProgram.Loc(_gl.Prog, "uLocalDynShadow");
+        _gl.LCubeCount = GlProgram.Loc(_gl.Prog, "uLocalCubes");
+        _gl.LSunMedia = GlProgram.Loc(_gl.Prog, "uSunMedia");
+        _gl.LLocalMedia = GlProgram.Loc(_gl.Prog, "uLocalMedia");
         // The sampler UNITS, once, at link time rather than per pass. uSunShadow and uLocalShadow are a
         // sampler2DArrayShadow and a samplerCubeArrayShadow; leaving them at their default unit 0 puts three
         // different sampler types on one unit, which GL 4.6 makes an INVALID_OPERATION that discards the
         // whole draw, so `/particles lit 0` would otherwise mean "no particles at all" on a strict driver.
-        Gl.UseProgram(_prog);
-        Gl.Uniform1i(_lSunTex, (int)AlloyRenderer.SunUnit);
-        Gl.Uniform1i(_lSunDynTex, (int)AlloyRenderer.SunDynUnit);
-        Gl.Uniform1i(_lCubeTex, (int)AlloyRenderer.CubeUnit);
-        Gl.Uniform1i(_lCubeDynTex, (int)AlloyRenderer.CubeDynUnit);
+        Gl.UseProgram(_gl.Prog);
+        Gl.Uniform1i(_gl.LSunTex, (int)AlloyRenderer.SunUnit);
+        Gl.Uniform1i(_gl.LSunDynTex, (int)AlloyRenderer.SunDynUnit);
+        Gl.Uniform1i(_gl.LCubeTex, (int)AlloyRenderer.CubeUnit);
+        Gl.Uniform1i(_gl.LCubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         return true;
     }
 
@@ -1174,24 +1178,24 @@ internal static unsafe partial class Particles
     /// LINEAR without mips also makes the texture's completeness irrelevant.</summary>
     private static bool EnsureSampler()
     {
-        if (_samp != 0) return true;
+        if (_gl.Samp != 0) return true;
         if (Gl.BindSampler == null) return false;
-        _samp = Gl.LinearClampSampler();
-        return _samp != 0;
+        _gl.Samp = Gl.LinearClampSampler();
+        return _gl.Samp != 0;
     }
 
     /// <summary>Build the index-build/sort program. Not an overridable stage -- ADR 0012's table is the set a
     /// content author can restyle, and there is no look here to restyle. A driver whose loader never produced
-    /// the compute entry points latches <see cref="_csFailed"/> and the CPU path stands in.</summary>
+    /// the compute entry points latches <see cref="PartGlState.CsFailed"/> and the CPU path stands in.</summary>
     private static bool EnsureSort()
     {
-        if (_csProg != 0) return true;
-        if (_csFailed) return false;
+        if (_gl.CsProg != 0) return true;
+        if (_gl.CsFailed) return false;
         if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || Gl.BindBufferBase == null)
-        { _csFailed = true; return false; }
-        _csProg = GlProgram.Compute(ParticleCs, _log, "Particles index build + depth sort");
-        if (_csProg == 0) { _csFailed = true; return false; }
-        _csEye = GlProgram.Loc(_csProg, "uEye");
+        { _gl.CsFailed = true; return false; }
+        _gl.CsProg = GlProgram.Compute(ParticleCs, _log, "Particles index build + depth sort");
+        if (_gl.CsProg == 0) { _gl.CsFailed = true; return false; }
+        _gl.CsEye = GlProgram.Loc(_gl.CsProg, "uEye");
         _log?.Info($"Particles: #288 armed -- index build and depth sort in compute, "
                    + $"{SortLocal} threads a group, sort cap {SortCap} particles");
         return true;
@@ -1226,12 +1230,12 @@ internal static unsafe partial class Particles
             _grp[gi * 4 + 3] = sort ? count | SortFlag : count;
         }
 
-        Stage(ref _spanBuf, ref _spanCap, _span, _drawN * 4, BindSpans);
-        Stage(ref _grpBuf, ref _grpCap, _grp, groups * 4, BindGroups);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
-        Gl.UseProgram(_csProg);
-        Gl.Uniform3fv(_csEye, 1, (float*)&eye);
+        Stage(ref _gl.SpanBuf, ref _gl.SpanCap, _span, _drawN * 4, BindSpans);
+        Stage(ref _gl.GrpBuf, ref _gl.GrpCap, _grp, groups * 4, BindGroups);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _gl.RecBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _gl.IdxBuf);
+        Gl.UseProgram(_gl.CsProg);
+        Gl.Uniform3fv(_gl.CsEye, 1, (float*)&eye);
         Gl.DispatchCompute((uint)groups, 1, 1);
         // The vertex stage reads the index list as shader storage; BUFFER_UPDATE is for the other consumer,
         // which is a later frame's glBufferSubData onto the same buffer the moment /particles sort 0 is
@@ -1265,7 +1269,7 @@ internal static unsafe partial class Particles
     private static bool EnsureBuffers(int parts)
     {
         if (parts <= 0 || parts > MaxRecs) { if (parts > MaxRecs) _overflow++; return false; }
-        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
+        if (_gl.Vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _gl.Vao = v; }
         if (_idxCap < parts)
         {
             int want = _idxCap > 0 ? _idxCap : MinRecs;
@@ -1273,8 +1277,8 @@ internal static unsafe partial class Particles
             if (_idx != null) NativeMemory.Free(_idx);
             _idx = (uint*)NativeMemory.Alloc((nuint)((long)want * sizeof(uint)));
             _idxCap = want;
-            if (_idxBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _idxBuf = b; }
-            Gl.NamedBufferData(_idxBuf, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+            if (_gl.IdxBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _gl.IdxBuf = b; }
+            Gl.NamedBufferData(_gl.IdxBuf, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
         }
         // The record store is sized off the ALLOCATOR's high-water mark, not off this frame's particle
         // count: blocks are persistent, so an emitter that went off screen still owns its slice.
@@ -1287,13 +1291,13 @@ internal static unsafe partial class Particles
             if (_recs != null) NativeMemory.Free(_recs);
             _recs = grown;
             _recsCap = want;
-            if (_recBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _recBuf = b; }
-            Gl.NamedBufferData(_recBuf,
+            if (_gl.RecBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _gl.RecBuf = b; }
+            Gl.NamedBufferData(_gl.RecBuf,
                                (IntPtr)((long)want * RecFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
             // The new store holds nothing, so every block is stale by construction.
             for (int i = 0; i < _tabN; i++) _tab[i].Hash = 0;
         }
-        return _recBuf != 0 && _idxBuf != 0;
+        return _gl.RecBuf != 0 && _gl.IdxBuf != 0;
     }
 
     /// <summary>Give this emitter a block big enough for <paramref name="count"/> records, bump-allocated and
@@ -1332,18 +1336,14 @@ internal static unsafe partial class Particles
         _recTop = 0;
     }
 
-    /// <summary>The 4.6 context went away: every GL NAME this class holds belongs to it, so they are stale
-    /// and there is nothing to delete. Separate from <see cref="Forget"/> with teeth -- <c>EnsureProgram</c>
-    /// returns true on <c>_prog != 0</c>, so a table-only reset would leave the draw failing silently while
+    /// <summary>The 4.6 context went away: every GL NAME this class holds belongs to it, so the owner is
+    /// replaced and there is nothing to delete. Separate from <see cref="Forget"/> with teeth -- <c>EnsureProgram</c>
+    /// returns true on <c>_gl.Prog != 0</c>, so a table-only reset would leave the draw failing silently while
     /// the suppression stamp (which keys on vertices STAGED) went on declining the engine's own draw.</summary>
     internal static void ContextLost()
     {
         Forget();
-        _prog = 0; _vao = 0; _recBuf = 0; _idxBuf = 0; _samp = 0; _failed = false;
-        _csProg = 0; _spanBuf = 0; _grpBuf = 0; _csEye = -1; _csFailed = false; _spanCap = 0; _grpCap = 0;
-        _locView = _locProj = _locTex = _locCut = _locAdditive = -1;
-        _fogLoc = default;
-        _locSoftOn = _locDepthTex = _locEmissive = _locLit = _locEye = -1;
+        _gl = new PartGlState();
         if (_recs != null) { NativeMemory.Free(_recs); _recs = null; }
         if (_idx != null) { NativeMemory.Free(_idx); _idx = null; }
         _recsCap = 0; _idxCap = 0;
@@ -1353,7 +1353,7 @@ internal static unsafe partial class Particles
     internal static string Describe()
         => $"{(_off ? "UNAVAILABLE" : Enabled.V ? "on" : "off")} soft {(Soft.V ? 1 : 0)} lit {(Lit.V ? 1 : 0)} shadows {(Shadows.V ? 1 : 0)} " +
            $"viz {Viz.V} grid {(Grid.V ? 1 : 0)} guard {(Guard.V ? 1 : 0)} diag {(Diag.V ? 1 : 0)} " +
-           $"sort {(Sort.V ? 1 : 0)}{(_csFailed ? " (NO COMPUTE -- CPU index build)" : "")} " +
+           $"sort {(Sort.V ? 1 : 0)}{(_gl.CsFailed ? " (NO COMPUTE -- CPU index build)" : "")} " +
            $"(batch {(Batch.Boot ? 1 : 0)}, sampler {(Sampler.Boot ? "owned" : "inherited")} -- both restart)";
 
     internal static void ResetPeriod()
@@ -1387,7 +1387,7 @@ internal static unsafe partial class Particles
           // re-sent" for what is two blocks and 8KB a frame, which is an alarm where there is no bus traffic.
           + $", {(float)_blockUploads / MathF.Max(1, frames):F1} of {(float)(_blockUploads + _blockSkips) / MathF.Max(1, frames):F1} record blocks re-sent per frame"
           + (!Sort.V ? ", index built on the CPU, unsorted (/particles sort 0)"
-             : _csFailed ? ", index built on the CPU, unsorted (NO COMPUTE)"
+             : _gl.CsFailed ? ", index built on the CPU, unsorted (NO COMPUTE)"
              : $", {_sorted} groups depth-sorted in compute"
                + (_sortSkipped == 0 ? "" : $", {_sortSkipped} sort-skipped (over {SortCap})"))
           + (_recResets == 0 ? "" : $", {_recResets} BLOCK-ALLOCATOR RESETS (see EnsureBlock)")

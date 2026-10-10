@@ -30,9 +30,9 @@ internal static unsafe partial class LightmapBake
         check.Expect(KeySampleBeats(true, 9ul, 8ul) && !KeySampleBeats(true, 8ul, 9ul) && !KeySampleBeats(true, 8ul, 8ul),
           "the key sample is not the lowest key of the area, so two runs can sample different rects");
         // the packer, on a scratch page state
-        int cap = _cap, layers = _layers, page = _packPage;
+        int cap = _cap, layers = _gl.Layers, page = _packPage;
         var sy = (int[])_shelfY.Clone(); var sh = (int[])_shelfH.Clone(); var sx = (int[])_shelfX.Clone();
-        _cap = 1; _layers = 1; _packPage = 0; Array.Clear(_shelfY); Array.Clear(_shelfH); Array.Clear(_shelfX);
+        _cap = 1; _gl.Layers = 1; _packPage = 0; Array.Clear(_shelfY); Array.Clear(_shelfH); Array.Clear(_shelfX);
         var a = new Rect { W = 100, H = 50 }; var b = new Rect { W = 100, H = 40 }; var c = new Rect { W = 4000, H = 60 };
         check.Expect(Place(ref a) && Place(ref b), "two rects fit an empty page");
         check.Expect(a.Page == 0 && b.Page == 0 && b.X >= a.X + a.W + Gutter && a.Y == Gutter, "the second rect sits past the first by the gutter, on the first shelf");
@@ -43,7 +43,7 @@ internal static unsafe partial class LightmapBake
         check.Expect(DesiredTier(0f) == 0 && DesiredTier(near * 100f) == Baseline && (Baseline < 1 || DesiredTier(near * 1.5f) == 1), "the tier doubles out from lightmap.near to the baseline");
         if (Baseline > 0 && _rectN == 0)
         {
-            _cap = 2; _layers = 2; _packPage = 0; _finePage = 0; Array.Clear(_pageClass);
+            _cap = 2; _gl.Layers = 2; _packPage = 0; _finePage = 0; Array.Clear(_pageClass);
             int rb = NewRect(), rf = NewRect();
             _rects[rb] = new Rect { Key = 1, W = 100, H = 50, Tier = Baseline, Page = -1 }; _rects[rf] = new Rect { Key = 2, W = 100, H = 50, Tier = 0, Page = -1, C = new Vector3(near * 1.5f, 0f, 0f) };
             _byKey[1] = rb; _byKey[2] = rf;
@@ -59,7 +59,7 @@ internal static unsafe partial class LightmapBake
             check.Expect(Halve(Halve(7, 0), 2) == Halve(7, 2) && Halve(7, 2) != Halve(7, 3) && Halve(7, 0) == 7, "a re-halved key is the key a fresh enrol computes");
             _rectN = 0; _byKey.Clear(); _free.Clear(); Array.Clear(_pageClass); _finePage = 0;
         }
-        _cap = cap; _layers = layers; _packPage = page; Array.Copy(sy, _shelfY, sy.Length); Array.Copy(sh, _shelfH, sh.Length); Array.Copy(sx, _shelfX, sx.Length);
+        _cap = cap; _gl.Layers = layers; _packPage = page; Array.Copy(sy, _shelfY, sy.Length); Array.Copy(sh, _shelfH, sh.Length); Array.Copy(sx, _shelfX, sx.Length);
         // the key
         int setN = _setN;
         if (_setPosR.Length < 1) { _setPosR = new Vector4[1]; _setCol = new Vector3[1]; }
@@ -101,13 +101,13 @@ internal static unsafe partial class LightmapBake
           "lightmap.growslice no longer defaults to a sliced migration -- a page more would freeze the frame again");
         // CX-102: Pending is NOT Refused (reading it as one killed the area-plan adopt), and a migration holds
         // every writer of the resident pages -- a write to a layer already copied is lost at the publish.
-        int gLayers = _layers, gTo = _growTo, gAt = _growHeldAt; bool gBusy = _growBusy;
-        _layers = 4; _growTo = 0;
+        int gLayers = _gl.Layers, gTo = _growTo, gAt = _growHeldAt; bool gBusy = _growBusy;
+        _gl.Layers = 4; _growTo = 0;
         check.Expect(Grow(3) == Grew.Resident && Grow(4) == Grew.Resident, "a growth to pages already resident is a no-op, not a refusal");
         _growTo = 7; _growHeldAt = -1;
         check.Expect(Grow(9) == Grew.Pending, "a migration in flight answers Pending, which no caller may read as a refusal");
         check.Expect(Migrating && HeldByMigration() && HeldByMigration() && _growHeld == 1, "a migration holds the page writers, counted once a frame");
-        _layers = gLayers; _growTo = gTo; _growBusy = gBusy; _growHeldAt = gAt; PhaseReset();
+        _gl.Layers = gLayers; _growTo = gTo; _growBusy = gBusy; _growHeldAt = gAt; PhaseReset();
         check.Expect(!Migrating && !HeldByMigration(), "with no migration in flight nothing is held");
         // CX-102: the whole-page readback copies out of the open map in slices and stops at the total
         check.Expect(SliceEnd(0, 100, 30) == 30 && SliceEnd(90, 100, 30) == 100 && SliceEnd(100, 100, 30) == 100 && SliceEnd(0, 10, 30) == 10,
@@ -121,7 +121,7 @@ internal static unsafe partial class LightmapBake
         int dw = _defW, dh = _defH, dx = _defX0, dy = _defY0, dp = _defPage, un = _uncached;
         var defWas = _defRects.ToArray();
         _defW = 0; _defRects.Clear();
-        check.Expect(_uMap == null && _fence == IntPtr.Zero && ReadbackIdle, "nothing in flight is idle");
+        check.Expect(_uMap == null && _gl.Fence == IntPtr.Zero && ReadbackIdle, "nothing in flight is idle");
         var two = new List<int> { 0, 1 };
         StashReadback(3, 0, 0, 8, 8, two);
         check.Expect(!ReadbackIdle, "a landing stashed behind a draining copy still counts as a readback in flight");

@@ -28,9 +28,17 @@ internal static unsafe class HighlightGlow
     private const float EyeBias = -0.001f;
 
     private static readonly float[] _stage = new float[MaxQuads * Floats];
-    private static int _quads, _cap, _dropped;
-    private static uint _prog, _buf, _vao;
-    private static int _locView, _locProj, _locDepth, _locInvView, _locTex;
+    private static int _quads, _dropped;
+    /// <summary>Everything the GL context owns, plus the glow texture held against it: context loss replaces it.</summary>
+    private sealed class GlowGlState
+    {
+        public uint Prog, Buf, Vao;
+        public int Cap, LocView, LocProj, LocDepth, LocInvView, LocTex;
+        public string TexName = "";
+        public TexId Tex;
+    }
+
+    private static GlowGlState _gl = new();
     private static bool _failed, _logged, _texLogged, _capLogged, _off;
     private static ExtenderLog? _log;
     private static float* _amp, _freq, _intensity, _size, _deltaT;
@@ -39,8 +47,6 @@ internal static unsafe class HighlightGlow
     private static float _phase;
     private static float _pulse, _alphaScale;
     private static Vector3 _eye;
-    private static string _texName = "";
-    private static TexId _tex;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -69,10 +75,10 @@ internal static unsafe class HighlightGlow
         _alphaScale = *_intensity;
         _eye = eye;
         string name = SceneFeed.HighlightTexture(scene);
-        if (name == _texName) return;
-        if (!_tex.IsNull) TexRegistry.Release(_tex);
-        _texName = name;
-        _tex = name.Length == 0 ? default : TexRegistry.Acquire(name);
+        if (name == _gl.TexName) return;
+        if (!_gl.Tex.IsNull) TexRegistry.Release(_gl.Tex);
+        _gl.TexName = name;
+        _gl.Tex = name.Length == 0 ? default : TexRegistry.Acquire(name);
     }
 
     /// <summary>The box scale about its centre: <c>((sin * 0.5 + 0.5) * (0.25 * amplitude) + 1) * size</c>,
@@ -176,37 +182,37 @@ internal static unsafe class HighlightGlow
         }
         _dropped = 0;
         if (_quads == 0 || PostChain.DepthTex == 0 || !EnsureProgram()) return;
-        if (!TexRegistry.TryDrawable(_tex, out uint tid, out _))
+        if (!TexRegistry.TryDrawable(_gl.Tex, out uint tid, out _))
         {
-            if (!_texLogged && TexRegistry.Final(_tex))
+            if (!_texLogged && TexRegistry.Final(_gl.Tex))
             {
                 _texLogged = true;
-                _log?.Always($"HighlightGlow: the scene's highlight texture '{_texName}' is "
-                           + (_texName.Length == 0 ? "unset" : "unreadable") + " -- the glow is NOT DRAWN");
+                _log?.Always($"HighlightGlow: the scene's highlight texture '{_gl.TexName}' is "
+                           + (_gl.TexName.Length == 0 ? "unset" : "unreadable") + " -- the glow is NOT DRAWN");
             }
             return;
         }
-        if (_quads > _cap)
+        if (_quads > _gl.Cap)
         {
-            _cap = Math.Max(_quads, 1024);
-            Gl.NamedBufferData(_buf, (IntPtr)(_cap * Floats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+            _gl.Cap = Math.Max(_quads, 1024);
+            Gl.NamedBufferData(_gl.Buf, (IntPtr)(_gl.Cap * Floats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         }
         fixed (float* s = _stage)
-            Gl.NamedBufferSubData(_buf, IntPtr.Zero, (IntPtr)(_quads * Floats * sizeof(float)), s);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindGlow, _buf);
+            Gl.NamedBufferSubData(_gl.Buf, IntPtr.Zero, (IntPtr)(_quads * Floats * sizeof(float)), s);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindGlow, _gl.Buf);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.HiliteDepth);
         Gl.BindTexture(Gl.TEXTURE_2D, PostChain.DepthTex);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, tid);
-        Gl.UseProgram(_prog);
-        Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
-        Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
-        Gl.Uniform1i(_locDepth, (int)TextureSlots.HiliteDepth);
-        Gl.Uniform1i(_locTex, 0);
-        Gl.Uniform2f(_locInvView, 1f / MathF.Max(display[2], 1), 1f / MathF.Max(display[3], 1));
+        Gl.UseProgram(_gl.Prog);
+        Gl.UniformMatrix4fv(_gl.LocView, 1, 0, (float*)view);
+        Gl.UniformMatrix4fv(_gl.LocProj, 1, 0, (float*)proj);
+        Gl.Uniform1i(_gl.LocDepth, (int)TextureSlots.HiliteDepth);
+        Gl.Uniform1i(_gl.LocTex, 0);
+        Gl.Uniform2f(_gl.LocInvView, 1f / MathF.Max(display[2], 1), 1f / MathF.Max(display[3], 1));
         new PassState(depth: false, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlOne, blendDst: AlloyRenderer.GlOne).Apply();
-        Gl.BindVertexArray(_vao);
+        Gl.BindVertexArray(_gl.Vao);
         Gl.DrawArraysInstancedBaseInstance(GlTriangleStrip, 0, 4, _quads, 0);
         Gl.BindVertexArray(0);
         Gl.Disable(Gl.BLEND);
@@ -222,28 +228,28 @@ internal static unsafe class HighlightGlow
 
     private static bool EnsureProgram()
     {
-        if (_prog != 0) return true;
+        if (_gl.Prog != 0) return true;
         if (_failed || Gl.DrawArraysInstancedBaseInstance == null || Gl.CreateBuffers == null) return false;
-        _prog = GlProgram.Graphics(ShaderSource.Get("cx_hiliteglow_v.glsl"),
+        _gl.Prog = GlProgram.Graphics(ShaderSource.Get("cx_hiliteglow_v.glsl"),
                                    ShaderSource.Get("cx_hiliteglow_f.glsl"), _log, "AlloyRenderer highlight glow");
-        if (_prog == 0)
+        if (_gl.Prog == 0)
         {
             _failed = true;
             _log?.Always("HighlightGlow: program build failed -- the glow highlight is NOT DRAWN this session");
             return false;
         }
-        uint b; Gl.CreateBuffers(1, &b); _buf = b; _cap = 0;
-        uint v; Gl.CreateVertexArrays(1, &v); _vao = v;
-        _locView = GlProgram.Loc(_prog, "uView");
-        _locProj = GlProgram.Loc(_prog, "uProj");
-        _locDepth = GlProgram.Loc(_prog, "uSceneDepth");
-        _locInvView = GlProgram.Loc(_prog, "uInvView");
-        _locTex = GlProgram.Loc(_prog, "uTex");
+        uint b; Gl.CreateBuffers(1, &b); _gl.Buf = b; _gl.Cap = 0;
+        uint v; Gl.CreateVertexArrays(1, &v); _gl.Vao = v;
+        _gl.LocView = GlProgram.Loc(_gl.Prog, "uView");
+        _gl.LocProj = GlProgram.Loc(_gl.Prog, "uProj");
+        _gl.LocDepth = GlProgram.Loc(_gl.Prog, "uSceneDepth");
+        _gl.LocInvView = GlProgram.Loc(_gl.Prog, "uInvView");
+        _gl.LocTex = GlProgram.Loc(_gl.Prog, "uTex");
         return true;
     }
 
     /// <summary>GL names die with the context; the stage array does not.</summary>
-    internal static void ContextLost() { _prog = 0; _buf = 0; _vao = 0; _cap = 0; _quads = 0; _texName = ""; _tex = default; }
+    internal static void ContextLost() { _gl = new GlowGlState(); _quads = 0; }
 
     /// <summary>Off-device: the pulse range and the quad geometry, which fail silently on screen (a glow in
     /// the wrong place, or none).</summary>

@@ -56,50 +56,55 @@ internal static unsafe class CasterGather
     internal static readonly float[] Planes = new float[24];
 
     private static ExtenderLog? _log;
-    private static uint _prog;
-    private static bool _failed;
-    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uCull, _uSet, _uRx, _uGroups, _uPlanes;
+    /// <summary>Everything the GL context owns, in one object: <see cref="ContextLost"/> replaces it.</summary>
+    private sealed class GatherGlState
+    {
+        public uint Prog;
+        public bool Failed;
+        public int UDrawN, UPoint, UFocus, UDir, UReach, UAlong, UCull, USet, URx, UGroups, UPlanes;
+        public uint SrcBuf;
+        public int SrcCap;
+        /// <summary>The DYNAMIC source: just the staged records whose set flag is 1, same 7-word layout and
+        /// their OWN batch id and output base, so a dynamic view's dispatch covers a few hundred draws.</summary>
+        public uint DynSrcBuf;
+        public int DynSrcCap, DynDrawN;
+        /// <summary>A caller reported changed bytes that have not reached the buffer yet (a refused Begin keeps it).</summary>
+        public bool SrcDirty;
+        public readonly uint[] CmdBuf = new uint[Rotation], CntBuf = new uint[Rotation];
+        public int CmdCap, CntCap, At;
+        public int DrawN, Groups;
+        /// <summary>The latent count sample's ring: the LAST view's per-batch counts, read back two frames
+        /// later -- <see cref="CullPass"/>'s instrument shape, with no readback on the draw path.</summary>
+        public GpuReadback SampleRead;
+        public readonly int[] ReadN = new int[3], ReadDrawN = new int[3], ReadViews = new int[3], ReadRxViews = new int[3];
+        public bool Dispatched;
+        /// <summary>The count buffer the last dispatch (per-view or layered) wrote, and how many views it
+        /// covered -- what <see cref="Sample"/> copies aside.</summary>
+        public uint SampleBuf;
+        public int SampleViews, SampleRxViews;
+        /// <summary>Draws the sampled dispatch covered (the DYNAMIC source's count when it ran over that), and
+        /// whether it did, so kept/staged compares like with like.</summary>
+        public int SampleDrawN;
+        public bool SampleDyn;
+        /// <summary>Did the dispatch this slot sampled run on the dynamic source? Decides which pair it folds into.</summary>
+        public readonly bool[] ReadDyn = new bool[3];
+        public uint LayerProg;
+        public bool LayerFailed;
+        public int LuDrawN, LuViewN, LuCull, LuRx, LuGroups, LuPlanes;
+        public uint ViewBuf;
+        public int ViewCap;
+        public readonly uint[] LyCmd = new uint[Rotation], LyCnt = new uint[Rotation];
+        public long LyCmdCap;
+        public int LyCntCap, LyAt;
+    }
 
-    private static uint _srcBuf;
-    private static int _srcCap;
-    /// <summary>The DYNAMIC source -- a copy of just the staged records whose set flag is 1, in the same
-    /// 7-word layout and carrying their OWN batch id and output base, so a survivor lands in exactly the
-    /// region and the batch it would have from the full source. A dynamic view's dispatch then covers a few
-    /// hundred draws instead of tens of thousands, with nothing else about a survivor changed.</summary>
-    private static uint _dynSrcBuf;
-    private static int _dynSrcCap, _dynDrawN;
+    private static GatherGlState _gl = new();
     /// <summary>Dispatches that ran over the dynamic source rather than the full staging -- against
     /// <see cref="Views"/> plus <see cref="LayerDispatches"/>, the period line's witness for S8.</summary>
     internal static long DynDispatches;
-    /// <summary>A caller reported changed bytes that have not reached the buffer yet (a refused Begin keeps it).</summary>
-    private static bool _srcDirty;
-    private static readonly uint[] _cmdBuf = new uint[Rotation], _cntBuf = new uint[Rotation];
-    private static int _cmdCap, _cntCap, _at;
-    private static int _drawN, _groups;
-
-    /// <summary>The latent count sample's ring: one copy per frame of the LAST view's per-batch counts, read
-    /// back two frames later -- <see cref="CullPass"/>'s own instrument shape, so the culled-vs-drawn figure
-    /// reaches the period line without a readback on the draw path.</summary>
-    private static GpuReadback _sampleRead;
-    private static readonly int[] _readN = new int[3];
-    private static readonly int[] _readDrawN = new int[3];
     /// <summary>Capacity tracker for a sample slot: the per-batch counts plus the receiver tally.</summary>
     private static uint[] _counts = new uint[1024];
     private static int _readSeq;
-    private static bool _dispatched;
-    /// <summary>The count buffer the last dispatch (per-view or layered) wrote, and how many views it
-    /// covered -- what <see cref="Sample"/> copies aside. The layered path is the default one, so a sample
-    /// of the per-view buffer alone would read nothing all session.</summary>
-    private static uint _sampleBuf;
-    private static int _sampleViews, _sampleRxViews;
-    /// <summary>Draws the sampled dispatch actually covered -- the DYNAMIC source's count when it ran over
-    /// that, so the kept/staged pair compares like with like instead of against the full staging -- and
-    /// whether that is what it was.</summary>
-    private static int _sampleDrawN;
-    private static bool _sampleDyn;
-    private static readonly int[] _readViews = new int[3], _readRxViews = new int[3];
-    /// <summary>Did the dispatch this slot sampled run on the dynamic source? Decides which pair it folds into.</summary>
-    private static readonly bool[] _readDyn = new bool[3];
 
     /// <summary>Views dispatched, batches submitted, and the latent sample's tally (survivors and staged
     /// draws of one view per frame, three frames late) -- the gather's half of the caster pass's period
@@ -118,7 +123,7 @@ internal static unsafe class CasterGather
 
     /// <summary>The program failed to build and will never arm; <see cref="CasterPass"/> disarms on it
     /// rather than idling forever.</summary>
-    internal static bool Failed => _failed;
+    internal static bool Failed => _gl.Failed;
 
     internal static void Init(ExtenderLog log) => _log = log;
 
@@ -126,16 +131,7 @@ internal static unsafe class CasterGather
     /// context) and everything rebuilds on the next frame. See docs/owned-resource-lifetimes.md.</summary>
     internal static void ContextLost()
     {
-        _prog = 0; _failed = false;
-        _srcBuf = 0; _srcCap = 0; _srcDirty = false; _cmdCap = 0; _cntCap = 0; _at = 0;
-        _dynSrcBuf = 0; _dynSrcCap = 0; _dynDrawN = 0;
-        Array.Clear(_cmdBuf); Array.Clear(_cntBuf);
-        _layerProg = 0; _layerFailed = false; _viewBuf = 0; _viewCap = 0;
-        _lyCmdCap = 0; _lyCntCap = 0; _lyAt = 0;
-        Array.Clear(_lyCmd); Array.Clear(_lyCnt);
-        _sampleRead.ContextLost(); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readViews); Array.Clear(_readRxViews);
-        _drawN = 0; _groups = 0; _dispatched = false; _sampleBuf = 0; _sampleViews = 0; _sampleDrawN = 0;
-        _sampleDyn = false; Array.Clear(_readDyn);
+        _gl = new GatherGlState();
     }
 
     /// <summary>Everything the dispatch needs from GL, checked once and latched: a missing entry point is a
@@ -148,21 +144,21 @@ internal static unsafe class CasterGather
     /// author may restyle): an override here could only delete shadows, and there is no look to restyle.</summary>
     internal static bool Ensure()
     {
-        if (_prog != 0) return true;
-        if (_failed || !Capable()) { _failed = true; return false; }
-        _prog = GlProgram.Compute(GatherCs, _log, "CasterGather caster cull");
-        if (_prog == 0) { _failed = true; return false; }
-        _uDrawN = GlProgram.Loc(_prog, "uDrawN");
-        _uPoint = GlProgram.Loc(_prog, "uPoint");
-        _uFocus = GlProgram.Loc(_prog, "uFocus");
-        _uDir = GlProgram.Loc(_prog, "uDir");
-        _uReach = GlProgram.Loc(_prog, "uReach");
-        _uAlong = GlProgram.Loc(_prog, "uAlong");
-        _uCull = GlProgram.Loc(_prog, "uCull");
-        _uSet = GlProgram.Loc(_prog, "uSet");
-        _uRx = GlProgram.Loc(_prog, "uRx");
-        _uGroups = GlProgram.Loc(_prog, "uGroups");
-        _uPlanes = GlProgram.Loc(_prog, "uPlanes");
+        if (_gl.Prog != 0) return true;
+        if (_gl.Failed || !Capable()) { _gl.Failed = true; return false; }
+        _gl.Prog = GlProgram.Compute(GatherCs, _log, "CasterGather caster cull");
+        if (_gl.Prog == 0) { _gl.Failed = true; return false; }
+        _gl.UDrawN = GlProgram.Loc(_gl.Prog, "uDrawN");
+        _gl.UPoint = GlProgram.Loc(_gl.Prog, "uPoint");
+        _gl.UFocus = GlProgram.Loc(_gl.Prog, "uFocus");
+        _gl.UDir = GlProgram.Loc(_gl.Prog, "uDir");
+        _gl.UReach = GlProgram.Loc(_gl.Prog, "uReach");
+        _gl.UAlong = GlProgram.Loc(_gl.Prog, "uAlong");
+        _gl.UCull = GlProgram.Loc(_gl.Prog, "uCull");
+        _gl.USet = GlProgram.Loc(_gl.Prog, "uSet");
+        _gl.URx = GlProgram.Loc(_gl.Prog, "uRx");
+        _gl.UGroups = GlProgram.Loc(_gl.Prog, "uGroups");
+        _gl.UPlanes = GlProgram.Loc(_gl.Prog, "uPlanes");
         _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared CxCullSphere " +
                    "bounds, glMultiDrawElementsIndirectCount submission (/shadow gather 0 disables the cull)");
         return true;
@@ -171,34 +167,34 @@ internal static unsafe class CasterGather
     /// <summary>Is the gather driving this frame's views with a non-empty staging? A frame that staged ZERO
     /// draws is not inactive -- its views still clear -- so <see cref="CasterPass"/> gates on its own staged
     /// flag, not on this.</summary>
-    internal static bool Active => _prog != 0 && _drawN > 0;
+    internal static bool Active => _gl.Prog != 0 && _gl.DrawN > 0;
 
     /// <summary>Forget the frame's staging. Called before every staging attempt, so a frame that stages
     /// nothing (a collect came back empty, an upload was refused) bakes empty views instead of baking the
     /// PREVIOUS frame's staging into this frame's views.</summary>
-    internal static void Stand() { _drawN = 0; _dynDrawN = 0; }
+    internal static void Stand() { _gl.DrawN = 0; _gl.DynDrawN = 0; }
 
     /// <summary>S8: publish this frame's dynamic source. Uploaded whole every frame it is used -- it is a few
     /// hundred records, and its membership moves every frame by construction. False = there is none, and a
     /// dynamic view falls back to the full source, which is the same set by a longer road.</summary>
     internal static bool DynamicSource(int drawN, uint* src)
     {
-        _dynDrawN = 0;
-        if (_prog == 0 || drawN <= 0) return false;
-        if (_dynSrcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _dynSrcBuf = b; _dynSrcCap = 0; }
+        _gl.DynDrawN = 0;
+        if (_gl.Prog == 0 || drawN <= 0) return false;
+        if (_gl.DynSrcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _gl.DynSrcBuf = b; _gl.DynSrcCap = 0; }
         long bytes = (long)drawN * SrcUints * sizeof(uint);
-        if (drawN > _dynSrcCap)
-        { Gl.NamedBufferData(_dynSrcBuf, (IntPtr)bytes, null, Gl.DYNAMIC_DRAW); _dynSrcCap = drawN; }
-        Gl.NamedBufferSubData(_dynSrcBuf, IntPtr.Zero, (IntPtr)bytes, src);
-        _dynDrawN = drawN;
+        if (drawN > _gl.DynSrcCap)
+        { Gl.NamedBufferData(_gl.DynSrcBuf, (IntPtr)bytes, null, Gl.DYNAMIC_DRAW); _gl.DynSrcCap = drawN; }
+        Gl.NamedBufferSubData(_gl.DynSrcBuf, IntPtr.Zero, (IntPtr)bytes, src);
+        _gl.DynDrawN = drawN;
         return true;
     }
 
     /// <summary>No dynamic source this frame: every view dispatches over the full staging, as before S8.</summary>
-    internal static void StandDynamic() => _dynDrawN = 0;
+    internal static void StandDynamic() => _gl.DynDrawN = 0;
 
     /// <summary>Is the dynamic source standing for this frame?</summary>
-    internal static bool DynamicReady => _dynDrawN > 0 && _dynSrcBuf != 0;
+    internal static bool DynamicReady => _gl.DynDrawN > 0 && _gl.DynSrcBuf != 0;
 
     /// <summary>Publish one frame's staging. The source buffer is persistent, and a frame whose caller
     /// reports no <paramref name="changed"/> bytes sends nothing at all (the caller knows; no hash). The
@@ -206,32 +202,32 @@ internal static unsafe class CasterGather
     /// per-draw is uploaded here on a settled frame.</summary>
     internal static bool Begin(int drawN, int groups, uint* src, bool changed)
     {
-        _drawN = 0;
-        _srcDirty |= changed;
+        _gl.DrawN = 0;
+        _gl.SrcDirty |= changed;
         if (drawN <= 0 || groups <= 0 || !Ensure()) return false;
         if (CullPass.SphereBuf == 0) return false;   // no colour build yet: no bounds to cull against
 
         long srcWords = (long)drawN * SrcUints;
-        bool grow = drawN > _srcCap;
-        if (_srcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _srcBuf = b; grow = true; }
-        if (grow || _srcDirty)
+        bool grow = drawN > _gl.SrcCap;
+        if (_gl.SrcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _gl.SrcBuf = b; grow = true; }
+        if (grow || _gl.SrcDirty)
         {
             if (grow)
-            { Gl.NamedBufferData(_srcBuf, (IntPtr)((long)drawN * SrcUints * sizeof(uint)), null, Gl.DYNAMIC_DRAW); _srcCap = drawN; }
-            Gl.NamedBufferSubData(_srcBuf, IntPtr.Zero, (IntPtr)(srcWords * sizeof(uint)), src);
-            _srcDirty = false;
+            { Gl.NamedBufferData(_gl.SrcBuf, (IntPtr)((long)drawN * SrcUints * sizeof(uint)), null, Gl.DYNAMIC_DRAW); _gl.SrcCap = drawN; }
+            Gl.NamedBufferSubData(_gl.SrcBuf, IntPtr.Zero, (IntPtr)(srcWords * sizeof(uint)), src);
+            _gl.SrcDirty = false;
             Uploads++;
         }
         else UploadsSkipped++;
 
         for (int i = 0; i < Rotation; i++)
         {
-            Gl.EnsureStorage(ref _cmdBuf[i], (long)drawN * CmdBytes, drawN > _cmdCap);
-            Gl.EnsureStorage(ref _cntBuf[i], (long)(groups + 1) * sizeof(uint), groups > _cntCap);
+            Gl.EnsureStorage(ref _gl.CmdBuf[i], (long)drawN * CmdBytes, drawN > _gl.CmdCap);
+            Gl.EnsureStorage(ref _gl.CntBuf[i], (long)(groups + 1) * sizeof(uint), groups > _gl.CntCap);
         }
-        if (drawN > _cmdCap) _cmdCap = drawN;
-        if (groups > _cntCap) _cntCap = groups;
-        _drawN = drawN; _groups = groups;
+        if (drawN > _gl.CmdCap) _gl.CmdCap = drawN;
+        if (groups > _gl.CntCap) _gl.CntCap = groups;
+        _gl.DrawN = drawN; _gl.Groups = groups;
         return true;
     }
 
@@ -241,42 +237,42 @@ internal static unsafe class CasterGather
     internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, bool point,
                                   int set = SetAll, bool receiver = false, bool dynSrc = false)
     {
-        _at = (_at + 1) % Rotation;
-        Gl.ZeroBuffer(_cntBuf[_at], (long)(_groups + 1) * sizeof(uint));
+        _gl.At = (_gl.At + 1) % Rotation;
+        Gl.ZeroBuffer(_gl.CntBuf[_gl.At], (long)(_gl.Groups + 1) * sizeof(uint));
         // S8: the source, and with it the thread count. Everything downstream is indexed by the records'
         // OWN batch and output base, so the shorter source writes into the same regions.
         bool dyn = dynSrc && DynamicReady;
-        int drawN = dyn ? _dynDrawN : _drawN;
+        int drawN = dyn ? _gl.DynDrawN : _gl.DrawN;
         if (dyn) DynDispatches++;
 
-        Gl.UseProgram(_prog);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, dyn ? _dynSrcBuf : _srcBuf);
+        Gl.UseProgram(_gl.Prog);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, dyn ? _gl.DynSrcBuf : _gl.SrcBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, CullPass.BindSphere, CullPass.SphereBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[_at]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _cntBuf[_at]);
-        Gl.Uniform1i(_uDrawN, drawN);
-        Gl.Uniform1i(_uPoint, point ? 1 : 0);
-        Gl.Uniform1i(_uCull, Mode != 0 ? 1 : 0);
-        Gl.Uniform1i(_uSet, set);
-        Gl.Uniform1i(_uRx, receiver && Receiver != 0 ? 1 : 0);
-        Gl.Uniform1i(_uGroups, _groups);
-        fixed (float* pl = Planes) Gl.Uniform4fv(_uPlanes, 6, pl);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _gl.CmdBuf[_gl.At]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _gl.CntBuf[_gl.At]);
+        Gl.Uniform1i(_gl.UDrawN, drawN);
+        Gl.Uniform1i(_gl.UPoint, point ? 1 : 0);
+        Gl.Uniform1i(_gl.UCull, Mode != 0 ? 1 : 0);
+        Gl.Uniform1i(_gl.USet, set);
+        Gl.Uniform1i(_gl.URx, receiver && Receiver != 0 ? 1 : 0);
+        Gl.Uniform1i(_gl.UGroups, _gl.Groups);
+        fixed (float* pl = Planes) Gl.Uniform4fv(_gl.UPlanes, 6, pl);
         float* v = stackalloc float[3];
         v[0] = focus.X; v[1] = focus.Y; v[2] = focus.Z;
-        Gl.Uniform3fv(_uFocus, 1, v);
+        Gl.Uniform3fv(_gl.UFocus, 1, v);
         v[0] = dir.X; v[1] = dir.Y; v[2] = dir.Z;
-        Gl.Uniform3fv(_uDir, 1, v);
-        Gl.Uniform1f(_uReach, reach);
-        Gl.Uniform1f(_uAlong, along);
+        Gl.Uniform3fv(_gl.UDir, 1, v);
+        Gl.Uniform1f(_gl.UReach, reach);
+        Gl.Uniform1f(_gl.UAlong, along);
         Gl.DispatchCompute((uint)((drawN + GroupSize - 1) / GroupSize), 1, 1);
         // The commands are consumed as indirect state and the counts as parameter-buffer state; neither is in
         // the shader-storage class, so SHADER_STORAGE alone leaves both undefined.
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.COMMAND_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
-        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _cmdBuf[_at]);
-        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _cntBuf[_at]);
+        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _gl.CmdBuf[_gl.At]);
+        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _gl.CntBuf[_gl.At]);
         Views++;
-        _dispatched = true; _sampleBuf = _cntBuf[_at]; _sampleViews = 1; _sampleRxViews = receiver ? 1 : 0;
-        _sampleDrawN = drawN; _sampleDyn = dyn;
+        _gl.Dispatched = true; _gl.SampleBuf = _gl.CntBuf[_gl.At]; _gl.SampleViews = 1; _gl.SampleRxViews = receiver ? 1 : 0;
+        _gl.SampleDrawN = drawN; _gl.SampleDyn = dyn;
     }
 
     /// <summary>One batch, out of the compacted list the dispatch just wrote. <paramref name="start"/> is the
@@ -305,41 +301,41 @@ internal static unsafe class CasterGather
     /// deleting shadows shows in it immediately.</summary>
     internal static void Sample()
     {
-        if (!_dispatched || _groups <= 0 || _sampleBuf == 0 || !GpuReadback.EntryPoints) return;
+        if (!_gl.Dispatched || _gl.Groups <= 0 || _gl.SampleBuf == 0 || !GpuReadback.EntryPoints) return;
         // Sample-only entry points: a driver without them loses the figure, never the shadows.
-        _dispatched = false;
+        _gl.Dispatched = false;
         int w = _readSeq % GpuReadback.Slots, r = (_readSeq + 1) % GpuReadback.Slots;
         _readSeq++;
-        if (_groups + 1 > _counts.Length)
+        if (_gl.Groups + 1 > _counts.Length)
         {
             int cap = _counts.Length;
-            while (cap < _groups + 1) cap *= 2;
+            while (cap < _gl.Groups + 1) cap *= 2;
             _counts = new uint[cap];
         }
         // a regrow drops every slot in flight, so none is read at a size it was not written at
         long need = (long)_counts.Length * sizeof(uint);
-        if (need > _sampleRead.SlotBytes) { Array.Clear(_readN); if (!_sampleRead.Ensure(need)) return; }
+        if (need > _gl.SampleRead.SlotBytes) { Array.Clear(_gl.ReadN); if (!_gl.SampleRead.Ensure(need)) return; }
         // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
         // bit that orders shader-storage writes before buffer-copy reads, and it stands between the last
         // dispatch's atomicAdds and this copy in command order.
-        _sampleRead.Copy(_sampleBuf, 0, w, 0, (long)(_groups + 1) * sizeof(uint));
-        _sampleRead.Fence(w);
-        _readN[w] = _groups; _readDrawN[w] = _sampleDrawN > 0 ? _sampleDrawN : _drawN;
-        _readViews[w] = _sampleViews; _readRxViews[w] = _sampleRxViews; _readDyn[w] = _sampleDyn;
-        if (_readN[r] <= 0) return;
-        uint* c = (uint*)_sampleRead.Ready(r);
+        _gl.SampleRead.Copy(_gl.SampleBuf, 0, w, 0, (long)(_gl.Groups + 1) * sizeof(uint));
+        _gl.SampleRead.Fence(w);
+        _gl.ReadN[w] = _gl.Groups; _gl.ReadDrawN[w] = _gl.SampleDrawN > 0 ? _gl.SampleDrawN : _gl.DrawN;
+        _gl.ReadViews[w] = _gl.SampleViews; _gl.ReadRxViews[w] = _gl.SampleRxViews; _gl.ReadDyn[w] = _gl.SampleDyn;
+        if (_gl.ReadN[r] <= 0) return;
+        uint* c = (uint*)_gl.SampleRead.Ready(r);
         if (c == null) return;
         long kept = 0;
-        for (int i = 0; i < _readN[r]; i++) kept += c[i];
+        for (int i = 0; i < _gl.ReadN[r]; i++) kept += c[i];
         // Against the draw count of the frame that WROTE those counts, not this frame's; a layered chunk's
         // counts cover every view it dispatched, so they are averaged back to one view -- the receiver
         // tally over the views that carried the flag.
-        int views = Math.Max(_readViews[r], 1), rxViews = Math.Max(_readRxViews[r], 1);
-        long keptV = Math.Min(kept / views, _readDrawN[r]), rx = Math.Min(c[_readN[r]] / rxViews, _readDrawN[r]);
-        if (_readDyn[r])
-        { SampledKeptDyn += keptV; SampledRxDyn += rx; SampledStagedDyn += _readDrawN[r]; SamplesDyn++; }
+        int views = Math.Max(_gl.ReadViews[r], 1), rxViews = Math.Max(_gl.ReadRxViews[r], 1);
+        long keptV = Math.Min(kept / views, _gl.ReadDrawN[r]), rx = Math.Min(c[_gl.ReadN[r]] / rxViews, _gl.ReadDrawN[r]);
+        if (_gl.ReadDyn[r])
+        { SampledKeptDyn += keptV; SampledRxDyn += rx; SampledStagedDyn += _gl.ReadDrawN[r]; SamplesDyn++; }
         else
-        { SampledKept += keptV; SampledRx += rx; SampledStaged += _readDrawN[r]; Samples++; }
+        { SampledKept += keptV; SampledRx += rx; SampledStaged += _gl.ReadDrawN[r]; Samples++; }
     }
 
     // --- #307: the layered bake. One dispatch selects casters for MANY stale views at once -- one thread
@@ -361,33 +357,25 @@ internal static unsafe class CasterGather
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
     internal static string ViewTblDecl => ShaderSource.Get("cx_viewtbl.glsl");
 
-    private static uint _layerProg;
-    private static bool _layerFailed;
-    private static int _luDrawN, _luViewN, _luCull, _luRx, _luGroups, _luPlanes;
-    private static uint _viewBuf;
-    private static int _viewCap;
-    private static readonly uint[] _lyCmd = new uint[Rotation], _lyCnt = new uint[Rotation];
-    private static long _lyCmdCap;
-    private static int _lyCntCap, _lyAt;
     /// <summary>Layered dispatches issued, and views they covered -- the period line's halves.</summary>
     internal static long LayerDispatches, LayerViews;
 
     /// <summary>The layered dispatch program could not build; the caller keeps the per-view path.</summary>
-    internal static bool LayerFailed => _layerFailed;
+    internal static bool LayerFailed => _gl.LayerFailed;
 
     /// <summary>Build the layered dispatch. Same non-overridable stance as <see cref="Ensure"/>.</summary>
     internal static bool EnsureLayer()
     {
-        if (_layerProg != 0) return true;
-        if (_layerFailed || !Capable()) { _layerFailed = true; return false; }
-        _layerProg = GlProgram.Compute(LayerCs, _log, "CasterGather layered caster cull");
-        if (_layerProg == 0) { _layerFailed = true; return false; }
-        _luDrawN = GlProgram.Loc(_layerProg, "uDrawN");
-        _luViewN = GlProgram.Loc(_layerProg, "uViewN");
-        _luCull = GlProgram.Loc(_layerProg, "uCull");
-        _luRx = GlProgram.Loc(_layerProg, "uRx");
-        _luGroups = GlProgram.Loc(_layerProg, "uGroups");
-        _luPlanes = GlProgram.Loc(_layerProg, "uPlanes");
+        if (_gl.LayerProg != 0) return true;
+        if (_gl.LayerFailed || !Capable()) { _gl.LayerFailed = true; return false; }
+        _gl.LayerProg = GlProgram.Compute(LayerCs, _log, "CasterGather layered caster cull");
+        if (_gl.LayerProg == 0) { _gl.LayerFailed = true; return false; }
+        _gl.LuDrawN = GlProgram.Loc(_gl.LayerProg, "uDrawN");
+        _gl.LuViewN = GlProgram.Loc(_gl.LayerProg, "uViewN");
+        _gl.LuCull = GlProgram.Loc(_gl.LayerProg, "uCull");
+        _gl.LuRx = GlProgram.Loc(_gl.LayerProg, "uRx");
+        _gl.LuGroups = GlProgram.Loc(_gl.LayerProg, "uGroups");
+        _gl.LuPlanes = GlProgram.Loc(_gl.LayerProg, "uPlanes");
         return true;
     }
 
@@ -397,50 +385,50 @@ internal static unsafe class CasterGather
     /// reusing a pair <see cref="Rotation"/> chunks later leaves the barriers standing.</summary>
     internal static bool DispatchLayer(float* views, int viewN, bool dynSrc = false)
     {
-        if (_layerProg == 0 || _drawN <= 0 || viewN <= 0 || CullPass.SphereBuf == 0) return false;
+        if (_gl.LayerProg == 0 || _gl.DrawN <= 0 || viewN <= 0 || CullPass.SphereBuf == 0) return false;
         // S8, as in Dispatch. The COMMAND buffer stays sized by the full staging: a survivor's region is its
         // own batch's, which is the full staging's, whichever source the thread came out of.
         bool dyn = dynSrc && DynamicReady;
-        int srcN = dyn ? _dynDrawN : _drawN;
+        int srcN = dyn ? _gl.DynDrawN : _gl.DrawN;
         if (dyn) DynDispatches++;
-        if (_viewBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _viewBuf = b; _viewCap = 0; }
-        if (viewN > _viewCap)
-        { Gl.NamedBufferData(_viewBuf, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW); _viewCap = viewN; }
-        Gl.NamedBufferSubData(_viewBuf, IntPtr.Zero, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), views);
+        if (_gl.ViewBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _gl.ViewBuf = b; _gl.ViewCap = 0; }
+        if (viewN > _gl.ViewCap)
+        { Gl.NamedBufferData(_gl.ViewBuf, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW); _gl.ViewCap = viewN; }
+        Gl.NamedBufferSubData(_gl.ViewBuf, IntPtr.Zero, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), views);
 
-        _lyAt = (_lyAt + 1) % Rotation;
-        long cmds = (long)_drawN * viewN;
-        bool growCmd = cmds > _lyCmdCap, growCnt = _groups > _lyCntCap;
+        _gl.LyAt = (_gl.LyAt + 1) % Rotation;
+        long cmds = (long)_gl.DrawN * viewN;
+        bool growCmd = cmds > _gl.LyCmdCap, growCnt = _gl.Groups > _gl.LyCntCap;
         for (int i = 0; i < Rotation; i++)
         {
-            Gl.EnsureStorage(ref _lyCmd[i], cmds * CmdBytes, growCmd);
-            Gl.EnsureStorage(ref _lyCnt[i], (long)(_groups + 1) * sizeof(uint), growCnt);
+            Gl.EnsureStorage(ref _gl.LyCmd[i], cmds * CmdBytes, growCmd);
+            Gl.EnsureStorage(ref _gl.LyCnt[i], (long)(_gl.Groups + 1) * sizeof(uint), growCnt);
         }
-        if (growCmd) _lyCmdCap = cmds;
-        if (growCnt) _lyCntCap = _groups;
-        Gl.ZeroBuffer(_lyCnt[_lyAt], (long)(_groups + 1) * sizeof(uint));
+        if (growCmd) _gl.LyCmdCap = cmds;
+        if (growCnt) _gl.LyCntCap = _gl.Groups;
+        Gl.ZeroBuffer(_gl.LyCnt[_gl.LyAt], (long)(_gl.Groups + 1) * sizeof(uint));
 
-        Gl.UseProgram(_layerProg);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, dyn ? _dynSrcBuf : _srcBuf);
+        Gl.UseProgram(_gl.LayerProg);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, dyn ? _gl.DynSrcBuf : _gl.SrcBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, CullPass.BindSphere, CullPass.SphereBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _lyCmd[_lyAt]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _lyCnt[_lyAt]);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindView, _viewBuf);
-        Gl.Uniform1i(_luDrawN, srcN);
-        Gl.Uniform1i(_luViewN, viewN);
-        Gl.Uniform1i(_luCull, Mode != 0 ? 1 : 0);
-        Gl.Uniform1i(_luRx, Receiver != 0 ? 1 : 0);
-        Gl.Uniform1i(_luGroups, _groups);
-        fixed (float* pl = Planes) Gl.Uniform4fv(_luPlanes, 6, pl);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _gl.LyCmd[_gl.LyAt]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _gl.LyCnt[_gl.LyAt]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindView, _gl.ViewBuf);
+        Gl.Uniform1i(_gl.LuDrawN, srcN);
+        Gl.Uniform1i(_gl.LuViewN, viewN);
+        Gl.Uniform1i(_gl.LuCull, Mode != 0 ? 1 : 0);
+        Gl.Uniform1i(_gl.LuRx, Receiver != 0 ? 1 : 0);
+        Gl.Uniform1i(_gl.LuGroups, _gl.Groups);
+        fixed (float* pl = Planes) Gl.Uniform4fv(_gl.LuPlanes, 6, pl);
         Gl.DispatchCompute((uint)((srcN + GroupSize - 1) / GroupSize), (uint)viewN, 1);
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.COMMAND_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
-        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _lyCmd[_lyAt]);
-        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _lyCnt[_lyAt]);
+        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _gl.LyCmd[_gl.LyAt]);
+        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _gl.LyCnt[_gl.LyAt]);
         LayerDispatches++; LayerViews += viewN;
         int rxViews = 0;
         for (int i = 0; i < viewN; i++) if (views[i * ViewFloats + 24] != 0f) rxViews++;
-        _dispatched = true; _sampleBuf = _lyCnt[_lyAt]; _sampleViews = viewN; _sampleRxViews = rxViews;
-        _sampleDrawN = srcN; _sampleDyn = dyn;
+        _gl.Dispatched = true; _gl.SampleBuf = _gl.LyCnt[_gl.LyAt]; _gl.SampleViews = viewN; _gl.SampleRxViews = rxViews;
+        _gl.SampleDrawN = srcN; _gl.SampleDyn = dyn;
         return true;
     }
 

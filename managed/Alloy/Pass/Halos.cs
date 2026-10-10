@@ -43,26 +43,32 @@ internal static unsafe class Halos
     /// light it measured. Compared, never dereferenced without finding it in THIS frame's list first -- the
     /// area edge frees every one of them.</summary>
     private static IntPtr[] _stageKey = new IntPtr[InitialHalos];
-    private static int _count, _ssboCap;
-    private static uint _prog, _buf;
-    private static int _locView, _locProj, _locDepth, _locGain, _locViz;
+    private static int _count;
+    /// <summary>Every GL name and location the context owns, in one object: context loss replaces it. The
+    /// fences die with the context like the buffers: forgotten, never deleted.</summary>
+    private sealed class HaloGlState
+    {
+        public uint Prog, Buf, Vao, OccProg;
+        public int SsboCap, LocView, LocProj, LocDepth, LocGain, LocViz;
+        public int OccLoView, OccLoProj, OccLoDepth, OccLoCount;
+        /// <summary>The probe's output (one uint per halo, device-local) and the mapped ring it is copied into.</summary>
+        public uint VisDev;
+        public GpuReadback VisRead;
+        public int VisSeq, VisCap;
+    }
+
+    private static HaloGlState _gl = new();
     private static bool _failed, _off;
     private static int _drawn;
 
-    private static uint _occProg;
-    /// <summary>The probe's output (one uint per halo, device-local) and the mapped ring it is copied into.</summary>
-    private static uint _visDev;
-    private static GpuReadback _visRead;
     private static readonly int[] _visN = new int[Ring];
     private static IntPtr[] _visKey = new IntPtr[Ring * InitialHalos];
     private static uint[] _vis = new uint[InitialHalos];
-    private static int _visSeq, _visCap;
     /// <summary>The last sample the probe read back and the keys it measured, for <see cref="Occlude"/>: read
     /// in Alloy's context by <see cref="Collect"/>, consumed on the engine's side with no GL call at all.</summary>
     private static IntPtr[] _readyKey = new IntPtr[InitialHalos];
     private static int _readyN;
     private static long _occLate;
-    private static int _occLoView, _occLoProj, _occLoDepth, _occLoCount;
     private static bool _occFailed;
     private static int _occFaded;
 
@@ -199,22 +205,22 @@ internal static unsafe class Halos
     {
         if (_count == 0 || !EnsureProgram()) return;
         if (!SceneDepth.Take(viewport)) return;
-        if (_count > _ssboCap)
+        if (_count > _gl.SsboCap)
         {
-            _ssboCap = Math.Max(_count, InitialHalos);
-            Gl.NamedBufferData(_buf, (IntPtr)(_ssboCap * Floats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+            _gl.SsboCap = Math.Max(_count, InitialHalos);
+            Gl.NamedBufferData(_gl.Buf, (IntPtr)(_gl.SsboCap * Floats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         }
         fixed (float* s = _stage)
-            Gl.NamedBufferSubData(_buf, IntPtr.Zero, (IntPtr)(_count * Floats * sizeof(float)), s);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHalos, _buf);
+            Gl.NamedBufferSubData(_gl.Buf, IntPtr.Zero, (IntPtr)(_count * Floats * sizeof(float)), s);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHalos, _gl.Buf);
         SceneDepth.Bind();
         Probe(view, proj);
-        Gl.UseProgram(_prog);
-        Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
-        Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
-        Gl.Uniform1i(_locViz, Effects.HaloViz.V);
-        Gl.Uniform1i(_locDepth, (int)SceneDepth.Unit);
-        Gl.Uniform1f(_locGain, Effects.Halos.V * AlloyLights.DayDim);
+        Gl.UseProgram(_gl.Prog);
+        Gl.UniformMatrix4fv(_gl.LocView, 1, 0, (float*)view);
+        Gl.UniformMatrix4fv(_gl.LocProj, 1, 0, (float*)proj);
+        Gl.Uniform1i(_gl.LocViz, Effects.HaloViz.V);
+        Gl.Uniform1i(_gl.LocDepth, (int)SceneDepth.Unit);
+        Gl.Uniform1f(_gl.LocGain, Effects.Halos.V * AlloyLights.DayDim);
         new PassState(depth: false, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlOne, blendDst: AlloyRenderer.GlOne).Apply();
         Gl.BindVertexArray(EmptyVao());
@@ -232,28 +238,28 @@ internal static unsafe class Halos
     {
         if (!EnsureProbe()) return;
         Collect();
-        int w = _visSeq % Ring;
-        if (_count > _visCap)
+        int w = _gl.VisSeq % Ring;
+        if (_count > _gl.VisCap)
         {
-            _visCap = Math.Max(_count, InitialHalos);
-            _visKey = new IntPtr[Ring * _visCap];
+            _gl.VisCap = Math.Max(_count, InitialHalos);
+            _visKey = new IntPtr[Ring * _gl.VisCap];
             for (int i = 0; i < Ring; i++) _visN[i] = 0;   // the old keys' indices no longer address this ring
-            if (!_visRead.Ensure((long)_visCap * sizeof(uint))) { Fail("the driver refused the readback mapping"); return; }
-            Gl.EnsureStorage(ref _visDev, (long)_visCap * sizeof(uint), true);
+            if (!_gl.VisRead.Ensure((long)_gl.VisCap * sizeof(uint))) { Fail("the driver refused the readback mapping"); return; }
+            Gl.EnsureStorage(ref _gl.VisDev, (long)_gl.VisCap * sizeof(uint), true);
         }
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindVis, _visDev);
-        Gl.UseProgram(_occProg);
-        Gl.UniformMatrix4fv(_occLoView, 1, 0, (float*)view);
-        Gl.UniformMatrix4fv(_occLoProj, 1, 0, (float*)proj);
-        Gl.Uniform1i(_occLoDepth, (int)SceneDepth.Unit);
-        Gl.Uniform1i(_occLoCount, _count);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindVis, _gl.VisDev);
+        Gl.UseProgram(_gl.OccProg);
+        Gl.UniformMatrix4fv(_gl.OccLoView, 1, 0, (float*)view);
+        Gl.UniformMatrix4fv(_gl.OccLoProj, 1, 0, (float*)proj);
+        Gl.Uniform1i(_gl.OccLoDepth, (int)SceneDepth.Unit);
+        Gl.Uniform1i(_gl.OccLoCount, _count);
         Gl.DispatchCompute((uint)((_count + OccGroup - 1) / OccGroup), 1, 1);
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
-        _visRead.Copy(_visDev, 0, w, 0, (long)_count * sizeof(uint));
-        _visRead.Fence(w);
-        for (int i = 0; i < _count; i++) _visKey[w * _visCap + i] = _stageKey[i];
+        _gl.VisRead.Copy(_gl.VisDev, 0, w, 0, (long)_count * sizeof(uint));
+        _gl.VisRead.Fence(w);
+        for (int i = 0; i < _count; i++) _visKey[w * _gl.VisCap + i] = _stageKey[i];
         _visN[w] = _count;
-        _visSeq++;
+        _gl.VisSeq++;
     }
 
     /// <summary>Take the slot written two probes ago off the mapping, once its copy has landed. It used to be a
@@ -262,29 +268,29 @@ internal static unsafe class Halos
     /// keeps the previous sample (counted <see cref="_occLate"/>).</summary>
     private static void Collect()
     {
-        int r = (_visSeq + 1) % Ring;
+        int r = (_gl.VisSeq + 1) % Ring;
         int have = _visN[r];
         if (have <= 0) return;
-        uint* src = (uint*)_visRead.Ready(r);
+        uint* src = (uint*)_gl.VisRead.Ready(r);
         if (src == null) { _occLate++; return; }
         if (have > _vis.Length) _vis = new uint[have];
         if (have > _readyKey.Length) _readyKey = new IntPtr[have];
-        for (int i = 0; i < have; i++) { _vis[i] = src[i]; _readyKey[i] = _visKey[r * _visCap + i]; }
+        for (int i = 0; i < have; i++) { _vis[i] = src[i]; _readyKey[i] = _visKey[r * _gl.VisCap + i]; }
         _readyN = have;
     }
 
     private static bool EnsureProbe()
     {
-        if (_occProg != 0) return true;
+        if (_gl.OccProg != 0) return true;
         if (_occFailed) return false;
         if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || !GpuReadback.EntryPoints)
             return Fail("this context has no compute, no persistent mapping or no fences");
-        _occProg = GlProgram.Compute(OccCs, ShaderSource.Get(OccCs + ".glsl"), _log, "Halos occlusion probe");
-        if (_occProg == 0) return Fail("the probe program did not build");
-        _occLoView = GlProgram.Loc(_occProg, "uView");
-        _occLoProj = GlProgram.Loc(_occProg, "uProj");
-        _occLoDepth = GlProgram.Loc(_occProg, "uSceneDepth");
-        _occLoCount = GlProgram.Loc(_occProg, "uCount");
+        _gl.OccProg = GlProgram.Compute(OccCs, ShaderSource.Get(OccCs + ".glsl"), _log, "Halos occlusion probe");
+        if (_gl.OccProg == 0) return Fail("the probe program did not build");
+        _gl.OccLoView = GlProgram.Loc(_gl.OccProg, "uView");
+        _gl.OccLoProj = GlProgram.Loc(_gl.OccProg, "uProj");
+        _gl.OccLoDepth = GlProgram.Loc(_gl.OccProg, "uSceneDepth");
+        _gl.OccLoCount = GlProgram.Loc(_gl.OccProg, "uCount");
         return true;
     }
 
@@ -296,35 +302,31 @@ internal static unsafe class Halos
         return false;
     }
 
-    private static uint _vao;
     /// <summary>An attribute-less VAO: the quad corners come from gl_VertexID.</summary>
     private static uint EmptyVao()
     {
-        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
-        return _vao;
+        if (_gl.Vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _gl.Vao = v; }
+        return _gl.Vao;
     }
 
     private static bool EnsureProgram()
     {
-        if (_prog != 0) return true;
+        if (_gl.Prog != 0) return true;
         if (_failed || Gl.DrawArraysInstancedBaseInstance == null) return false;
-        _prog = GlProgram.Graphics(ShdHaloVs, ShaderStages.Source(ShdHaloVs), ShdHaloFs, ShaderStages.Source(ShdHaloFs), _log, "Halos");
-        if (_prog == 0) { _failed = true; _log?.Info("Halos: program build failed -- no halos this session"); return false; }
-        uint b; Gl.CreateBuffers(1, &b); _buf = b; _ssboCap = 0;
-        _locView = GlProgram.Loc(_prog, "uView");
-        _locProj = GlProgram.Loc(_prog, "uProj");
-        _locViz = GlProgram.Loc(_prog, "uViz");
-        _locDepth = GlProgram.Loc(_prog, "uSceneDepth");
-        _locGain = GlProgram.Loc(_prog, "uGain");
+        _gl.Prog = GlProgram.Graphics(ShdHaloVs, ShaderStages.Source(ShdHaloVs), ShdHaloFs, ShaderStages.Source(ShdHaloFs), _log, "Halos");
+        if (_gl.Prog == 0) { _failed = true; _log?.Info("Halos: program build failed -- no halos this session"); return false; }
+        uint b; Gl.CreateBuffers(1, &b); _gl.Buf = b; _gl.SsboCap = 0;
+        _gl.LocView = GlProgram.Loc(_gl.Prog, "uView");
+        _gl.LocProj = GlProgram.Loc(_gl.Prog, "uProj");
+        _gl.LocViz = GlProgram.Loc(_gl.Prog, "uViz");
+        _gl.LocDepth = GlProgram.Loc(_gl.Prog, "uSceneDepth");
+        _gl.LocGain = GlProgram.Loc(_gl.Prog, "uGain");
         return true;
     }
 
     internal static void ContextLost()
     {
-        _prog = 0; _buf = 0; _vao = 0; _ssboCap = 0;
-        _occProg = 0; _visCap = 0; _visSeq = 0;
-        // The fences died with the context, like the buffers: forgotten, never deleted.
-        _visDev = 0; _visRead.ContextLost();
+        _gl = new HaloGlState();
         DropSamples();
     }
 

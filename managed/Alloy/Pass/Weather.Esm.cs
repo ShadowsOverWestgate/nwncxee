@@ -17,9 +17,6 @@ internal static unsafe partial class Weather
     private const float EsmMinSpreadM = 0.1f;
     private const int EsmSizeMax = 1024;
 
-    private static uint _esmView, _esmViewOf, _esmTex0, _esmTex1, _esmFbo, _esmProg, _esmVao;
-    private static int _esmSize, _esmLayer = -1, _esmLocSrc, _esmLocStep, _esmLocC;
-    private static bool _esmFailed, _esmValid;
     private static float _esmC, _esmBias;
     internal static int EsmBakes;
     /// <summary>The cover map's side at its last bake: what a knob-driven shelter re-bake sizes the cache by.</summary>
@@ -29,8 +26,8 @@ internal static unsafe partial class Weather
     /// layer rides; the view onto it is remade when the array or the layer changes.</summary>
     internal static void FilterCover(uint array, int layer, int mapSize, float radius)
     {
-        _esmValid = false; _shelValid = false;
-        if (_esmFailed || Gl.TextureView == null) return;
+        _gl.EsmValid = false; _gl.ShelValid = false;
+        if (_gl.EsmFailed || Gl.TextureView == null) return;
         int size = mapSize < EsmSizeMax ? mapSize : EsmSizeMax;
         if (!EnsureEsm(array, layer, size)) return;
         int* save = stackalloc int[6]; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, save); Gl.GetIntegerv(Gl.VIEWPORT, save + 1);
@@ -42,21 +39,21 @@ internal static unsafe partial class Weather
         float half = CoverSoft.V * 0.25f / radius;   // half the knob, in uv (the fit is 2 x radius across)
         new PassState(depth: false, depthWrite: false).Apply();
         Gl.ColorMask(1, 1, 1, 1);
-        Gl.UseProgram(_esmProg);
-        Gl.BindVertexArray(_esmVao);
-        Gl.Uniform1i(_esmLocSrc, 0);
+        Gl.UseProgram(_gl.EsmProg);
+        Gl.BindVertexArray(_gl.EsmVao);
+        Gl.Uniform1i(_gl.EsmLocSrc, 0);
         Gl.Viewport(0, 0, size, size);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _esmFbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.EsmFbo);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _esmTex0, 0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _esmView);
-        Gl.Uniform1i(_esmLocC, 1);
-        Gl.Uniform2f(_esmLocStep, half / 6f, 0f);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.EsmTex0, 0);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.EsmView);
+        Gl.Uniform1i(_gl.EsmLocC, 1);
+        Gl.Uniform2f(_gl.EsmLocStep, half / 6f, 0f);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _esmTex1, 0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _esmTex0);
-        Gl.Uniform1i(_esmLocC, 0);
-        Gl.Uniform2f(_esmLocStep, 0f, half / 6f);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _gl.EsmTex1, 0);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.EsmTex0);
+        Gl.Uniform1i(_gl.EsmLocC, 0);
+        Gl.Uniform2f(_gl.EsmLocStep, 0f, half / 6f);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.BindVertexArray(0);
@@ -64,12 +61,12 @@ internal static unsafe partial class Weather
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)save[0]);
         Gl.Viewport(save[1], save[2], save[3], save[4]);
         Gl.UseProgram((uint)prog);
-        _esmValid = true; EsmBakes++;
+        _gl.EsmValid = true; EsmBakes++;
         // R2: the same bake, latched into the area wetness map -- the depth view is already in hand here
         // and nowhere else, and this is the one call site a new cover bake reaches.
-        MapScatter(_esmView, radius);
+        MapScatter(_gl.EsmView, radius);
         _coverMapSize = mapSize;
-        ShelterBake(_esmView, mapSize);
+        ShelterBake(_gl.EsmView, mapSize);
         Gl.UseProgram((uint)prog);
     }
 
@@ -79,62 +76,60 @@ internal static unsafe partial class Weather
     /// the hard compare.</summary>
     internal static void BindEsm(int locParams, bool oit)
     {
-        bool on = !oit && _esmValid && Cover.V && CasterPass.CoverFresh;
+        bool on = !oit && _gl.EsmValid && Cover.V && CasterPass.CoverFresh;
         if (!oit)
         {
             Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.CoverEsm);
-            Gl.BindTexture(Gl.TEXTURE_2D, on ? _esmTex1 : 0);
+            Gl.BindTexture(Gl.TEXTURE_2D, on ? _gl.EsmTex1 : 0);
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
         if (locParams >= 0) Gl.Uniform4f(locParams, _esmC, _esmBias, on ? 1f : 0f, 0f);
     }
 
     /// <summary>The cover map is gone with its bake (area edge, flush failure): so is the filtered copy.</summary>
-    internal static void EsmRelease() { _esmValid = false; ShelterRelease(); }
+    internal static void EsmRelease() { _gl.EsmValid = false; ShelterRelease(); }
 
     /// <summary>The cover layer as PLAIN depth -- the same <c>glTextureView</c> the filter reads,
     /// compare mode off -- or 0 while there is none. The splash pass reconstructs each impact's landing
     /// point from it; the compare sampler the drop stage uses cannot be read for a depth, only tested.</summary>
-    internal static uint CoverDepthView => _esmValid ? _esmView : 0;
+    internal static uint CoverDepthView => _gl.EsmValid ? _gl.EsmView : 0;
 
     private static bool EnsureEsm(uint array, int layer, int size)
     {
-        if (_esmProg == 0)
+        if (_gl.EsmProg == 0)
         {
-            _esmProg = GlProgram.Graphics(PostChain.FullscreenVs, EsmFs, _log, "Weather cover filter");
-            if (_esmProg == 0) { _esmFailed = true; _log?.Info("Weather: cover filter program failed -- the cover edge falls back to a hard compare"); return false; }
-            _esmLocSrc = GlProgram.Loc(_esmProg, "uSrc"); _esmLocStep = GlProgram.Loc(_esmProg, "uStep"); _esmLocC = GlProgram.Loc(_esmProg, "uFirst");
-            uint v; Gl.CreateVertexArrays(1, &v); _esmVao = v;
-            uint f; Gl.GenFramebuffers(1, &f); _esmFbo = f;
+            _gl.EsmProg = GlProgram.Graphics(PostChain.FullscreenVs, EsmFs, _log, "Weather cover filter");
+            if (_gl.EsmProg == 0) { _gl.EsmFailed = true; _log?.Info("Weather: cover filter program failed -- the cover edge falls back to a hard compare"); return false; }
+            _gl.EsmLocSrc = GlProgram.Loc(_gl.EsmProg, "uSrc"); _gl.EsmLocStep = GlProgram.Loc(_gl.EsmProg, "uStep"); _gl.EsmLocC = GlProgram.Loc(_gl.EsmProg, "uFirst");
+            uint v; Gl.CreateVertexArrays(1, &v); _gl.EsmVao = v;
+            uint f; Gl.GenFramebuffers(1, &f); _gl.EsmFbo = f;
         }
-        if (_esmView == 0 || _esmViewOf != array || _esmLayer != layer)
+        if (_gl.EsmView == 0 || _gl.EsmViewOf != array || _gl.EsmLayer != layer)
         {
-            if (_esmView != 0) { uint t = _esmView; Gl.DeleteTextures(1, &t); }
+            if (_gl.EsmView != 0) { uint t = _gl.EsmView; Gl.DeleteTextures(1, &t); }
             uint t2; Gl.GenTextures(1, &t2);   // glTextureView wants a name with no object yet: Gen, not Create
             Gl.DrainErrors();
             Gl.TextureView(t2, Gl.TEXTURE_2D, array, Gl.DEPTH_COMPONENT24, 0, 1, (uint)layer, 1);
-            if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t2); _esmFailed = true; _log?.Info("Weather: no texture view onto the cover layer -- the cover edge falls back to a hard compare"); return false; }
+            if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t2); _gl.EsmFailed = true; _log?.Info("Weather: no texture view onto the cover layer -- the cover edge falls back to a hard compare"); return false; }
             Gl.TextureParameteri(t2, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
             Gl.TextureParameteri(t2, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
             Gl.TextureParameteri(t2, Gl.TEXTURE_COMPARE_MODE, 0);
-            _esmView = t2; _esmViewOf = array; _esmLayer = layer;
+            _gl.EsmView = t2; _gl.EsmViewOf = array; _gl.EsmLayer = layer;
         }
-        if (_esmSize != size)
+        if (_gl.EsmSize != size)
         {
-            if (_esmTex0 != 0) { uint* ts = stackalloc uint[2]; ts[0] = _esmTex0; ts[1] = _esmTex1; Gl.DeleteTextures(2, ts); }
+            if (_gl.EsmTex0 != 0) { uint* ts = stackalloc uint[2]; ts[0] = _gl.EsmTex0; ts[1] = _gl.EsmTex1; Gl.DeleteTextures(2, ts); }
             uint* n = stackalloc uint[2]; Gl.CreateTextures(Gl.TEXTURE_2D, 2, n);
             for (int i = 0; i < 2; i++)
             {
                 Gl.TextureStorage2D(n[i], 1, Gl.RG32F, size, size);
                 RenderTarget.Clamp(n[i], Gl.LINEAR);
             }
-            _esmTex0 = n[0]; _esmTex1 = n[1]; _esmSize = size;
+            _gl.EsmTex0 = n[0]; _gl.EsmTex1 = n[1]; _gl.EsmSize = size;
             _log?.Info($"Weather: cover filter {size}x{size} RG32F");
         }
         return true;
     }
-
-    private static void EsmLost() { _esmView = 0; _esmViewOf = 0; _esmLayer = -1; _esmTex0 = _esmTex1 = 0; _esmSize = 0; _esmFbo = 0; _esmProg = 0; _esmVao = 0; _esmValid = false; _esmFailed = false; }
 
     /// <summary>One blur axis of the two moments, a Gaussian over 13 taps at uStep. The first axis reads the
     /// depth view (uFirst: r is the depth, its square is made here); the second reads the moment pair.</summary>
