@@ -87,6 +87,12 @@ PipeWire, PulseAudio and ALSA headers yourself. `flake.nix` has the full list.
 The Windows build is cross-compiled on Linux with `./build-win.sh`. `CLAUDE.md` covers the
 architecture and how to add a feature.
 
+## Contributing
+
+Fork the repository and open a pull request against `main`. CI doesn't run on a pull request from a
+fork until a maintainer approves it. Once you've had a pull request merged here, your CI runs start
+on their own.
+
 ## Reporting a problem
 
 CX is silent by default. To get a log, create `cx.cfg` next to `nwn.ini` (Windows:

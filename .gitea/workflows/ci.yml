@@ -22,7 +22,7 @@ jobs:
   # builds, so a new kind of file costs a build, never a silent skip. third_party/ is excluded because
   # packaging/licenses.sh reads its markdown.
   affected:
-    runs-on: nix-docker
+    runs-on: nix-cx
     timeout-minutes: 2
     outputs:
       build: ${{ steps.map.outputs.build }}
@@ -44,7 +44,7 @@ jobs:
   # Every pull request, whatever it touches: a listing can hide in any file,
   # Markdown included, so this job never asks `affected`.
   no-decompiled:
-    runs-on: nix-docker
+    runs-on: nix-cx
     # Measured 37s on a cold runner that had to fetch the pinned nixpkgs first (run 10074).
     timeout-minutes: 2
     steps:
@@ -59,7 +59,7 @@ jobs:
   ci:
     needs: affected
     if: needs.affected.outputs.build == 'true'
-    runs-on: nix-docker
+    runs-on: nix-cx
     # Measured 4m04 on the cold path (run 10075), where the runner first builds flake.nix's OpenAL Soft for
     # 2m21. Roughly twice that.
     timeout-minutes: 8
@@ -68,22 +68,12 @@ jobs:
         with:
           submodules: recursive # funchook pulls diStorm3 as a nested submodule
 
-      # Only a runner that had to fetch or build OpenAL Soft pushes it, so each runner contacts Cachix once per pin.
-      - name: Is OpenAL Soft in this runner's store already?
-        id: openal
-        run: |
-          path=$(nix eval --raw .#openal.outPath)
-          if nix path-info "$path" >/dev/null 2>&1; then fresh=false; else fresh=true; fi
-          printf 'path=%s\nfresh=%s\n' "$path" "$fresh" | tee -a "$GITHUB_OUTPUT"
-
-      # No cache actions: the runner's Nix store and HOME persist between jobs. The ci shell carries the
-      # OpenAL Soft that flake.nix builds once per pin, or pulls from the westgate Cachix cache when the runner
-      # trusts it. A cache that does not answer within 5 seconds costs a local build, not a failed job.
-      # tools/deps.py keeps its archives in ~/.cache/cx-deps.
+      # Every job starts with an empty Nix store. The ci shell pulls flake.nix's OpenAL Soft from the binary
+      # cache, or builds it when the cache misses. A cache that does not answer within 5 seconds costs a local
+      # build, not a failed job.
       # run-demo.sh runs what build.sh just staged instead of building it a second time.
       - name: Build + load smoke
         run: |
-          # The installable stays first: the runner's nix shim reads it to name the shell's GC root.
           nix develop .#ci --option extra-substituters https://westgate.cachix.org --option connect-timeout 5 \
             --command env JOBS=2 bash -c '
             set -euo pipefail
@@ -91,12 +81,3 @@ jobs:
             CX_NO_BUILD=1 ./run-demo.sh
           '
 
-      # Best effort with a ceiling: a Cachix outage costs this step 30 seconds and never fails the job.
-      - name: Share OpenAL Soft on Cachix
-        if: steps.openal.outputs.fresh == 'true' && vars.CACHIX_CACHE != ''
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: |
-          nix shell --inputs-from . nixpkgs#cachix --command \
-            timeout 30 cachix push "${{ vars.CACHIX_CACHE }}" "${{ steps.openal.outputs.path }}" \
-            || echo "::warning::cachix push failed or timed out; the next runner to miss builds OpenAL Soft itself"
