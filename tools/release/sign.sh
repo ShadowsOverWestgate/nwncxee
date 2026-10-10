@@ -11,7 +11,7 @@ set -euo pipefail
 tag="${1:?usage: tools/release/sign.sh vX.Y.Z}"
 : "${GITEA_TOKEN:?set GITEA_TOKEN (a Gitea token with write access to the repository)}"
 root=$(cd "$(dirname "$0")/../.." && pwd)
-api_base=https://git.westgate.pw/api/v1/repos/ShadowsOverWestgate/nwncxee
+api_base=https://git.westgate.pw/api/v1/repos/NWNEE_CX/nwncxee
 key=$(python3 "$root/tools/paths.py" RELEASE_SIGN_KEY)
 signers="$root/packaging/allowed_signers"
 [[ -f "$key" ]] || { echo "no release key at $key (see the header of this script)" >&2; exit 1; }
