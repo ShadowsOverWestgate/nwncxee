@@ -12,7 +12,7 @@ build you got from the releases page or built yourself.
 ## Install
 
 Download the zip for your system from the
-[releases page](https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/releases).
+[releases page](https://git.westgate.pw/ShadowsOverWestgate/nwncxee/releases).
 
 ### Windows
 
@@ -74,8 +74,8 @@ compare the output of `Get-FileHash cx-windows-x64-<version>.zip` with the zip's
 On Linux, `nix develop` gives you the pinned toolchain from `flake.nix`, the same one CI uses:
 
 ```sh
-git clone --recursive https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender.git
-cd sow-client-extender
+git clone --recursive https://git.westgate.pw/ShadowsOverWestgate/nwncxee.git
+cd nwncxee
 nix develop
 ./build.sh       # -> cx-linux-x64/ and its zip
 ./run-demo.sh    # boots the framework without the game
@@ -96,7 +96,7 @@ CX is silent by default. To get a log, create `cx.cfg` next to `nwn.ini` (Window
 general.logs=1
 ```
 
-Play again, then open an [issue](https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/issues)
+Play again, then open an [issue](https://git.westgate.pw/ShadowsOverWestgate/nwncxee/issues)
 with `cx.log` (next to `cx.cfg` on Windows, `~/cx.log` on Linux) and what you did just before
 things went wrong.
 

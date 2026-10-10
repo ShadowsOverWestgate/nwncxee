@@ -9,9 +9,9 @@ public static class Product
     public const string Name = "NWNCX:EE";
     public const string Author = "Michał Piasecki";
     public const string Contact = "mpiasecki720@protonmail.com";
-    public const string Url = "https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/releases";
+    public const string Url = "https://git.westgate.pw/ShadowsOverWestgate/nwncxee/releases";
     /// <summary>Where a crash with the extender loaded is reported (<c>CrashReport</c>).</summary>
-    public const string Issues = "https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/issues";
+    public const string Issues = "https://git.westgate.pw/ShadowsOverWestgate/nwncxee/issues";
 
     /// <summary><c>AssemblyInformationalVersion</c>: what <c>build.sh</c> stamps from <c>git describe</c>.</summary>
     public static readonly string Version = Assembly.GetExecutingAssembly()
