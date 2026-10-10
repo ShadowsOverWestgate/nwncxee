@@ -69,7 +69,7 @@ internal static unsafe class DbSceneSelfCheck
         DbCamera.SetOrientation(cam, Quaternion.Identity);
         DbCamera.SetViewAngle(cam, Fov);
         DbCamera.SetClipDist(cam, Near, Far);
-        bool built = DbCamera.BuildView(cam, 0f, 0f, Vw, Vh, Vw, Vh, 1f, out AlloyView v);
+        bool built = DbCamera.BuildView(cam, 0f, 0f, Vw, Vh, Vw, Vh, default, out AlloyView v);
         check.Expect(built && v.Valid, "the world camera (no viewport of its own) builds a view off the draw rect");
         check.Expect(v.W == Vw && v.H == Vh && v.X == 0 && v.Y == 0,
                      "a camera with no viewport of its own covers the whole draw rect, as Camera::RenderScene's "
@@ -93,7 +93,7 @@ internal static unsafe class DbSceneSelfCheck
         // ...and of a translated one it is a pure -pos translation.
         var at = new Vector3(3f, -4f, 5f);
         DbCamera.SetPosition(cam, at);
-        DbCamera.BuildView(cam, 0f, 0f, Vw, Vh, Vw, Vh, 1f, out v);
+        DbCamera.BuildView(cam, 0f, 0f, Vw, Vh, Vw, Vh, default, out v);
         check.Expect(Close(v.View, Matrix4x4.CreateTranslation(-at)),
                      "the view matrix of an unrotated camera is a translation by -position");
 
@@ -159,7 +159,7 @@ internal static unsafe class DbSceneSelfCheck
 
         // The view volume: every plane must report a point at the frustum's centre as inside, and a point
         // well outside each plane as outside.
-        DbCamera.BuildView(cam, 0f, 0f, Vw, Vh, Vw, Vh, 1f, out v);
+        DbCamera.BuildView(cam, 0f, 0f, Vw, Vh, Vw, Vh, default, out v);
         DbCamera.SetViewVolume(cam, v);
         check.Expect(SceneDb.CamVolumeSet[cam.Index], "a built view latches ViewVolumeSet, as Camera+0x4e4 does");
         // The ENGINE's convention, measured in Camera::HitCheckViewVolumeNearest @0x5a4060, which rejects a
@@ -191,7 +191,7 @@ internal static unsafe class DbSceneSelfCheck
         DbCamera.SetViewPort(guiCam, 10f, 20f, 300f, 200f);
         DbCamera.SetViewAngle(guiCam, 0f);
         DbCamera.SetClipDist(guiCam, -1f, 1f);
-        DbCamera.BuildView(guiCam, 0f, 0f, Vw, Vh, Vw, Vh, 1f, out AlloyView gv);
+        DbCamera.BuildView(guiCam, 0f, 0f, Vw, Vh, Vw, Vh, default, out AlloyView gv);
         check.Expect(gv.Valid && !gv.Perspective, "a view angle of 0 is the ORTHO branch");
         check.Expect(gv.X == 10 && gv.Y == 20 && gv.W == 300 && gv.H == 200,
                      "a camera with a viewport of its own renders into it, not into the draw rect");
@@ -204,7 +204,7 @@ internal static unsafe class DbSceneSelfCheck
         // The character sheet's resize viewport (0, y, 8192, h): cut to the screen, still one pixel per 0.01.
         DbCamera.SetViewPort(guiCam, 0f, 100f, 8192f, 8192f);
         DbCamera.SetPosition(guiCam, new Vector3(0f, 1f, 0f));
-        DbCamera.BuildView(guiCam, 0f, 0f, Vw, Vh, Vw, Vh, 1f, out AlloyView cv);
+        DbCamera.BuildView(guiCam, 0f, 0f, Vw, Vh, Vw, Vh, default, out AlloyView cv);
         Vector4 c = Vector4.Transform(new Vector4(2f, 2f, 0f, 1f), cv.View * cv.Proj);
         float px = cv.X + (c.X / c.W * 0.5f + 0.5f) * cv.W, py = cv.Y + (c.Y / c.W * 0.5f + 0.5f) * cv.H;
         check.Expect(cv.W == Vw && cv.H == Vh - 100, "a viewport past the screen is cut to it (SetViewPortLight)");
@@ -230,11 +230,66 @@ internal static unsafe class DbSceneSelfCheck
                      "a camera with no rect of its own takes the DRAW rect and is still UI-scaled -- the "
                    + "engine applies the shrink past the GetViewPort fallback, not before it");
 
+        Upscaled(check, gui, guiCam, Vw, Vh);
+
         DbCamera.Destroy(guiCam);
         DbCamera.Destroy(cam);
         DbScene.Destroy(front);
         DbScene.Destroy(gui);
         DbScene.Destroy(scene);
+    }
+
+    /// <summary>A view under an <c>UpscaleViewport</c> answer at UI scale 2. Oracle: screen pixels worked by
+    /// hand from <c>Camera::RenderScene</c>'s two branches and <c>ModifyGUIMatrix</c>'s Scale-then-Translate.</summary>
+    private static void Upscaled(Checker check, DbId gui, DbId panelCam, int vw, int vh)
+    {
+        DbId full = DbCamera.Create(default);
+        DbCamera.AttachToScene(full, gui);
+        DbCamera.SetViewAngle(full, 0f);
+        DbCamera.SetClipDist(full, -1f, 1f);
+        // The centred full-screen answer for an 800x400 draw rect: rect (200,100,400,200), mode 1, offset = origin.
+        var centred = new DbCamera.ViewUpscale { Valid = true, X = 200f, Y = 100f, W = 400f, H = 200f,
+                                                 Mode = 1f, OffX = 200f, OffY = 100f, PickX = 200f, PickY = 100f, Scale = 2f };
+        DbCamera.BuildView(full, 0f, 0f, vw, vh, vw, vh, in centred, out AlloyView fv);
+        check.Expect(fv.Valid && fv.X == 0 && fv.Y == 0 && fv.W == vw && fv.H == vh,
+                     "a GUI camera with no rect keeps the whole draw rect under an upscale");
+        Pixel(fv, centred, 4f, 2f, out float cx, out float cy);
+        check.Expect(Near1(cx, 400f) && Near1(cy, 200f), "the screen centre stays put at UI scale 2");
+        Pixel(fv, centred, 2f, 1f, out float ox, out float oy);
+        check.Expect(Near1(ox, 0f) && Near1(oy, 0f), "the GUI point at the upscaled rect's corner lands on the screen's");
+        Pixel(fv, centred, 3f, 1.5f, out float qx, out float qy);
+        check.Expect(Near1(qx, 200f) && Near1(qy, 100f), "a GUI point half-way to the centre is drawn twice as far out");
+
+        // A panel with its own rect: the answer's rect is the viewport, mode 3 scales from its origin.
+        var anchored = new DbCamera.ViewUpscale { Valid = true, X = 5f, Y = 0f, W = 600f, H = 400f, Mode = 3f, Scale = 2f };
+        DbCamera.BuildView(panelCam, 0f, 0f, vw, vh, vw, vh, in anchored, out AlloyView pv);
+        check.Expect(Near1(pv.View.M11, 1f), "the view stays rigid: the GUI model is applied after the view volume");
+        check.Expect(pv.X == 5 && pv.Y == 0 && pv.W == 600 && pv.H == 400, "a panel camera renders into the upscaled rect");
+        Pixel(pv, anchored, 1f, 1f, out float px, out float py);
+        check.Expect(Near1(px, 205f) && Near1(py, 200f), "mode 3 doubles a panel's content from the rect's origin");
+        DbCamera.PickSegment(full, 0, 0, 0f, 0f, vw, vh, in centred, out Vector3 at, out _);
+        check.Expect(Near1(at.X, 2.005f) && Near1(at.Y, 1.005f),
+                     "a pick at the screen's corner finds the GUI point drawn there: px/s plus the pick offset");
+        // A mode 3 answer for the panel's own (10,20,300,200) rect: drawn at (20,40,600,400), GUI (1,1) at (220,240).
+        var chat = new DbCamera.ViewUpscale { Valid = true, X = 20f, Y = 40f, W = 600f, H = 400f, Mode = 3f, Scale = 2f };
+        DbCamera.PickSegment(panelCam, 220, 240, 0f, 0f, vw, vh, in chat, out at, out _);
+        check.Expect(Near1(at.X, 1.005f) && Near1(at.Y, 1.005f),
+                     "a pick on a scaled panel maps back against the camera's OWN rect, as Camera::HitCheck does");
+        check.Expect(DbCamera.PickSegment(panelCam, 700, 380, 0f, 0f, vw, vh, in chat, out _, out _),
+                     "the pick bounds grow by the scale with the panel");
+        anchored.Mode = 0f;
+        DbCamera.BuildView(panelCam, 0f, 0f, vw, vh, vw, vh, in anchored, out pv);
+        Pixel(pv, anchored, 1f, 1f, out px, out py);
+        check.Expect(Near1(px, 105f) && Near1(py, 100f), "a placement mode outside 1..7 is outside ModifyGUIMatrix's gate: no GUI scale");
+        DbCamera.Destroy(full);
+    }
+
+    private static void Pixel(in AlloyView v, in DbCamera.ViewUpscale up, float ux, float uy, out float x, out float y)
+    {
+        Matrix4x4 view = DbCamera.HasGuiModel(in up) ? DbCamera.GuiModel(in up) * v.View : v.View;
+        Vector4 c = Vector4.Transform(new Vector4(ux, uy, 0f, 1f), view * v.Proj);
+        x = v.X + (c.X / c.W * 0.5f + 0.5f) * v.W;
+        y = v.Y + (c.Y / c.W * 0.5f + 0.5f) * v.H;
     }
 
     /// <summary>The scene's member list and the four <c>RenderGob*</c> reorderings.</summary>

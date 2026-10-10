@@ -31,7 +31,7 @@ public static class MdlSelfCheck
     /// the adjacency, the surface area and the child reorder.</summary>
     private const string Model = """
         # a comment the driver drops
-        newmodel cx_fixture
+        newmodel CX_Fixture
         setsupermodel cx_fixture null
         classification tile
         setanimationscale 0.75
@@ -155,6 +155,7 @@ public static class MdlSelfCheck
         expect(m != null, $"the ASCII fixture did not parse ({err})");
         if (m == null) return;
 
+        expect(m.StatedName == "CX_Fixture", $"newmodel's name read as '{m.StatedName}', case must be kept");
         expect(m.Classification == 2, $"classification tile read as {m.Classification}");
         expect(m.SuperName.Length == 0, $"supermodel 'null' read as '{m.SuperName}'");
         expect(Near(m.AnimScale, 0.75f), $"setanimationscale read as {m.AnimScale}");
@@ -239,7 +240,7 @@ public static class MdlSelfCheck
         var model = new byte[modelSize];
         var raw = new byte[3 * 12 + 3 * 12 + 3 * 8];
 
-        Name(model, 0x08, "cx_bin");
+        Name(model, 0x08, "CX_Bin");
         I32(model, 0x48, rootAt);
         I32(model, 0x4c, 2);
         model[0x6c] = 2;                       // geometry type: a model
@@ -323,6 +324,7 @@ public static class MdlSelfCheck
         expect(m != null, $"the binary fixture did not parse ({err})");
         if (m == null) return;
         expect(!m.FromAscii, "a binary file was read as ASCII");
+        expect(m.StatedName == "CX_Bin", $"the header's model name read as '{m.StatedName}', case must be kept");
         expect(m.Classification == 4, $"classification {m.Classification}, expected 4");
         expect(m.SuperName.Length == 0, $"supermodel 'null' read as '{m.SuperName}'");
         expect(Near(m.Radius, 9f), $"radius {m.Radius}");

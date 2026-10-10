@@ -14,6 +14,9 @@ public sealed class ModelDef
     /// name the FILE states; the model cache then rewrites it to the resref the model was asked for, counting
     /// the difference (the engine's "Model Names Differ").</summary>
     public string Name = "";
+    /// <summary>The model's name as its file states it, case kept (<c>Model+0x10</c>): what an object made
+    /// without a name of its own is called, and so what a GUI panel loaded from a <c>.gui</c> is named.</summary>
+    public string StatedName = "";
     /// <summary>The supermodel resref, lower-cased; empty for none (the file's <c>"null"</c>).</summary>
     public string SuperName = "";
     /// <summary>Resolved by the model cache, never by the parser.</summary>

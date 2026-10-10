@@ -104,10 +104,12 @@ public static class RenderSnapshot
         r.Scene = scene;
         r.Camera = camera;
         SeamFrameRect(out float vx, out float vy, out float vw, out float vh, out float gui);
-        if (!DbCamera.BuildView(camera, vx, vy, vw, vh, Seam.SeamFrame.ScreenW, Seam.SeamFrame.ScreenH, gui,
+        Seam.GuiUpscale.Ask(camera, vx, vy, vw, vh, gui, out DbCamera.ViewUpscale up);
+        if (!DbCamera.BuildView(camera, vx, vy, vw, vh, Seam.SeamFrame.ScreenW, Seam.SeamFrame.ScreenH, in up,
                                 out AlloyView v))
             return;   // a degenerate rect: the engine skips such a view too, and an invalid one is not recorded
         DbCamera.SetViewVolume(camera, v);
+        if (DbCamera.HasGuiModel(in up)) v.View = DbCamera.GuiModel(in up) * v.View;
         r.View = v.View; r.Proj = v.Proj;
         r.X = v.X; r.Y = v.Y; r.W = v.W; r.H = v.H;
         r.Near = v.Near; r.Far = v.Far; r.Fovy = v.Fovy; r.Aspect = v.Aspect;

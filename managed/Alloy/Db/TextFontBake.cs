@@ -34,6 +34,8 @@ public static unsafe class TextFontBake
         public string? Resref;
         /// <summary>Frames this font has waited for that texture.</summary>
         public int Waited;
+        /// <summary>The live font this re-bake replaces; <c>TextAtlas.Pump</c> swaps the new atlas into it.</summary>
+        public TextFont? Replaces;
     }
 
     public static void Install(ExtenderLog log) => _log = log;
@@ -53,6 +55,27 @@ public static unsafe class TextFontBake
         if (f == null) { Refused++; return null; }
         TextFonts.Register(f);
         return f;
+    }
+
+    /// <summary><c>ComputeGUIScaleAndUpdate</c>'s refresh gate: a scale change this small re-bakes nothing.</summary>
+    private const float RefreshDelta = 0.09f;
+
+    /// <summary>Re-bake every TTF atlas baked at a UI scale <see cref="RefreshDelta"/> or more from the live one,
+    /// the engine's <c>AurTextureRequestRefreshTTF</c> edge. The old atlas draws until the new one lands.
+    /// Game thread, once a frame: a float compare per font on every frame without a change.</summary>
+    public static void FollowScale()
+    {
+        float s = GuiScale();
+        for (int i = 0; i < TextFonts.Count; i++)
+        {
+            TextFont? f = TextFonts.At(i);
+            if (f == null || !f.Ttf || f.Name.Contains('\u0000') || MathF.Abs(f.BakedScale - s) < RefreshDelta) continue;
+            f.BakedScale = s;
+            TextFont? fresh = Ttf(f.Name, TextFontLoad.ParseName(f.Name));
+            if (fresh == null) continue;
+            Pending[^1].Replaces = f;
+            _log?.Info($"TextFontBake: \"{f.Name}\" re-baked for game UI scale {s:0.##}");
+        }
     }
 
     // ---- TTF ----
@@ -88,6 +111,7 @@ public static unsafe class TextFontBake
             return null;
 
         f.Epoch = ++_epoch;
+        f.BakedScale = scale;
         Pending.Add(new PendingAtlas { Font = f, Pixels = pixels, Width = w, Height = h });
         Baked++;
         if (_said++ < 4)

@@ -194,7 +194,12 @@ internal static class MdlAscii
         /// <c>strcmp</c>, so these are the only spellings that work.</summary>
         private void Command(ReadOnlySpan<byte> cmd, ReadOnlySpan<byte> args)
         {
-            if (Eq(cmd, "newmodel")) return;                   // the resref is the identity; the stated name is not kept
+            if (Eq(cmd, "newmodel"))
+            {
+                var sc = new MdlTok.Scan(args);
+                Model.StatedName = MdlTok.TextRaw(sc.Word());
+                return;
+            }
             if (Eq(cmd, "setsupermodel"))
             {
                 var sc = new MdlTok.Scan(args);

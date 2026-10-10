@@ -523,9 +523,11 @@ public static class TextObjectsSelfCheck
         // --- atlas geometry (CAuroraTTFTexture::Load @0x11329d0) ---
         c.Expect(TextFontLoad.NextPow2(1) == 1 && TextFontLoad.NextPow2(0) == 1 && TextFontLoad.NextPow2(2) == 2
                  && TextFontLoad.NextPow2(1000) == 1024, "the engine's doubling loop rounds up to a power of two");
-        // fnt_default at 14 px, scale 1: H = pow2(14 + 6) = 32; W = pow2(256*3 + 3 + (int)(16 * 14) = 995) = 1024.
+        // fnt_default at 14 px, scale 1: H = pow2(14 + 6) = 32; W = pow2(256*3 + 3 + 256*14 = 4355) = 8192.
         TextFontLoad.AtlasSize(14f, 256, out int w, out int h);
-        c.Expect(h == 32 && w == 1024, "golden: fnt_default at 14 px packs into a 1024x32 strip before cropping");
+        c.Expect(h == 32 && w == 8192, "golden: fnt_default at 14 px packs into an 8192x32 strip before cropping");
+        TextFontLoad.AtlasSize(28f, 256, out w, out h);
+        c.Expect(h == 64 && w == 8192, "golden: GUI scale 2 (28 px) packs into an 8192x64 strip, room for every glyph");
         c.Expect(TextFontLoad.AtlasPadding == 3 && TextFontLoad.Oversample == 1,
           "the bake uses the engine's 3-texel padding and NO oversampling");
         c.Expect(TextFontLoad.CropWidth(1024, 600) == 1024, "a glyph past the half mark blocks every crop step");

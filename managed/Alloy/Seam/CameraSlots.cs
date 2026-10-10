@@ -455,8 +455,8 @@ internal static unsafe class CameraSlots
         DbId scene = SceneDb.CamScene[cam.Index];
         if (!SceneDb.Scenes.Valid(scene)) return 0;
         SeamFrame.Viewport(out float vx, out float vy, out float vw, out float vh);
-        if (!DbCamera.PickSegment(cam, px, py, vx, vy, vw, vh, SeamFrame.GuiScale,
-                                  out Vector3 from, out Vector3 to))
+        GuiUpscale.Ask(cam, vx, vy, vw, vh, SeamFrame.GuiScale, out DbCamera.ViewUpscale up);
+        if (!DbCamera.PickSegment(cam, px, py, vx, vy, vw, vh, in up, out Vector3 from, out Vector3 to))
         {
             Pick(cam, scene, px, py, from, to, HitKind.None, null, default);
             return 0;

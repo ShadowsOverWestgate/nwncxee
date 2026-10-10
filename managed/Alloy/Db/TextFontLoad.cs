@@ -41,14 +41,13 @@ public static class TextFontLoad
         return new FontName(false, name, 0);
     }
 
-    /// <summary>The atlas CX must allocate for <paramref name="glyphs"/> glyphs at
-    /// <paramref name="pixelSize"/>, as <c>CAuroraTTFTexture::Load</c> @0x11329d0 computes it: height the next
-    /// power of two at or above <c>(int)pixelSize + 6</c>, width the next at or above
-    /// <c>glyphs*3 + 3 + (int)(sqrt(glyphs) * pixelSize)</c>. A single-row strip, cropped by <see cref="CropWidth"/>.</summary>
+    /// <summary>The atlas for <paramref name="glyphs"/> glyphs at <paramref name="pixelSize"/>, as
+    /// <c>CAuroraTTFTexture::Load</c> @0x11329d0 sizes it: height pow2((int)px + 6), width
+    /// pow2(glyphs*3 + 3 + (int)(glyphs * px)) -- no square root on the taken path. Cropped by <see cref="CropWidth"/>.</summary>
     public static void AtlasSize(float pixelSize, int glyphs, out int width, out int height)
     {
         height = NextPow2((int)(long)pixelSize + 6);
-        width = NextPow2(glyphs * 3 + 3 + (int)(long)(MathF.Sqrt(glyphs) * pixelSize));
+        width = NextPow2(glyphs * 3 + 3 + (int)(long)((float)glyphs * pixelSize));
     }
 
     /// <summary>The engine's doubling loop: 1 for anything below 2, else the first power of two at or above

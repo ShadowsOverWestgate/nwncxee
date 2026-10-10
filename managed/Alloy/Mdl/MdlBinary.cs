@@ -100,6 +100,7 @@ internal static class MdlBinary
         var m = new ModelDef
         {
             Name = name,
+            StatedName = Text(model.Slice(MName, 64)),
             SuperName = Resref(model.Slice(MSuper, 64)),
             Classification = model[MClassification],
             Fog = model[MFog] != 0,

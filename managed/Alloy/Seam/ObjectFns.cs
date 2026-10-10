@@ -148,7 +148,10 @@ public sealed unsafe class ObjectFns : ISeamProvider
         *(float*)(shell + SeamLayout.GobLodDist1) = lodNear;
         *(float*)(shell + SeamLayout.GobLodDist2) = lodFar;
         string? label = name == 0 ? null : Marshal.PtrToStringUTF8(name);
-        Facade.SetName(shell, string.IsNullOrEmpty(label) ? resref : label);
+        // NewCAurObject: no name of its own takes the model's STATED name, case kept -- a .gui panel's scene is
+        // named after it, and Camera::UpscaleViewport compares that scene name exactly.
+        Facade.SetName(shell, !string.IsNullOrEmpty(label) ? label
+                            : !string.IsNullOrEmpty(model?.StatedName) ? model.StatedName : resref);
 
         if (model != null) MtrFeed.Warm(model);
         if (alt1 != null) MtrFeed.Warm(alt1);

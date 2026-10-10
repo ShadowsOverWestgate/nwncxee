@@ -47,6 +47,21 @@ public sealed class TextFont
     /// epoch is rebuilt rather than drawn.</summary>
     public uint Atlas;
     public int Epoch;
+    /// <summary>The game UI scale a TTF atlas was baked at; <c>TextFontBake.FollowScale</c> re-bakes past it.</summary>
+    public float BakedScale = 1f;
+
+    /// <summary>Take every field but the name from <paramref name="src"/>: a re-bake lands in the font object
+    /// every text document already holds.</summary>
+    public void CopyFrom(TextFont src)
+    {
+        NumChars = src.NumChars; FontHeight = src.FontHeight; BaselineHeight = src.BaselineHeight;
+        TextureWidth = src.TextureWidth; SpacingR = src.SpacingR; SpacingB = src.SpacingB;
+        CaretIndent = src.CaretIndent; Ttf = src.Ttf; DoubleByte = src.DoubleByte;
+        Array.Copy(src.UlU, UlU, 256); Array.Copy(src.UlV, UlV, 256); Array.Copy(src.UlZ, UlZ, 256);
+        Array.Copy(src.LrU, LrU, 256); Array.Copy(src.LrV, LrV, 256); Array.Copy(src.LrZ, LrZ, 256);
+        Array.Copy(src.TopTrim, TopTrim, 256); Array.Copy(src.BotTrim, BotTrim, 256);
+        Atlas = src.Atlas; Epoch = src.Epoch; BakedScale = src.BakedScale;
+    }
 
     /// <summary>One glyph's advance in GUI units, exactly the engine's expression
     /// (<c>CAurFont::TextOut</c> and <c>CalculateVisibleStringLengthAndWidth</c> agree on it):

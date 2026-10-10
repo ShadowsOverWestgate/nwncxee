@@ -61,6 +61,7 @@ internal static unsafe class TextAtlas
                 p.Font.Atlas = h;
             }
             else if (!Upload(p)) continue;
+            if (p.Replaces != null) TextFonts.Swap(p.Replaces, p.Font);
             pending.RemoveAt(i--);
         }
     }

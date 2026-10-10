@@ -1,4 +1,5 @@
 using System;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 
@@ -37,8 +38,9 @@ internal static unsafe class SeamFrame
                      + "draw rect, so every world view's aspect and every MapToScreen answer would be wrong; "
                      + "the seam must stand down (the scene database has nothing to render into)");
         if (_guiScale == null)
-            log.Always("SeamFrame: CAurora::GetGUIScale unresolved -- a GUI panel camera's rect cannot be "
-                     + "divided by the game UI scale, so panels render at scale 1");
+            log.Always("SeamFrame: CAurora::GetGUIScale unresolved -- the game's GUI cannot follow the game "
+                     + "UI scale, so panels render at scale 1");
+        GuiUpscale.Announce(log);
     }
 
     /// <summary>True when the one load-bearing read resolved. The boot switch gates on this.</summary>
@@ -55,7 +57,15 @@ internal static unsafe class SeamFrame
         {
             _vx = 0f; _vy = 0f; _vw = *_screenW; _vh = *_screenH;
         }
-        if (_guiScale != null) _scale = _guiScale();
+        if (_guiScale != null)
+        {
+            float was = _scale;
+            _scale = _guiScale();
+            if (_scale != was)
+                _log?.Always($"SeamFrame: game GUI scale {was:0.###} -> {_scale:0.###} at screen {ScreenW}x{ScreenH}, "
+                           + $"draw rect {_vw}x{_vh}");
+        }
+        TextFontBake.FollowScale();
     }
 
     /// <summary>The frame's draw rect, as latched.</summary>

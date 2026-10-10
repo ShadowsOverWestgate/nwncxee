@@ -83,24 +83,33 @@ public static class TextFonts
         if (src == null) return null;
         string key = src.Name + "\u0000pw" + (char)mask;
         if (_byName.TryGetValue(key, out int at)) return _fonts[at];
-        var f = new TextFont
-        {
-            Name = key, NumChars = src.NumChars, FontHeight = src.FontHeight,
-            BaselineHeight = src.BaselineHeight, TextureWidth = src.TextureWidth,
-            SpacingR = src.SpacingR, SpacingB = src.SpacingB, CaretIndent = src.CaretIndent,
-            Ttf = src.Ttf, DoubleByte = src.DoubleByte, Atlas = src.Atlas, Epoch = src.Epoch,
-        };
-        Array.Copy(src.UlU, f.UlU, 256); Array.Copy(src.UlV, f.UlV, 256); Array.Copy(src.UlZ, f.UlZ, 256);
-        Array.Copy(src.LrU, f.LrU, 256); Array.Copy(src.LrV, f.LrV, 256); Array.Copy(src.LrZ, f.LrZ, 256);
-        Array.Copy(src.TopTrim, f.TopTrim, 256); Array.Copy(src.BotTrim, f.BotTrim, 256);
+        var f = new TextFont { Name = key };
+        Mask(f, src, mask);
+        Register(f);
+        return f;
+    }
+
+    private static void Mask(TextFont f, TextFont src, byte mask)
+    {
+        f.CopyFrom(src);
         for (int i = 1; i < 256; i++)
         {
             f.UlU[i] = src.UlU[mask]; f.UlV[i] = src.UlV[mask]; f.UlZ[i] = src.UlZ[mask];
             f.LrU[i] = src.LrU[mask]; f.LrV[i] = src.LrV[mask]; f.LrZ[i] = src.LrZ[mask];
             f.TopTrim[i] = src.TopTrim[mask]; f.BotTrim[i] = src.BotTrim[mask];
         }
-        Register(f);
-        return f;
+    }
+
+    /// <summary>A re-baked atlas lands: <paramref name="font"/> takes <paramref name="fresh"/>'s glyphs and atlas,
+    /// its old atlas is orphaned, and its password variants are re-masked off it. Cold: one UI-scale change.</summary>
+    internal static void Swap(TextFont font, TextFont fresh)
+    {
+        if (font.Atlas != 0 && font.Atlas != fresh.Atlas) Orphans.Add(font.Atlas);
+        font.CopyFrom(fresh);
+        string prefix = font.Name + "\u0000pw";
+        foreach (TextFont v in _fonts)
+            if (v.Name.Length == prefix.Length + 1 && v.Name.StartsWith(prefix, StringComparison.Ordinal))
+                Mask(v, font, (byte)v.Name[^1]);
     }
 
     /// <summary>Parse a font's <c>.txi</c> the way <c>CAurTextureBasic::Init</c> @0x488940 and

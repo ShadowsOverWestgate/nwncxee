@@ -212,10 +212,9 @@ public static unsafe class DbCamera
 
     // ---- the view ------------------------------------------------------------------------------------
 
-    /// <summary>The rect this camera renders into: its own when it has one, else the whole draw viewport.
-    /// Divided by the game's UI scale when that is not 1 -- the arithmetic <c>Camera::MapToScreen</c> @0x5a3d60
-    /// spells out, and the same rect <c>UpscaleViewport</c> rewrites for the view. CX does not reproduce the
-    /// engine's <c>sceneGUI_*</c> centring table: CX owns the panel layout, so every panel camera scales.</summary>
+    /// <summary>The rect <c>Camera::MapToScreen</c> @0x5a3d60 and the pick segment project through: the camera's
+    /// own when it has one, else the whole draw viewport, divided by the game's UI scale when that is not 1.
+    /// A view's DRAW rect is <see cref="BuildView"/>'s, from <c>UpscaleViewport</c>'s answer.</summary>
     public static void Rect(DbId cam, float vpX, float vpY, float vpW, float vpH, float guiScale,
                             out float x, out float y, out float w, out float h)
     {
@@ -279,29 +278,62 @@ public static unsafe class DbCamera
         if (shell != 0) new Camera(shell).ViewAngle = degrees;
     }
 
+    /// <summary><c>Camera::UpscaleViewport</c> @0x5a44b0's answer for one view at the game's UI scale: the
+    /// rewritten rect (floats 0..3), the placement mode (4), the draw offset (5/6), the pick offset (7/8) and
+    /// the scale (9). <see cref="Valid"/> is the function's own return; default is "not upscaled".</summary>
+    internal struct ViewUpscale
+    {
+        internal bool Valid;
+        internal float X, Y, W, H, Mode, OffX, OffY, PickX, PickY, Scale;
+    }
+
+    /// <summary><c>Camera::ModifyGUIMatrix</c> @0x5a61e0's gate: modes 1 to 7 get the GUI model matrix.</summary>
+    internal static bool HasGuiModel(in ViewUpscale up) => up.Valid && up.Mode is 1f or 2f or 3f or 4f or 5f or 6f or 7f;
+
+    /// <summary><c>Camera::ModifyGUIMatrix</c>'s MODEL matrix, <c>Scale(s, s, 1)</c> then
+    /// <c>Translate(-off / 100)</c>: what makes a GUI view's content grow with the UI scale.</summary>
+    internal static Matrix4x4 GuiModel(in ViewUpscale up)
+        => Matrix4x4.CreateTranslation(-up.OffX / 100f, -up.OffY / 100f, 0f)
+         * Matrix4x4.CreateScale(up.Scale, up.Scale, 1f);
+
     /// <summary>This camera's whole view state -- what <c>Camera::RenderScene</c> derives before it renders:
     /// viewport, aspect, projection (perspective or the ortho branch a view angle of 0 takes), view matrix and
-    /// depth range. Pure arithmetic over columns; no GL, no engine call.</summary>
+    /// depth range, with <paramref name="up"/>'s rect and ortho box applied. The GUI model term is the
+    /// caller's, after the view volume, as <c>ModifyGUIMatrix</c> runs after the engine builds it.</summary>
     internal static bool BuildView(DbId cam, float vpX, float vpY, float vpW, float vpH,
-                                 int screenW, int screenH, float guiScale, out AlloyView v)
+                                 int screenW, int screenH, in ViewUpscale up, out AlloyView v)
     {
         v = default;
         if (!SceneDb.Cameras.Valid(cam)) return false;
         int i = cam.Index;
-        Rect(cam, vpX, vpY, vpW, vpH, guiScale, out float rx, out float ry, out float rw, out float rh);
-        if (rw <= 0f || rh <= 0f) return false;
+        float rx, ry, rw, rh, aspect, extentH;
+        if (SceneDb.CamViewW[i] == 0f && SceneDb.CamViewH[i] == 0f)
+        {
+            // No rect of its own: the view keeps the draw rect, and an upscale changes only the ortho box.
+            rx = vpX; ry = vpY; rw = vpW; rh = vpH;
+            if (rw <= 0f || rh <= 0f) return false;
+            if (up.Valid && up.W > 0f && up.H > 0f) { aspect = up.W / up.H; extentH = up.H * up.Scale; }
+            else { aspect = rw / rh; extentH = rh; }
+        }
+        else
+        {
+            if (up.Valid) { rx = up.X; ry = up.Y; rw = up.W; rh = up.H; }
+            else { rx = SceneDb.CamViewX[i]; ry = SceneDb.CamViewY[i]; rw = SceneDb.CamViewW[i]; rh = SceneDb.CamViewH[i]; }
+            if (rw <= 0f || rh <= 0f) return false;
+            aspect = rw / rh; extentH = rh;
+        }
         // The engine skips a view that lies wholly off the screen (Camera.c:3031-3037: it ends the scene,
         // bumps the external-animate counter and returns without rendering). A panel dragged off the edge is
         // the case, and drawing it would cost a full view for nothing.
         if (screenW > 0 && screenH > 0
             && (rx >= screenW || ry >= screenH || rx + rw <= 0f || ry + rh <= 0f)) return false;
         v.X = (int)rx; v.Y = (int)ry; v.W = (int)rw; v.H = (int)rh;
-        v.Aspect = rw / rh;
+        v.Aspect = aspect;
         v.Near = SceneDb.CamNear[i];
         v.Far = SceneDb.CamFar[i];
         v.Fovy = ViewAngleOf(cam);
         v.Perspective = v.Fovy > 0f;
-        float unit = rh * OrthoUnitsPerPixel;
+        float unit = extentH * OrthoUnitsPerPixel;
         v.Proj = v.Perspective ? AlloyCamera.Perspective(v.Fovy, v.Aspect, v.Near, v.Far)
                                : AlloyCamera.Ortho(0f, v.Aspect * unit, 0f, unit, v.Near, v.Far);
         AlloyCamera.ViewportScales(v.X, v.Y, v.W, v.H, screenW, screenH, out float xs, out float ys);
@@ -404,11 +436,10 @@ public static unsafe class DbCamera
     }
 
     /// <summary>The segment a screen pick casts through this camera, in world space (<c>Camera::HitCheck</c>
-    /// @0x5a5e10's own two arms); false means the pixel is outside the camera's rect. The ORTHO arm (view
-    /// angle &lt;= 0) is the only correct one for a GUI panel: <see cref="MouseDir"/>'s <c>tan(fov/2)</c> is then
-    /// ZERO, so every pixel picks down the panel's middle. It maps by the VERTICAL extent, parallel to -Z.</summary>
-    public static bool PickSegment(DbId cam, int px, int py, float vpX, float vpY, float vpW, float vpH,
-                                   float guiScale, out Vector3 from, out Vector3 to)
+    /// @0x5a5e10's two arms); false means the pixel is outside the rect. The ORTHO arm is every GUI panel's:
+    /// the pixel goes back through <paramref name="up"/> first, then one pixel is 0.01 GUI units along -Z.</summary>
+    internal static bool PickSegment(DbId cam, int px, int py, float vpX, float vpY, float vpW, float vpH,
+                                   in ViewUpscale up, out Vector3 from, out Vector3 to)
     {
         from = default; to = default;
         if (!SceneDb.Cameras.Valid(cam)) return false;
@@ -423,13 +454,18 @@ public static unsafe class DbCamera
             to = pos + dir * far;
             return true;
         }
-        Rect(cam, vpX, vpY, vpW, vpH, guiScale, out float rx, out float ry, out float rw, out float rh);
+        float rx, ry, rw, rh, grow = 1f;
+        float cw = SceneDb.CamViewW[i], ch = SceneDb.CamViewH[i];
+        if (cw == 0f || ch == 0f) { rx = vpX; ry = vpY; rw = vpW; rh = vpH; }
+        else { rx = SceneDb.CamViewX[i]; ry = SceneDb.CamViewY[i]; rw = cw; rh = ch; if (up.Valid) grow = up.Scale; }
         if (rw <= 0f || rh <= 0f) return false;
-        float cx = px - rx, cy = py - ry;
-        if (cx < 0f || cy < 0f || cx >= rw || cy >= rh) return false;
-        float unit = rh * OrthoUnitsPerPixel;
-        float wx = (cx + 0.5f) / rh * unit + pos.X;
-        float wy = (cy + 0.5f) / rh * unit + pos.Y;
+        float sx = px, sy = py;
+        // Camera::ScreenToUpscaledScene: the pixel back through ModifyGUIMatrix, by the PICK offset.
+        if (HasGuiModel(in up)) { sx = sx / up.Scale + up.PickX; sy = sy / up.Scale + up.PickY; }
+        float cx = sx - rx, cy = sy - ry;
+        if (cx < 0f || cy < 0f || cx >= rw * grow || cy >= rh * grow) return false;
+        float wx = (cx + 0.5f) * OrthoUnitsPerPixel + pos.X;
+        float wy = (cy + 0.5f) * OrthoUnitsPerPixel + pos.Y;
         from = new Vector3(wx, wy, pos.Z - near);
         to = new Vector3(wx, wy, pos.Z - near - far);
         return true;

@@ -119,7 +119,7 @@ public static unsafe partial class HitTestCheck
         // pixel (px, py) must be hit by a pick at (px, py) -- and only by that one.
         foreach ((int px, int py, DbId want, string name) in Fixture.GuiTargets)
         {
-            if (!DbCamera.PickSegment(w.Cam, px, py, 0f, 0f, Vw, Vh, 1f, out Vector3 a, out Vector3 b))
+            if (!DbCamera.PickSegment(w.Cam, px, py, 0f, 0f, Vw, Vh, default, out Vector3 a, out Vector3 b))
             { ok = Fail(log, $"the ortho pick refused the pixel ({px},{py}) inside the panel's rect"); continue; }
             // The segment must look down world -Z and move with the pixel: the perspective arm's bug was
             // precisely that it did neither.
@@ -134,22 +134,22 @@ public static unsafe partial class HitTestCheck
         ok &= TextRow(log, w, Vw, Vh);
 
         // Two different pixels must give two different segments -- the one-line statement of the bug.
-        DbCamera.PickSegment(w.Cam, 100, 100, 0f, 0f, Vw, Vh, 1f, out Vector3 p0, out _);
-        DbCamera.PickSegment(w.Cam, 700, 600, 0f, 0f, Vw, Vh, 1f, out Vector3 p1, out _);
+        DbCamera.PickSegment(w.Cam, 100, 100, 0f, 0f, Vw, Vh, default, out Vector3 p0, out _);
+        DbCamera.PickSegment(w.Cam, 700, 600, 0f, 0f, Vw, Vh, default, out Vector3 p1, out _);
         if (MathF.Abs(p0.X - p1.X) < 1e-4f || MathF.Abs(p0.Y - p1.Y) < 1e-4f)
             ok = Fail(log, "two different pixels produced the same ortho pick position (the tan(0) collapse)");
 
         // A pixel outside the camera's rect is the engine's own answer of 0, not a cast.
-        if (DbCamera.PickSegment(w.Cam, (int)Vw + 10, 10, 0f, 0f, Vw, Vh, 1f, out _, out _))
+        if (DbCamera.PickSegment(w.Cam, (int)Vw + 10, 10, 0f, 0f, Vw, Vh, default, out _, out _))
             ok = Fail(log, "a pixel to the right of the panel's rect was not refused");
-        if (DbCamera.PickSegment(w.Cam, 10, -5, 0f, 0f, Vw, Vh, 1f, out _, out _))
+        if (DbCamera.PickSegment(w.Cam, 10, -5, 0f, 0f, Vw, Vh, default, out _, out _))
             ok = Fail(log, "a pixel above the panel's rect was not refused");
 
         // ...and a PERSPECTIVE camera still takes the other arm: the segment starts at the near plane and
         // the direction changes with the pixel.
         SceneDb.CamViewAngle[w.Cam.Index] = 60f;
-        DbCamera.PickSegment(w.Cam, 100, 100, 0f, 0f, Vw, Vh, 1f, out Vector3 e0, out Vector3 f0);
-        DbCamera.PickSegment(w.Cam, 700, 600, 0f, 0f, Vw, Vh, 1f, out _, out Vector3 f1);
+        DbCamera.PickSegment(w.Cam, 100, 100, 0f, 0f, Vw, Vh, default, out Vector3 e0, out Vector3 f0);
+        DbCamera.PickSegment(w.Cam, 700, 600, 0f, 0f, Vw, Vh, default, out _, out Vector3 f1);
         if ((f0 - e0).Length() < 1e-3f || (f0 - f1).Length() < 1e-3f)
             ok = Fail(log, "the perspective arm stopped varying with the pixel");
 
@@ -175,7 +175,7 @@ public static unsafe partial class HitTestCheck
         SceneDb.ObjWorld[ri] = Matrix4x4.CreateTranslation(SceneDb.ObjPos[ri]);
         HitBounds.Refresh(ri);
 
-        DbCamera.PickSegment(w.Cam, rx, ry, 0f, 0f, vw, vh, 1f, out Vector3 a, out Vector3 b);
+        DbCamera.PickSegment(w.Cam, rx, ry, 0f, 0f, vw, vh, default, out Vector3 a, out Vector3 b);
         var q = HitQuery.Pick(w.Scene, a, b);
         q.SurfaceMask = HitQuery.All;
         if (HitTest.Cast(q, out HitResult r) && r.Obj == row)
@@ -190,7 +190,7 @@ public static unsafe partial class HitTestCheck
 
         // ...and ONLY on its own quad: two rows a row-height apart must not answer for each other, which is
         // exactly what the user saw (a click selecting a different row).
-        if (DbCamera.PickSegment(w.Cam, rx, ry - rh * 2, 0f, 0f, vw, vh, 1f, out a, out b))
+        if (DbCamera.PickSegment(w.Cam, rx, ry - rh * 2, 0f, 0f, vw, vh, default, out a, out b))
         {
             var above = HitQuery.Pick(w.Scene, a, b);
             above.SurfaceMask = HitQuery.All;
