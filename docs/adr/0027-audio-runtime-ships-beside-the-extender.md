@@ -22,7 +22,7 @@ drag-and-drop, not necessarily one file.
   the game's `soft_oal.dll`) and `phonon.dll` beside `version.dll`. `version.dll`'s attach points
   `nwmain.exe`'s `OpenAL32.dll` imports at `cx_openal.dll` before the game's first instruction --
   the game's files are never touched, so Steam's verify has nothing to undo.
-- `tools/deps.py` fetches every archive by URL and sha256; `LICENSES.txt` carries the LGPL, the
+- `tools/deps.py` fetches every archive by the URL and sha256 pinned in `tools/deps.json`; `LICENSES.txt` carries the LGPL, the
   Apache licence and Steam Audio's third-party notices. Relinking obligations do not arise: the
   LGPL library is a replaceable file.
 - The native mixer (`native/cxaudio.cpp`) resolves both at run time, so a missing or wrong library
@@ -32,5 +32,5 @@ drag-and-drop, not necessarily one file.
 
 - The Windows install is four files, not one: still one unpack into `bin/win32`.
 - The archives grow by ~95 MB (Steam Audio's binaries are ~40-53 MB per OS).
-- Updating either library is a `tools/deps.py` pin change plus a listen; nothing else names a version
+- Updating either library is a `tools/deps.json` pin change plus a listen; nothing else names a version
   except the device check in `SoundService`, which expects `ALSOFT 1.25.2`.

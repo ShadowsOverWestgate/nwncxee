@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""CX-57: the pinned audio runtime, fetched once and checked by sha256.
+"""CX-57: the pinned audio runtime, fetched once and checked by sha256. The pins are in tools/deps.json, which
+flake.nix reads too.
 
     tools/deps.py <name> <dest>
 
@@ -12,19 +13,10 @@ The archives cache in $CX_DEPS_CACHE (default ~/.cache/cx-deps), so a clean buil
   steamaudio   Steam Audio 4.8.1 (Apache-2.0): libphonon.so / phonon.dll only -- the headers are vendored in
                third_party/steamaudio.
 """
-import hashlib, os, pathlib, shutil, sys, tarfile, urllib.request, zipfile
+import hashlib, json, os, pathlib, shutil, sys, tarfile, urllib.request, zipfile
 
-DEPS = {
-    'openal-src': ('https://github.com/kcat/openal-soft/archive/refs/tags/1.25.2.tar.gz',
-                   'fb27e5839aa11f0e5b9d33756965291fad5d6909ab928ea1f796f4a1a6877894', 'openal-soft-1.25.2.tar.gz',
-                   None),
-    'openal-win': ('https://github.com/kcat/openal-soft/releases/download/1.25.2/openal-soft-1.25.2-bin.zip',
-                   '67a0c4b800bd860c93c04f38caf8cbe4875f9c84700ac430efc451f70e265434', 'openal-soft-1.25.2-bin.zip',
-                   ('openal-soft-1.25.2-bin/bin/Win64/soft_oal.dll', 'openal-soft-1.25.2-bin/COPYING')),
-    'steamaudio': ('https://github.com/ValveSoftware/steam-audio/releases/download/v4.8.1/steamaudio_4.8.1.zip',
-                   '4a0aa5ec1176f38f0b0993a37c2259d9e86f27e22d5e24f83ec4c3cb9a1d5449', 'steamaudio_4.8.1.zip',
-                   ('steamaudio/lib/linux-x64/libphonon.so', 'steamaudio/lib/windows-x64/phonon.dll')),
-}
+DEPS = {name: (d['url'], d['sha256'], d['file'], d.get('members'))
+        for name, d in json.loads((pathlib.Path(__file__).parent / 'deps.json').read_text()).items()}
 
 
 def sha256(path):
@@ -42,7 +34,7 @@ def fetch(name):
     path = cache / file
     if not path.exists() or sha256(path) != want:
         print(f'>> fetching {url}', file=sys.stderr)
-        tmp = path.with_suffix('.part')
+        tmp = path.with_suffix(f'.{os.getpid()}.part')  # two CI jobs can share one cache
         with urllib.request.urlopen(url) as r, open(tmp, 'wb') as f:
             shutil.copyfileobj(r, f)
         got = sha256(tmp)

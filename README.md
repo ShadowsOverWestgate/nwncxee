@@ -13,9 +13,14 @@ navigation, and how to add a service.
 ## Build & run
 
 ```sh
-./build.sh      # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
+nix develop     # the pinned toolchain from flake.nix, the same one CI uses
+./build.sh      # needs: .NET 10 SDK, clang 21, gcc 15, ld.lld, zlib, cmake, pkg-config,
+                #        and the PipeWire, PulseAudio and ALSA headers for OpenAL Soft
 ./run-demo.sh   # boots the framework in /usr/bin/env -- no game needed
 ```
+
+Without Nix, install the tools in the `needs:` line yourself. `flake.nix` has the full
+list, and its asserts say which major version of each one the build expects.
 
 `build.sh` stages a ready-to-run `cx-linux-x64/` folder: the launcher
 plus the three `.so` files. `run-demo.sh` shows the host boot, discover

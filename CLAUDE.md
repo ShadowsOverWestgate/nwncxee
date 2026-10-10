@@ -30,7 +30,8 @@ Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root (created lazily
 
 ## Build & run
 
-    ./build.sh          # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
+    nix develop         # flake.nix: the pinned toolchain (.#ci is what CI builds in, .#gates the gate jobs)
+    ./build.sh          # needs: .NET 10 SDK, clang 21, gcc 15, ld.lld, zlib, cmake, pkg-config, audio headers
     ./run-demo.sh       # boots the framework in a stub host + proves the rot refusal (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
     tools/live/run-live.sh  # boots the REAL client headless into a playable area and grades the session
@@ -60,7 +61,7 @@ Windows leg (#48), cross-built on Linux -- no Windows box involved (dev loop onl
     ./build-win-native.sh  # same, natively under MSVC + Git Bash: what the release workflow ships (#504)
     ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
 
-Needs clang-cl/lld-link/llvm-lib and a Windows 10 SDK + MSVC lib tree (default: the mounted
+Needs clang-cl/lld-link/llvm-lib (all in `nix develop`) and a Windows 10 SDK + MSVC lib tree (default: the mounted
 Windows partition; `SDK`/`MSVC` override). Alloy renders on Windows too (#456); its Windows
 refusal, if any, is `EngineLayout.Require` -- an unresolved offset row anywhere stands it down.
 

@@ -73,7 +73,7 @@ is left alone.
 
 ## The pinned OpenAL
 
-OpenAL Soft 1.25.2 on both OSes (`tools/deps.py`). Linux: `cx-launch` preloads `libopenal.so.1`, which
+OpenAL Soft 1.25.2 on both OSes (`tools/deps.json`). Linux: `cx-launch` preloads `libopenal.so.1`, which
 satisfies the client's `NEEDED`. Windows: `version.dll`'s attach redirects `nwmain.exe`'s `OpenAL32.dll`
 imports to `cx_openal.dll` (`native/bootstrap_win.c`). `SoundService` checks the engine really is bound to it
 and says so on screen if not (CX-45). The first bus logs the device:
