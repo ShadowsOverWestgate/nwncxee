@@ -12,10 +12,41 @@ namespace CX.Alloy;
 /// layered queue's flush, and the teardown every context loss runs.</summary>
 public sealed unsafe partial class CasterPass
 {
-    // --- 4.6-side objects (touched only inside the bracket)
-    private static uint _prog, _fbo, _depthTex;
-    private static int _locVp = -1;
+    /// <summary>Every name the 4.6 context owns, in one object: <see cref="ContextLost"/> replaces it, so no
+    /// program, target or location from a dead context survives. The disarm latches are not here: a disarm
+    /// is for the session.</summary>
+    private sealed class CasterGlState
+    {
+        public uint Prog, Fbo, DepthTex;
+        public int LocVp = -1;
+        public uint ProgLayer, ProgLayerMask;
+        public int LocLayerMaskTex = -1, LocLayerMaskCut = -1, LocLayerMaskDither = -1, LocLayerMaskEnv = -1;
+        public bool LayerProgFailed;
+        /// <summary>The masked (alpha-tested) depth program and its uniforms. Zero = it could not build, and
+        /// masked casters then stay out of every bake.</summary>
+        public uint ProgMask;
+        public int LocMaskVp = -1, LocMaskTex = -1, LocMaskCut = -1, LocMaskDither = -1, LocMaskEnv = -1;
+        /// <summary><c>uAlphaMip</c> on the four masked caster programs (<c>alloy.cutmip</c>).</summary>
+        public int LocMaskMip = -1, LocMaskHMip = -1, LocLayerMaskMip = -1, LocLayerMaskHMip = -1;
+        /// <summary>The masked depth program that samples the mask through the record's bindless handle
+        /// (<c>uTexH</c> slot 0) instead of a bound unit, so masked batches do not split per texture. Built only
+        /// once the renderer's bindless path is armed; <c>/shadow maskh 0</c> is the A/B.</summary>
+        public uint ProgMaskH, ProgLayerMaskH;
+        public int LocMaskHVp = -1, LocMaskHCut = -1, LocLayerMaskHCut = -1, LocMaskHDither = -1, LocLayerMaskHDither = -1, LocMaskHEnv = -1, LocLayerMaskHEnv = -1;
+        public bool MaskHFailed;
+        /// <summary>The published depth arrays (0 = none yet): sun cascades, sun movers, static cubes, mover pool.</summary>
+        public uint CascadeTex, SunDynTex, CubeTex, CubeDynTex;
+        /// <summary>The target textures <see cref="BeginTarget"/> has verified complete, ring-replaced when
+        /// full: the sun array, the static cubes and the dyn pool interleave per view, so one latch would
+        /// re-check nearly every attach.</summary>
+        public readonly uint[] FboCheckedRing = new uint[4];
+        public int FboCheckedAt;
+        /// <summary>GPU time of the whole shadow bracket; the CPU stopwatch only sees submission.</summary>
+        public GpuQuery QShadow;
+        public bool QShadowOn;
+    }
 
+    private static CasterGlState _gl = new();
     private static bool _glFailed, _progFailed;
 
     // --- #307: the layered bake. With #302/#303 a view is a dispatch and a draw; this collapses the loop:
@@ -31,9 +62,6 @@ public sealed unsafe partial class CasterPass
     private static bool _layerDial => Shadows.Layered.V;
     /// <summary>0 = not yet probed, 1 = the extension is present, -1 = absent (said once; per-view path).</summary>
     private static int _layerProbe;
-    private static uint _progLayer, _progLayerMask;
-    private static int _locLayerMaskTex = -1, _locLayerMaskCut = -1, _locLayerMaskDither = -1, _locLayerMaskEnv = -1;
-    private static bool _layerProgFailed;
     /// <summary>The frame's queued stale views. 1024 covers the ceiling population (4 + 4 cascades and
     /// 64 x 6 x 2 cube faces); an overflow renders inline through the per-view path rather than dropping.</summary>
     private const int MaxBakeViews = 1024;
@@ -57,8 +85,11 @@ public sealed unsafe partial class CasterPass
     private static long _layerFlushFails;
 
     /// <summary>Is the layered path taking this frame's views?</summary>
-    private static bool LayeredActive => _layerDial && _layerProbe > 0 && _progLayer != 0;
+    private static bool LayeredActive => _layerDial && _layerProbe > 0 && _gl.ProgLayer != 0;
     private static readonly StandDown _down = new("CasterPass DISARMED");
+
+    /// <summary>Context loss: every GL name goes at once. Run on the loss edge, not each frame after it.</summary>
+    private static void ContextLost() => _gl = new CasterGlState();
 
     private static void Release(string why)
     {
@@ -102,7 +133,7 @@ public sealed unsafe partial class CasterPass
     private static bool EnsureCommon()
     {
         if (_glFailed || _progFailed) return false;
-        if (_prog == 0)
+        if (_gl.Prog == 0)
         {
             if (Gl.MultiDrawElementsIndirect == null || Gl.BindBufferBase == null
                 || Gl.GenFramebuffers == null || Gl.CopyImageSubData == null)
@@ -122,21 +153,21 @@ public sealed unsafe partial class CasterPass
                 p = GlProgram.Graphics(CastVs, CastFs, _log, "CasterPass depth program (embedded)", content: false);
             }
             if (p == 0) { _progFailed = true; Disarm("the caster depth program failed to build"); return false; }
-            _prog = p;
-            _locVp = GlProgram.Loc(p, "uVP");
+            _gl.Prog = p;
+            _gl.LocVp = GlProgram.Loc(p, "uVP");
             // The cutout stage is optional in the sense that everything else still bakes without it: a
             // failure leaves masked casters out of the shadow maps entirely (see the collect), which is a
             // missing leaf shadow rather than the solid quad that made this necessary.
-            _progMask = GlProgram.Graphics(CastMaskVs, CastMaskFs, _log, "CasterPass masked depth program");
-            if (_progMask != 0)
+            _gl.ProgMask = GlProgram.Graphics(CastMaskVs, CastMaskFs, _log, "CasterPass masked depth program");
+            if (_gl.ProgMask != 0)
             {
-                _locMaskVp = GlProgram.Loc(_progMask, "uVP");
-                _locMaskTex = GlProgram.Loc(_progMask, "uTex");
-                _locMaskCut = GlProgram.Loc(_progMask, "uAlphaCut"); _locMaskDither = GlProgram.Loc(_progMask, "uDither"); _locMaskEnv = GlProgram.Loc(_progMask, "uEnvAlpha"); _locMaskMip = GlProgram.Loc(_progMask, "uAlphaMip");
+                _gl.LocMaskVp = GlProgram.Loc(_gl.ProgMask, "uVP");
+                _gl.LocMaskTex = GlProgram.Loc(_gl.ProgMask, "uTex");
+                _gl.LocMaskCut = GlProgram.Loc(_gl.ProgMask, "uAlphaCut"); _gl.LocMaskDither = GlProgram.Loc(_gl.ProgMask, "uDither"); _gl.LocMaskEnv = GlProgram.Loc(_gl.ProgMask, "uEnvAlpha"); _gl.LocMaskMip = GlProgram.Loc(_gl.ProgMask, "uAlphaMip");
             }
             else _log?.Info("CasterPass: the masked depth program failed to build -- cutout casters cast no " +
                             "shadow at all this session (they would otherwise cast their whole quad)");
-            uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
+            uint f; Gl.GenFramebuffers(1, &f); _gl.Fbo = f;
         }
         return true;
     }
@@ -144,18 +175,18 @@ public sealed unsafe partial class CasterPass
     private static bool EnsureSun()
     {
         if (!EnsureCommon()) return false;
-        if (_depthTex == 0)
+        if (_gl.DepthTex == 0)
         {
-            _depthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades + CoverLayers);   // #617: the cover map rides the last layer
-            if (_depthTex == 0) return false;   // DepthArray already disarmed by name
+            _gl.DepthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades + CoverLayers);   // #617: the cover map rides the last layer
+            if (_gl.DepthTex == 0) return false;   // DepthArray already disarmed by name
             Array.Clear(_sunBaked);   // #282: fresh storage holds no bake, whatever the keys say
             _coverBaked = false;
         }
         // #306: the sun's dynamic half, allocated whenever configured (the /shadow split dial is live).
-        if (_sunSplitCfg && SunDynTex == 0)
+        if (_sunSplitCfg && _gl.SunDynTex == 0)
         {
-            SunDynTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
-            if (SunDynTex == 0) return false;   // DepthArray already disarmed by name
+            _gl.SunDynTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
+            if (_gl.SunDynTex == 0) return false;   // DepthArray already disarmed by name
         }
         return true;
     }
@@ -163,10 +194,10 @@ public sealed unsafe partial class CasterPass
     private static bool EnsureCubes()
     {
         if (!EnsureCommon()) return false;
-        if (CubeTex == 0)
+        if (_gl.CubeTex == 0)
         {
-            CubeTex = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeSize, _cubeLights * CubeFaces);
-            if (CubeTex == 0) return false;   // DepthArray already disarmed by name
+            _gl.CubeTex = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeSize, _cubeLights * CubeFaces);
+            if (_gl.CubeTex == 0) return false;   // DepthArray already disarmed by name
             Array.Clear(_cubeBaked);   // #241: fresh storage holds no bake, whatever the keys say
             // Global state, not a texture parameter: filtering blends across face borders, which is what
             // makes the receiver's hardware-PCF fetch legitimate right up to a face edge. The interim cubes
@@ -175,10 +206,10 @@ public sealed unsafe partial class CasterPass
         }
         // #305: the dynamic pool, allocated whenever it is configured (the /shadow split dial is live, so
         // the array must exist even on a frame the dial is off). A refused allocation disarms by name.
-        if (_cubeDynPages > 0 && CubeDynTex == 0)
+        if (_cubeDynPages > 0 && _gl.CubeDynTex == 0)
         {
-            CubeDynTex = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeDynSize, _cubeDynPages * CubeFaces);
-            if (CubeDynTex == 0) return false;   // DepthArray already disarmed by name
+            _gl.CubeDynTex = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeDynSize, _cubeDynPages * CubeFaces);
+            if (_gl.CubeDynTex == 0) return false;   // DepthArray already disarmed by name
         }
         return true;
     }
@@ -188,7 +219,7 @@ public sealed unsafe partial class CasterPass
     /// path and says so once. Nothing disarms here -- the fallback IS the shipping path.</summary>
     private static void EnsureLayered()
     {
-        if (!_layerDial || _layerProgFailed) return;
+        if (!_layerDial || _gl.LayerProgFailed) return;
         if (_layerProbe == 0)
         {
             _layerProbe = Gl.FramebufferTexture != null
@@ -197,10 +228,10 @@ public sealed unsafe partial class CasterPass
                 _log?.Info("CasterPass: ARB_shader_viewport_layer_array is not in this context -- the " +
                            "layered bake is unavailable, every view submits on the per-view path");
         }
-        if (_layerProbe < 0 || _progLayer != 0) return;
+        if (_layerProbe < 0 || _gl.ProgLayer != 0) return;
         if (!CasterGather.EnsureLayer())
         {
-            _layerProgFailed = true;
+            _gl.LayerProgFailed = true;
             _log?.Info("CasterPass: the layered gather dispatch failed to build -- per-view path");
             return;
         }
@@ -212,13 +243,13 @@ public sealed unsafe partial class CasterPass
         {
             if (p != 0) Gl.DeleteProgram(p);
             if (pm != 0) Gl.DeleteProgram(pm);
-            _layerProgFailed = true;
+            _gl.LayerProgFailed = true;
             _log?.Info("CasterPass: a layered depth program failed to build -- per-view path");
             return;
         }
-        _progLayer = p; _progLayerMask = pm;
-        _locLayerMaskTex = GlProgram.Loc(pm, "uTex");
-        _locLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut"); _locLayerMaskDither = GlProgram.Loc(pm, "uDither"); _locLayerMaskEnv = GlProgram.Loc(pm, "uEnvAlpha"); _locLayerMaskMip = GlProgram.Loc(pm, "uAlphaMip");
+        _gl.ProgLayer = p; _gl.ProgLayerMask = pm;
+        _gl.LocLayerMaskTex = GlProgram.Loc(pm, "uTex");
+        _gl.LocLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut"); _gl.LocLayerMaskDither = GlProgram.Loc(pm, "uDither"); _gl.LocLayerMaskEnv = GlProgram.Loc(pm, "uEnvAlpha"); _gl.LocLayerMaskMip = GlProgram.Loc(pm, "uAlphaMip");
         _log?.Info("CasterPass: layered bake armed -- every stale view in one command buffer per target, " +
                    "gl_Layer from the view table (/shadow layered 0 is the per-view A/B)");
     }
@@ -324,16 +355,16 @@ public sealed unsafe partial class CasterPass
             if (mode != boundMode)
             {
                 boundMode = mode;
-                Gl.UseProgram(mode == 0 ? _progLayer : mode == 1 ? _progLayerMask : _progLayerMaskH);
-                if (mode == 1) Gl.Uniform1i(_locLayerMaskTex, 0);
+                Gl.UseProgram(mode == 0 ? _gl.ProgLayer : mode == 1 ? _gl.ProgLayerMask : _gl.ProgLayerMaskH);
+                if (mode == 1) Gl.Uniform1i(_gl.LocLayerMaskTex, 0);
                 boundCut = -1f;
             }
             if (mode != 0 && _gCut[g] != boundCut)
             {
-                boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locLayerMaskCut : _locLayerMaskHCut, boundCut);
-                Gl.Uniform1f(mode == 1 ? _locLayerMaskMip : _locLayerMaskHMip, Renderer.CutMip.V);
-                Gl.Uniform1i(mode == 1 ? _locLayerMaskDither : _locLayerMaskHDither, _maskDither);
-                Gl.Uniform1i(mode == 1 ? _locLayerMaskEnv : _locLayerMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
+                boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _gl.LocLayerMaskCut : _gl.LocLayerMaskHCut, boundCut);
+                Gl.Uniform1f(mode == 1 ? _gl.LocLayerMaskMip : _gl.LocLayerMaskHMip, Renderer.CutMip.V);
+                Gl.Uniform1i(mode == 1 ? _gl.LocLayerMaskDither : _gl.LocLayerMaskHDither, _maskDither);
+                Gl.Uniform1i(mode == 1 ? _gl.LocLayerMaskEnv : _gl.LocLayerMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
             }
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
@@ -409,15 +440,10 @@ public sealed unsafe partial class CasterPass
         return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set, receiver);
     }
 
-    /// <summary>The target textures <see cref="BeginTarget"/> has verified complete -- the sun array, the
-    /// static cubes and the dyn pool interleave per view, so one latch would re-check nearly every attach.
-    /// A context loss recreates every name; a stale entry costs one extra check. Ring-replaced when full.</summary>
-    private static readonly uint[] _fboChecked = new uint[4];
-    private static int _fboCheckedAt;
     private static bool FboChecked(uint tex)
     {
-        for (int i = 0; i < _fboChecked.Length; i++) if (_fboChecked[i] == tex) return true;
-        _fboChecked[_fboCheckedAt] = tex; _fboCheckedAt = (_fboCheckedAt + 1) % _fboChecked.Length;
+        for (int i = 0; i < _gl.FboCheckedRing.Length; i++) if (_gl.FboCheckedRing[i] == tex) return true;
+        _gl.FboCheckedRing[_gl.FboCheckedAt] = tex; _gl.FboCheckedAt = (_gl.FboCheckedAt + 1) % _gl.FboCheckedRing.Length;
         return false;
     }
 
@@ -437,7 +463,7 @@ public sealed unsafe partial class CasterPass
         // A context loss recreates the record buffer at the next colour build; a bracket that runs first
         // would bind name 0 and the depth stages would read an unbound SSBO. Nothing to bake against yet.
         if (AlloyRenderer.DrawRecordBuf == 0) return false;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, layer);
         Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
         // Completeness is a property of the attachment's texture, not of the layer: checked on the first
@@ -448,7 +474,7 @@ public sealed unsafe partial class CasterPass
         { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); Disarm("the caster depth framebuffer is incomplete"); return false; }
         Gl.Viewport(0, 0, size, size);
         // clamp only the directional maps: a point cube's near plane IS the self-shadow skip the lightmap bake clips at
-        if (tex == _depthTex || tex == SunDynTex) Gl.Enable(Gl.DEPTH_CLAMP); else Gl.Disable(Gl.DEPTH_CLAMP);
+        if (tex == _gl.DepthTex || tex == _gl.SunDynTex) Gl.Enable(Gl.DEPTH_CLAMP); else Gl.Disable(Gl.DEPTH_CLAMP);
         // #302: the depth stages read ALLOY's per-draw records and ALLOY's bone block, at Alloy's own binding
         // points. Re-bound per view (per flush target on the layered path) rather than once per frame because
         // the colour pass is entitled to rebind both between frames, and a bake reading a buffer that has

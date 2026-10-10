@@ -502,21 +502,6 @@ internal static partial class DrawRecipe
     /// <c>SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ZERO, DST_COLOR, SRC_COLOR, ONE_MINUS_DST_ALPHA</c>.</summary>
     internal const byte BlendSrcAlpha = 0, BlendInvSrcAlpha = 1, BlendOne = 2;
 
-    /// <summary>Forget every recipe (a session edge: the model cache dropped everything). The arena ranges go
-    /// back through <see cref="MeshArena.Release"/> so nothing leaks a range it no longer names.</summary>
-    internal static void Reset()
-    {
-        for (int r = 0; r < _n; r++)
-        {
-            if (_range[r] >= 0) MeshArena.Release(_range[r]);
-            _model[r] = null; _mesh[r] = null;
-            for (int s = 0; s < TexSlots; s++) _tex[r * TexSlots + s] = "";
-        }
-        _byNode.Clear();
-        _n = 0; Spilled = 0; TwinRefused = 0; Retired = 0; _rangeWaitN = 0; _texPending = 0;
-        Array.Clear(_rangeQueued);
-        Array.Clear(_texWait);
-    }
 }
 
 /// <summary>What a <see cref="DrawRecipe"/> says about its node, in place of the engine vtable probes and

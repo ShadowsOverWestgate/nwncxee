@@ -67,18 +67,6 @@ public static class HitGrid
         _entHigh = 0; _entFree = -1;
     }
 
-    /// <summary>Forget everything (a scene teardown, a mode change, a self-check).</summary>
-    public static void Clear()
-    {
-        Array.Fill(_head, -1);
-        Array.Fill(_objEnt, -1);
-        Array.Clear(_objOversize);
-        Array.Clear(_stamp);
-        _stampNow = 0;
-        _entHigh = 0; _entFree = -1; _oversizeN = 0;
-        Filed = 0; Entries = 0; Refiles = 0; RefilesSkipped = 0; Truncated = 0; StarvedObjects = 0;
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int Cell(float v) => (int)MathF.Floor(v / CellSize);
 

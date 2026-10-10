@@ -157,7 +157,7 @@ public static partial class TileBuild
             // lights do not hang off an object's part tree the way a gob's do.
             int lp = PartOfNode(obj, pl.Node);
             SceneDb.LitPart[k] = lp;
-            if (lp >= 0) { DbInputs.RegisterTileLight(lp, k); _dbInputsHeld++; }
+            if (lp >= 0) DbInputs.RegisterTileLight(lp, k);
             else _noPartForLight++;
             SceneDb.LitTile[k] = tile;
             SceneDb.LitPos[k] = Vector3.Transform(pl.Pos, place);
@@ -184,7 +184,7 @@ public static partial class TileBuild
     /// <summary>One tile's light slots while they are being filled: the game thread is the only writer, so a
     /// single buffer serves and the fill allocates nothing.</summary>
     private static readonly int[] _lightScratch = new int[SceneDb.TileLightStride];
-    private static int _dbInputsHeld, _noPartForLight;
+    private static int _noPartForLight;
 
     /// <summary>Free every light row <paramref name="obj"/> owns (a tile's through its slots, a static's
     /// through <see cref="_objLights"/>), symmetrically with <see cref="DbInputs"/>.</summary>
@@ -209,7 +209,7 @@ public static partial class TileBuild
     {
         if (k < 0 || !SceneDb.Lights.LiveAt(k)) return;
         int lp = SceneDb.LitPart[k];
-        if (lp >= 0) { DbInputs.PartDestroyed(lp); _dbInputsHeld--; }
+        if (lp >= 0) DbInputs.PartDestroyed(lp);
         SceneDb.LitPart[k] = -1;
         SceneDb.LitTile[k] = default;
         SceneDb.Lights.Free(SceneDb.Lights.IdAt(k));

@@ -71,6 +71,7 @@ public static unsafe partial class DbAnim
             _dynProduced++;
             DynPublish(part);
             SceneDb.TouchPart(part, Dirty.Anim);
+            AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, Dangly.Still.V);
             return;
         }
         // A zero previous rotation means the pose was never written, and it would collapse every vertex onto
@@ -78,7 +79,7 @@ public static unsafe partial class DbAnim
         bool seeded = prot.X == 0f && prot.Y == 0f && prot.Z == 0f && prot.W == 0f;
         if (seeded) { ppos = wpos; prot = wrot; }
 
-        float t = _clock;
+        float t = Clock();
         // This instance's own phase and rate, from the part INDEX: every instance of one model shares every
         // authored number, and a position hash would jump every frame on a walking character's cloak.
         ulong hash = Mix((ulong)(uint)part * 0x9e3779b97f4a7c15UL);
@@ -108,6 +109,9 @@ public static unsafe partial class DbAnim
         float h = sdt / steps;
         float disp = dn.Displacement, stiff = StiffnessGain * dn.Tightness, damp = DampingGain * dn.Period;
 
+        // ponytail: the snapshot stage is game-thread state the motion sweep reads; under alloy.renderthread it
+        // needs the arena's publish handoff (MeshArena.WriteDynamic) before that sweep may run off-thread.
+        AlloyRenderer.NoteDanglyPrev(part, dst, n);
         float maxSq = 0f;
         fixed (Vector3* rest = mesh.Positions)
         fixed (float* cons = dn.Constraints)
@@ -171,6 +175,7 @@ public static unsafe partial class DbAnim
 
         _prevPos[part] = wpos; _prevRot[part] = wrot;
         _danglyParts++; _danglyVerts += n;
+        AlloyRenderer.NoteDanglyMoved(part, MathF.Sqrt(maxSq), Dangly.Still.V);
         if (maxSq <= 0f && !seeded) return;
         _dynGen[part]++;
         _dynProduced++;
@@ -178,8 +183,12 @@ public static unsafe partial class DbAnim
         SceneDb.TouchPart(part, Dirty.Anim);
     }
 
-    /// <summary>The solve clock, advanced once per scene animate so every part of a frame shares one time.</summary>
-    private static float _clock;
+    /// <summary>The turbulence and breeze clock: wall seconds, wrapped at 1024 to keep float precision. Not a
+    /// sum of animate dt -- <see cref="Animate"/> runs once per SCENE, several a frame, and a sum ran the
+    /// flutter that many times too fast for the spring to follow.</summary>
+    private static float Clock()
+        => (float)(System.Diagnostics.Stopwatch.GetTimestamp() % (System.Diagnostics.Stopwatch.Frequency * 1024L)
+                   / (double)System.Diagnostics.Stopwatch.Frequency);
 
     /// <summary>End of the scene walk: nothing is queued in DB mode (the solve is inline, on the part walk, as
     /// the engine's is), so this is where the frame's clock moves and the audit speaks.</summary>

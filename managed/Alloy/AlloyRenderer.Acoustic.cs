@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using CX.Alloy.Db;
-using CX.Graphics;
 
 namespace CX.Alloy;
 
@@ -17,15 +16,11 @@ public sealed unsafe partial class AlloyRenderer
     {
         int n = 0;
         for (int i = 0; i < _ownCount; i++)
-            if (DbAcoustic(i) || (EngineSlot(i) && IsAcoustic(i))) n++;
+            if (DbAcoustic(i)) n++;
         return n;
     }
 
-    private static bool IsAcoustic(int i)
-        => StaticAtEnroll(_oCls[i], _oGob[i], _oTileGob[i], _oMx[i], _vSkin[_oVao[i]], _oDangly[i], 0) == 0
-           && _primTable != null && _primTable[_oPrim[i]] == Gl.TRIANGLES;
-
-    /// <summary>The same question of a database slot. Every DB draw is TRIANGLES, so all that is left is "does
+    /// <summary>Is slot <paramref name="i"/> acoustic geometry? Every DB draw is TRIANGLES, so all that is left is "does
     /// this part hold still": a tile part always does, an object part when its record says Static. Reads no
     /// engine scene memory.</summary>
     private static bool DbAcoustic(int i)
@@ -38,54 +33,18 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>Every static triangle of at least <paramref name="minArea"/> square metres, appended as xyz vertex
-    /// triples and index triples. A (VDO slot, item) is taken once however many slots draw it -- a static part sits
-    /// in world space, so a second slot on the same range is the same triangles. Cold (once per area settle), render
-    /// thread. Returns the triangle count.</summary>
+    /// triples and index triples. Cold (once per area settle), render thread. Returns the triangle count.</summary>
     internal static int GatherStatic(List<float> verts, List<int> tris, float minArea)
     {
-        var seen = new HashSet<long>();
         int count0 = tris.Count;
         for (int i = 0; i < _ownCount; i++)
-        {
-            if (DbAcoustic(i)) { DbGatherOne(i, verts, tris, minArea); continue; }
-            if (!EngineSlot(i) || !IsAcoustic(i)) continue;
-            int s = _oVao[i], item = _oItem[i];
-            if (!seen.Add(((long)s << 32) | (uint)item)) continue;
-            var vdo = new VdoRef(_vVdo[s]);
-            if (vdo.IsNull) continue;
-            long elem = vdo.ElemItems, vert = vdo.VertItems;
-            if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) continue;
-            int count = *(int*)(elem + item * 8 + 4);
-            long first = (uint)*(int*)(elem + item * 8);
-            int baseVertex = *(int*)(vert + item * 8);
-            byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
-            byte* posHost = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
-            ref readonly VertexStream pos = ref _vPos[s];
-            if (elemHost == null || posHost == null || count < 3 || pos.Size < 3) continue;
-            ushort* idx = (ushort*)(elemHost + first * 2);
-            int lo = int.MaxValue, hi = -1;
-            for (int k = 0; k < count - count % 3; k++) { lo = Math.Min(lo, idx[k]); hi = Math.Max(hi, idx[k]); }
-            if (hi < lo) continue;
-            int at = verts.Count / 3;
-            for (int v = lo; v <= hi; v++)
-            {
-                float* p = (float*)(posHost + pos.Off + (long)(baseVertex + v) * pos.Stride);
-                verts.Add(p[0]); verts.Add(p[1]); verts.Add(p[2]);
-            }
-            for (int k = 0; k + 2 < count; k += 3)
-            {
-                int a = idx[k], b = idx[k + 1], c = idx[k + 2];
-                if (a == b || b == c || a == c || TriArea(verts, at + a - lo, at + b - lo, at + c - lo) < minArea) continue;
-                tris.Add(at + a - lo); tris.Add(at + b - lo); tris.Add(at + c - lo);
-            }
-        }
+            if (DbAcoustic(i)) DbGatherOne(i, verts, tris, minArea);
         return (tris.Count - count0) / 3;
     }
 
     /// <summary>One static database part's triangles, worldized. The arena holds MODEL-space geometry (that is
-    /// what lets one range serve every instance), so unlike the engine path -- where a static part's vertices
-    /// are already world space under an identity matrix -- each part is transformed by its own world matrix
-    /// here. No (range, item) dedup for the same reason: two parts on one range are two different walls.</summary>
+    /// what lets one range serve every instance), so each part is transformed by its own world matrix here. No
+    /// range dedup for the same reason: two parts on one range are two different walls.</summary>
     private static void DbGatherOne(int i, List<float> verts, List<int> tris, float minArea)
     {
         int at = verts.Count / 3, kept = tris.Count;

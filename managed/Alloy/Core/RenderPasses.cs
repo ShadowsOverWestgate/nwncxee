@@ -106,12 +106,11 @@ internal static class RenderPasses
         r.Register(new PassLifecycle
         {
             Name = "sky",
-            // CX-88 gave the sky GL objects again -- one program per custom fragment stage the content names
-            // -- so it owns a ContextLost edge as well as a Revoke one.
+            // The sky's GL objects are one program per custom fragment stage the content names; it captures
+            // nothing from the world, so it has no Revoke.
             Attach = SkyStage.Attach,
             SelfCheck = l => SkyStage.SelfCheck(l),
             ContextLost = SkyStage.Forget,
-            Revoke = SkyBox.Forget,
             Stats = _ => SkyBox.Stats(),
         }, log);
         r.Register(new PassLifecycle
@@ -153,6 +152,7 @@ internal static class RenderPasses
             Install = Halos.Install,
             SelfCheck = Halos.SelfCheck,
             ContextLost = Halos.ContextLost,
+            Revoke = Halos.Revoke,
             Stats = _ => Halos.Stats(),
         }, log);
         r.Register(new PassLifecycle
@@ -178,6 +178,8 @@ internal static class RenderPasses
         r.Register(new PassLifecycle
         {
             Name = "weather",
+            // No Revoke: the area's soak, map and prints reset on the engine's own per-area SetWeather/StartWeather
+            // call (Weather.Enter), and the shelter cache goes with the caster cover bake it was baked from.
             Install = Weather.Install,
             SelfCheck = Weather.SelfCheck,
             ContextLost = Weather.ContextLost,
@@ -197,6 +199,7 @@ internal static class RenderPasses
             Attach = AlloyLights.Attach,
             SelfCheck = l => AlloyLights.SelfCheck(l),
             ContextLost = AlloyLights.Forget,
+            Revoke = SceneInputs.Revoke,
         }, log);
         r.Register(new PassLifecycle
         {

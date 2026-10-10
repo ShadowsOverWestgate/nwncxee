@@ -119,6 +119,10 @@ internal static unsafe class Issue
     /// <summary>The staged draw-to-slot array's ring slice, for <see cref="BindStagedSlots"/>.</summary>
     internal static StreamRing.Range _slotRange;
 
+    /// <summary>Context loss: forget the ring slice and the handle table's capacity, both of which describe
+    /// buffers that died with it, so the next upload sizes the new buffer before writing into it.</summary>
+    internal static void ContextLost() { _slotRange = default; _texHCapGpu = 0; }
+
     /// <summary>The handle table alone. Its capacity is tracked apart from the draw records' so the bake can
     /// bring it up to date on a frame the colour bracket has not reached (or refused).</summary>
     internal static void UploadHandles(int cap, bool whole)

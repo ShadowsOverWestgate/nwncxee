@@ -56,7 +56,7 @@ public static partial class TileBuild
 
     private static int _arenaAsks, _planBuilds, _mergedNodes, _litRegistered, _swaps;
     private static int _gridW, _gridH, _ring = EngineRing;
-    private static float _heightTransition = 5f;
+    private static float _heightTransition;
     private static bool _borderWindow;
 
     /// <summary>Tile placements the DB holds, and the models they came from.</summary>

@@ -322,10 +322,25 @@ internal static unsafe class Halos
     internal static void ContextLost()
     {
         _prog = 0; _buf = 0; _vao = 0; _ssboCap = 0;
-        _occProg = 0; _visCap = 0; _visSeq = 0; _readyN = 0;
+        _occProg = 0; _visCap = 0; _visSeq = 0;
         // The fences died with the context, like the buffers: forgotten, never deleted.
         _visDev = 0; _visRead.ContextLost();
+        DropSamples();
+    }
+
+    /// <summary>Forget the probe samples in flight and the last one read back.</summary>
+    private static void DropSamples()
+    {
+        _readyN = 0;
         for (int i = 0; i < Ring; i++) _visN[i] = 0;
+    }
+
+    /// <summary>World edge: the fades and the probe samples in flight are keyed by light-table index, which the
+    /// next area re-tenants, so each goes; the new area's flares fade in as fresh engine lights do.</summary>
+    internal static void Revoke()
+    {
+        _dbFade.Clear();
+        DropSamples();
     }
 
     internal static void ResetPeriod() { _drawn = 0; _occFaded = 0; _occLate = 0; }

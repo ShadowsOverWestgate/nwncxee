@@ -18,7 +18,7 @@ public sealed unsafe partial class CasterPass
     internal static Matrix4x4 CoverVp;
     /// <summary>The sun-array layer holding the map (the cascade count).</summary>
     internal static int CoverLayer => _cascades;
-    internal static bool CoverFresh => _coverStamp == _frameSeq && CascadeTex != 0;
+    internal static bool CoverFresh => _coverStamp == _frameSeq && _gl.CascadeTex != 0;
     /// <summary>The world point the latched cover fit is centred on -- R2's wetness map dispatches over the
     /// map rect this window covers, and takes its z as the height its forward projection starts from.</summary>
     internal static Vector3 CoverCentre => _coverC;
@@ -44,7 +44,7 @@ public sealed unsafe partial class CasterPass
                                                          ShadowMath.LatchUpX(ref _coverUpX, dir));
         bool stale = _frameInvalidate || !_coverBaked || vp != _coverKeyVp;
         if (!stale) { CoverHeld++; CoverVp = vp; _coverStamp = _frameSeq; return; }
-        if (RenderView(_depthTex, _mapSize, CoverLayer, &vp, dir, c, radius, margin, point: false,
+        if (RenderView(_gl.DepthTex, _mapSize, CoverLayer, &vp, dir, c, radius, margin, point: false,
                        set: CasterGather.SetStatic))
         {
             _coverBaked = true; _coverKeyVp = vp; _coverC = c; _coverCValid = true; _coverNew = true;
@@ -68,8 +68,8 @@ public sealed unsafe partial class CasterPass
         {
             // water is no caster, so the bake never saw it: stamp the frame's water batches into the layer as
             // roofs over their beds, under the bake's own state (cull off, LEQUAL), before the filter reads it
-            Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, _depthTex, 0, CoverLayer);
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, _gl.DepthTex, 0, CoverLayer);
             Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
             Gl.Viewport(0, 0, _mapSize, _mapSize);
             new PassState(depth: true, depthWrite: true, cull: false).Apply();
@@ -77,7 +77,7 @@ public sealed unsafe partial class CasterPass
             Matrix4x4 vp = CoverVp;
             AlloyRenderer.DrawWaterOccluders(&vp);
         }
-        Weather.FilterCover(CascadeTex, CoverLayer, _mapSize, Weather.CoverRange.V);
+        Weather.FilterCover(_gl.CascadeTex, CoverLayer, _mapSize, Weather.CoverRange.V);
     }
     internal static string CoverStats() => $"cover {CoverBakes} bakes / {CoverHeld} held / {Weather.EsmBakes} filtered";
 }

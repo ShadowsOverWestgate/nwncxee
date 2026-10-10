@@ -337,8 +337,8 @@ now has its producer:
    exists to fill it. A managed string's address is not a pointer the game may hold; the interning is the
    missing half.
 2. **`HitGrid` is keyed on the raw object index with no generation.** `HitTest.Pass` guards with
-   `Objects.LiveAt(o)`, which catches a destroyed slot and not a recycled one. `HitGrid.Clear` has no
-   production caller.
+   `Objects.LiveAt(o)`, which catches a destroyed slot and not a recycled one. The grid has no wholesale
+   reset: it lives as long as the database, and the hit fold removes a slot on its `Dirty.Destroyed`.
 3. **A camera's `CAurObject` sub-record is never freed.** `FacadeParts.NewCameraObject` allocates an objects
    row; `DbCamera.Destroy` frees only the camera row and says the sub-object is seam-obj's to free, and
    `CameraSlots.Die` does not. Bounded by `MaxCameras`.

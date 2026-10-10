@@ -107,7 +107,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static MatGetTextureFn _getTexture;
 
     // --- lifecycle + diagnostics
-    private static bool _wasInModule, _loggedOnce, _noSunLogged;
+    private static readonly EdgeState _was = new();
+    private static bool _loggedOnce, _noSunLogged;
     private static int _tableGen = -1;
     private static int _frames;
     private static long _mdiCalls;
@@ -120,23 +121,18 @@ public sealed unsafe partial class CasterPass : IExtenderService
 
     /// <summary>Views rendered on the last frame -- the views the re-bake predicate found STALE, not every
     /// view the budget holds (<c>/shadow rebake 0</c> puts it back to all of them) -- plus the CPU
-    /// milliseconds the shadow slot took. Those are CPU SUBMISSION only; <see cref="_qShadow"/> measures the
+    /// milliseconds the shadow slot took. Those are CPU SUBMISSION only; <see cref="CasterGlState.QShadow"/> measures the
     /// GPU side.</summary>
     internal static int LastViews;
     internal static float LastShadowMs;
     /// <summary>The period's average bake GPU time, for the [alloy] gpu total.</summary>
-    internal static double ShadowGpuMs => _qShadow.Measured ? _qShadow.Avg / 1e6 : 0.0;
+    internal static double ShadowGpuMs => _gl.QShadow.Measured ? _gl.QShadow.Avg / 1e6 : 0.0;
     /// <summary>The same meter's running totals, for a caller taking its OWN window rather than the period's
     /// -- <c>/alloy bench</c>, whose steps are far shorter than a period line. The bake is the one GPU cost
     /// that is not a <see cref="AlloyRenderer.GpuTerm"/>, and <c>lightmap.movers</c> moves it (the pair
     /// tiles), so a bench step blind to it cannot split what that knob removes.</summary>
-    internal static ulong ShadowGpuSum => _qShadow.Sum;
-    internal static int ShadowGpuN => _qShadow.N;
-    /// <summary>GPU time of the whole shadow bracket. The CPU stopwatch only sees submission, and the live
-    /// logs had about 12 ms of frame time no CPU timer accounted for -- this query is what convicts or clears
-    /// the pass.</summary>
-    private static GpuQuery _qShadow;
-    private static bool _qShadowOn;
+    internal static ulong ShadowGpuSum => _gl.QShadow.Sum;
+    internal static int ShadowGpuN => _gl.QShadow.N;
     private static long _viewSum;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -346,7 +342,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // the dirty window, and this bracket runs after the sweep has already read _vDirty off it.
         OwnedBuffers.ClearDirty();
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        _qShadowOn = _qShadow.Begin(Gl.TIME_ELAPSED);
+        _gl.QShadowOn = _gl.QShadow.Begin(Gl.TIME_ELAPSED);
         // #286: ONE staging for the whole frame, after the bones (the skin drop is a per-frame fact) and
         // inside the bracket (the mask resolve issues Alloy's texture copy). Every view below is then a
         // uniform block and a dispatch. Stand it down first: a frame that does not stage must not leave the
@@ -394,12 +390,12 @@ public sealed unsafe partial class CasterPass : IExtenderService
             PairShadows.Stand();   // the pair tiles never landed either: no light may be read as paired this frame
             _invalidate = true; _sunScanned = false; _cubeScanned = false;
         }
-        else if (_gStaged && _fbo != 0)
+        else if (_gStaged && _gl.Fbo != 0)
         {   // #196: the combined (no-split) static layer, or the dynamic mirror -- never both, or the frozen
             // static copy and the live one compose into a double shadow
             Gl.Enable(Gl.DEPTH_CLAMP);
-            GrassField.DrawShadows(_fbo, _depthTex, _mapSize, _sunRebaked, CascadeCount);
-            GrassField.DrawShadows(_fbo, SunDynTex, _mapSize, _sunDynRebaked, CascadeCount);
+            GrassField.DrawShadows(_gl.Fbo, _gl.DepthTex, _mapSize, _sunRebaked, CascadeCount);
+            GrassField.DrawShadows(_gl.Fbo, _gl.SunDynTex, _mapSize, _sunDynRebaked, CascadeCount);
         }
         CoverFiltered();
         Array.Clear(_sunRebaked); Array.Clear(_sunDynRebaked);
@@ -410,7 +406,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // #303: the culled-vs-drawn sample -- a latent copy of the last view's survivor counts, read back
         // frames later, so the figure reaches the period line without a readback on the draw path.
         CasterGather.Sample();
-        if (_qShadowOn) { _qShadow.End(Gl.TIME_ELAPSED); _qShadowOn = false; }
+        if (_gl.QShadowOn) { _gl.QShadow.End(Gl.TIME_ELAPSED); _gl.QShadowOn = false; }
         LastShadowMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000f / System.Diagnostics.Stopwatch.Frequency;
         _viewSum += LastViews;
         Gl.Disable(Gl.DEPTH_CLAMP);
@@ -453,10 +449,12 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// ticks from the present unconditionally and wipes on module unload.</summary>
     private static void Lifecycle()
     {
-        if (!GlContextService.Available) { Release("4.6 context lost"); CasterGather.ContextLost(); }
+        if (!GlContextService.Available) Release("4.6 context lost");
+        if (_was.Available && !GlContextService.Available) { ContextLost(); CasterGather.ContextLost(); }
+        _was.Available = GlContextService.Available;
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) Release("module unload");
-        _wasInModule = inModule;
+        if (_was.InModule && !inModule) Release("module unload");
+        _was.InModule = inModule;
 
         int period = _loggedOnce ? LogEvery : FirstLogAt;
         if (++_frames < period) return;
@@ -487,14 +485,14 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    // rate -- the number the toroidal-escalation verdict reads. A layer marked C degraded
                    // itself to the combined bake (static half stale essentially every frame), which is
                    // today's behaviour and not a wrong shadow.
-                   (SunDynTex != 0
+                   (_gl.SunDynTex != 0
                     ? $"; static per layer {SunLayerReadout()} /frame, " +
                       $"{(float)_sunDynBakedViews / _frames:F1} dynamic bakes/frame ({(float)_sunDynSkipped / _frames:F1} held by cadence), " +
                       $"degraded-to-combined [{SunCombinedReadout()}]"
                     : "; sun split OFF (shadow.sundyn 0)") + ") " +
                    // #307: which submission path the views took, and what it cost.
                    (_layerDial
-                    ? _layerProbe > 0 && _progLayer != 0
+                    ? _layerProbe > 0 && _gl.ProgLayer != 0
                       ? $"(layered bake: {(float)CasterGather.LayerDispatches / _frames:F1} dispatches over " +
                         $"{(float)CasterGather.LayerViews / _frames:F1} views/frame, " +
                         $"{_gDrawN} staged draws in {_gGroups} batches ({MaskedBatches()} masked)" +
@@ -566,7 +564,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                       "(2 x fence+flush+MakeCurrent; it is separate because the sky VAO harvest either side of it is engine-context)"
                     : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
-                   (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
+                   (_gl.QShadow.Measured ? $", {_gl.QShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
                    $", {(float)_mdiCalls / _frames:F1} multidraw-indirect calls/frame " +
                    $"({(float)_mdiSkipped / _frames:F1} skipped: the batch holds nothing the view's set admits)" +
                    // SL1: the per-frame staged-word rewrite walks the refresh's visited set, and one frame in
@@ -591,7 +589,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         _ctxTicks = 0; _ctxFrames = 0;
         CasterGather.DynDispatches = 0;
         _cubeLightsSum = 0; _viewSum = 0;
-        _liveSum = 0; _visitSum = 0; _touchedSum = 0; _qShadow.Reset();
+        _liveSum = 0; _visitSum = 0; _touchedSum = 0; _gl.QShadow.Reset();
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _cubeHeldSlots = 0; _cubeRoamSlots = 0; _cubeTurnovers = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0; _cubeDynBakedFaces = 0; _pairBakedTiles = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
         Array.Clear(_sunStaticL); _sunDynBakedViews = 0; _sunDynSkipped = 0; _cubeDynSkipped = 0;

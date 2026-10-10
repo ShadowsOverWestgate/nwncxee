@@ -20,37 +20,59 @@ internal static unsafe class GBuffer
     private static ExtenderLog? _log;
     private static readonly StandDown _down = new("GBuffer");
 
-    /// <summary>The four texture names, 0 until <see cref="Ensure"/> has allocated them.</summary>
-    internal static uint Tex0, Tex1, Tex2, Tex3;
-    /// <summary>The light record (cx_gbuf's <c>CxLightRecPack</c>): written by <see cref="DeferredLights"/> over
-    /// the whole rect, debited by <see cref="PairDebt"/>, read by the blended class's lit fragments.</summary>
-    internal static uint TexLight;
-    /// <summary>This frame's deferred pass wrote <see cref="TexLight"/>. Reset by <see cref="BeginFrame"/>.</summary>
-    internal static bool LightLive;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no texture name,
+    /// size or attachment latch from the dead context survives as a field nobody remembered to zero. The two
+    /// per-frame flags ride here because no frame spans a context loss.</summary>
+    private sealed class GBufferState
+    {
+        /// <summary>The four texture names, 0 until <see cref="Ensure"/> has allocated them.</summary>
+        public uint Tex0, Tex1, Tex2, Tex3;
+        /// <summary>The light record (cx_gbuf's <c>CxLightRecPack</c>): written by <see cref="DeferredLights"/>
+        /// over the whole rect, debited by <see cref="PairDebt"/>, read by the blended class's lit fragments.</summary>
+        public uint TexLight;
+        /// <summary>This frame's deferred pass wrote <see cref="TexLight"/>. Reset by <see cref="BeginFrame"/>.</summary>
+        public bool LightLive;
+        /// <summary>A twin draw wrote this frame: the deferred pass has work. Reset by <see cref="BeginFrame"/>.</summary>
+        public bool Written;
+        public int W, H;
+        /// <summary>Attached to the frame FBO right now, so <see cref="ApplyDrawBuffers"/> routes 4..7 at it.</summary>
+        public bool Armed;
+        /// <summary>The frame FBO is carrying a draw-buffer list of ours and has not been handed its single
+        /// default back. Without it a pass that arms nothing would still issue the restore on whatever FBO is
+        /// bound -- the probe capture's, during a capture.</summary>
+        public bool Wrote;
+        public bool Checked;
+    }
 
-    private static int _w, _h;
-    /// <summary>Attached to the frame FBO right now, so <see cref="ApplyDrawBuffers"/> routes 4..7 at it.</summary>
-    private static bool _armed;
-    /// <summary>The frame FBO is carrying a draw-buffer list of ours and has not been handed its single default
-    /// back. Without it a pass that arms nothing would still issue the restore on whatever FBO is bound --
-    /// the probe capture's, during a capture.</summary>
-    private static bool _wrote;
-    private static bool _checked;
+    private static GBufferState _gl = new();
     private static int _clears;
 
+    /// <inheritdoc cref="GBufferState.Tex0"/>
+    internal static uint Tex0 => _gl.Tex0;
+    /// <inheritdoc cref="GBufferState.Tex0"/>
+    internal static uint Tex1 => _gl.Tex1;
+    /// <inheritdoc cref="GBufferState.Tex0"/>
+    internal static uint Tex2 => _gl.Tex2;
+    /// <inheritdoc cref="GBufferState.Tex0"/>
+    internal static uint Tex3 => _gl.Tex3;
+    /// <inheritdoc cref="GBufferState.TexLight"/>
+    internal static uint TexLight => _gl.TexLight;
+    /// <inheritdoc cref="GBufferState.LightLive"/>
+    internal static bool LightLive { get => _gl.LightLive; set => _gl.LightLive = value; }
+
     /// <summary>Allocated at the current render size.</summary>
-    internal static bool Ready => Tex0 != 0 && !_down.Failed;
+    internal static bool Ready => _gl.Tex0 != 0 && !_down.Failed;
 
     /// <summary>Attached to the frame FBO right now -- the opaque and cutout passes. Read by <see cref="Issue"/>,
     /// which masks the four draw buffers per program while it is true.</summary>
-    internal static bool Armed => _armed;
+    internal static bool Armed => _gl.Armed;
 
     /// <summary>Latched: the G-buffer cannot work on this context, so there is no deferred pass this session.
     /// Read by <see cref="DeferredLights"/>, which must then leave <c>Active</c> false.</summary>
     internal static bool Failed => _down.Failed;
 
-    /// <summary>A twin draw wrote this frame: the deferred pass has work. Reset by <see cref="BeginFrame"/>.</summary>
-    internal static bool Written;
+    /// <inheritdoc cref="GBufferState.Written"/>
+    internal static bool Written { get => _gl.Written; set => _gl.Written = value; }
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
@@ -58,19 +80,20 @@ internal static unsafe class GBuffer
     internal static bool Ensure(int w, int h)
     {
         if (_down.Failed) return false;
-        if (Tex0 != 0 && _w == w && _h == h) return true;
+        var g = _gl;
+        if (g.Tex0 != 0 && g.W == w && g.H == h) return true;
         if (w <= 0 || h <= 0) return false;
         if (Gl.DrawBuffers == null || Gl.ClearTexImage == null || Gl.ColorMaski == null)
             return _down.Fail(_log, "glDrawBuffers, glClearTexImage or glColorMaski is unresolved",
                               "deferred point lights are off for the session -- the forward loop walks every light");
         // immutable storage, one level: a new size is a new name, and an integer texture under LINEAR is
         // incomplete and samples zero
-        RenderTarget.Create(ref Tex0, Gl.RGBA32UI, w, h, Gl.NEAREST);
-        RenderTarget.Create(ref Tex1, Gl.RGBA32UI, w, h, Gl.NEAREST);
-        RenderTarget.Create(ref Tex2, Gl.RGBA32UI, w, h, Gl.NEAREST);
-        RenderTarget.Create(ref Tex3, Gl.RGBA16F, w, h, Gl.NEAREST);
-        RenderTarget.Create(ref TexLight, Gl.RGBA32UI, w, h, Gl.NEAREST);
-        _w = w; _h = h; _checked = false;
+        RenderTarget.Create(ref g.Tex0, Gl.RGBA32UI, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref g.Tex1, Gl.RGBA32UI, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref g.Tex2, Gl.RGBA32UI, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref g.Tex3, Gl.RGBA16F, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref g.TexLight, Gl.RGBA32UI, w, h, Gl.NEAREST);
+        g.W = w; g.H = h; g.Checked = false;
         _log?.Info($"GBuffer: {w}x{h}, G0..G2 RGBA32UI + G3 RGBA16F + the light record RGBA32UI ({(long)w * h * BytesPerPixel >> 20} MiB)");
         return true;
     }
@@ -79,22 +102,22 @@ internal static unsafe class GBuffer
     /// G1..G3 are never cleared -- G0's flag byte gates every read of them.</summary>
     internal static void BeginFrame()
     {
-        Written = false; LightLive = false;
+        _gl.Written = false; _gl.LightLive = false;
         if (!Ready) return;
-        Gl.ClearTexImage(Tex0, 0, Gl.RGBA_INTEGER, Gl.UNSIGNED_INT, null);
+        Gl.ClearTexImage(_gl.Tex0, 0, Gl.RGBA_INTEGER, Gl.UNSIGNED_INT, null);
         _clears++;
     }
 
     /// <summary>Attach G0..G3 at COLOR4..7 of the bound frame FBO for the opaque and cutout passes.</summary>
     internal static void AttachColourPass()
     {
-        if (!Ready || _armed) return;
+        if (!Ready || _gl.Armed) return;
         for (uint i = 0; i < Targets; i++)
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT4 + i, Gl.TEXTURE_2D, Tex(i), 0);
-        _armed = true;
+        _gl.Armed = true;
         ApplyDrawBuffers();
         // once per allocation, not per frame: driver-side validation is a CPU cost inside the Opaque term
-        if (_checked) return;
+        if (_gl.Checked) return;
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
@@ -103,7 +126,7 @@ internal static unsafe class GBuffer
                        "deferred point lights are off for the session -- the forward loop walks every light");
             return;
         }
-        _checked = true;
+        _gl.Checked = true;
     }
 
     /// <summary>After the cutout pass: detach, so no later pass writes into the G-buffer. Every frame that
@@ -111,8 +134,8 @@ internal static unsafe class GBuffer
     /// outlives the frame.</summary>
     internal static void Detach()
     {
-        if (!_armed) return;
-        _armed = false;
+        if (!_gl.Armed) return;
+        _gl.Armed = false;
         ApplyDrawBuffers();
         MaskColour(true);   // the four masks are FBO-independent GL state: hand them back write-enabled
         for (uint i = 0; i < Targets; i++)
@@ -134,8 +157,8 @@ internal static unsafe class GBuffer
     /// <paramref name="suspend"/> is the sky, which writes neither -- its pixels keep G0 = 0 and no record.</summary>
     internal static void ApplyDrawBuffers(bool suspend = false)
     {
-        bool ssr = Ssr.RecordsArmed && !suspend, gb = _armed && !suspend;
-        if (!ssr && !gb && !_wrote) return;
+        bool ssr = Ssr.RecordsArmed && !suspend, gb = _gl.Armed && !suspend;
+        if (!ssr && !gb && !_gl.Wrote) return;
         if (Gl.DrawBuffers == null) return;
         uint* bufs = stackalloc uint[FirstAttachment + Targets];
         bufs[0] = Gl.COLOR_ATTACHMENT0;
@@ -153,14 +176,13 @@ internal static unsafe class GBuffer
             }
         }
         Gl.DrawBuffers(n, bufs);
-        _wrote = n > 1 || Ssr.RecordsArmed || _armed;
+        _gl.Wrote = n > 1 || Ssr.RecordsArmed || _gl.Armed;
     }
 
     /// <summary>Context loss: the names are gone.</summary>
     internal static void Forget()
     {
-        Tex0 = Tex1 = Tex2 = Tex3 = TexLight = 0; Written = false; LightLive = false;
-        _w = _h = 0; _armed = false; _wrote = false; _checked = false;
+        _gl = new GBufferState();
         _down.Forget();
     }
 
@@ -168,8 +190,9 @@ internal static unsafe class GBuffer
     {
         int n = _clears; _clears = 0;
         return _down.Failed ? "gbuf STOOD DOWN" : !Lighting.Deferred.V ? "gbuf off" : n == 0 ? "gbuf idle"
-             : $"gbuf {_w}x{_h} ({(float)n / MathF.Max(frames, 1):F2} clears/frame, {(long)_w * _h * BytesPerPixel >> 20} MiB)";
+             : $"gbuf {_gl.W}x{_gl.H} ({(float)n / MathF.Max(frames, 1):F2} clears/frame, "
+             + $"{(long)_gl.W * _gl.H * BytesPerPixel >> 20} MiB)";
     }
 
-    private static uint Tex(uint i) => i switch { 0 => Tex0, 1 => Tex1, 2 => Tex2, _ => Tex3 };
+    private static uint Tex(uint i) => i switch { 0 => _gl.Tex0, 1 => _gl.Tex1, 2 => _gl.Tex2, _ => _gl.Tex3 };
 }

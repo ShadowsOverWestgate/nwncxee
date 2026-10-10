@@ -80,7 +80,6 @@ internal static unsafe class GuiCapture
     private static float* _color, _bones;
     private static byte* _depthMask, _material, _stacks;
     private static IntPtr* _custom;
-    private static readonly Dictionary<IntPtr, int> _slots = new(512);
 
     /// <summary>Refusals since boot, by reason: each is a hole in the GUI, so the first of each is an Always line and
     /// the totals are on the status line.</summary>
@@ -518,9 +517,6 @@ internal static unsafe class GuiCapture
 
     /// <summary>Consumed by a flush: the next scene starts a fresh list.</summary>
     internal static void Reset() { LayerN = 0; DrawN = 0; SkinN = 0; VtxN = 0; IdxN = 0; }
-
-    /// <summary>The cache holds VDO pointers; an area or module edge may free any of them.</summary>
-    internal static void Forget() => _slots.Clear();
 
     internal static string Stats()
         => $"{_layers} scenes, {_draws} draws captured"

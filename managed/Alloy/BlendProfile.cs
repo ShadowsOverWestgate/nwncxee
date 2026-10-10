@@ -19,6 +19,14 @@ internal static unsafe class BlendProfile
     private static readonly int[] _order = new int[Cap];
     private static int _n, _state;   // 0 idle, 1 armed for the next accumulation, 2 waiting on the GPU
 
+    /// <summary>Context loss: the query names died with it. The block is freed, not deleted from, and a
+    /// profile in flight is dropped; the next <see cref="Stamp"/> mints a fresh set.</summary>
+    internal static void ContextLost()
+    {
+        if (_q != null) { System.Runtime.InteropServices.NativeMemory.Free(_q); _q = null; }
+        _n = 0; _state = 0;
+    }
+
     /// <summary>Time the next blended accumulation.</summary>
     internal static void Arm() { if (_state == 0) _state = 1; }
 

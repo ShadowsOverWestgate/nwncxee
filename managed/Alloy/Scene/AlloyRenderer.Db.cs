@@ -25,12 +25,13 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Is slot <paramref name="i"/> the database's?</summary>
     internal static bool DbSlot(int i) => (uint)i < (uint)_oDbPart.Length && _oDbPart[i] >= 0;
 
-    /// <summary>May the lightmap bake take this DB slot? Lit geometry of a Static object (a tile or a Static
-    /// placeable) and nothing else -- a baked mover would keep the light of wherever it stood when it
-    /// enrolled.</summary>
+    /// <summary>May the lightmap bake take this DB slot? Lit, still geometry of a Static object (a tile or a
+    /// Static placeable) and nothing else -- a baked mover would keep the light of wherever it stood when it
+    /// enrolled, and a charted copy of a dangly, skinned or animmesh range is its vertices frozen at the offer.</summary>
     internal static bool DbBakeable(int i)
     {
         if (!DbSlot(i) || !_oLit[i]) return false;
+        if (_oDbRecipe[i] < 0 || (DrawRecipe.Flags(_oDbRecipe[i]) & (RecipeFlag.Dangly | RecipeFlag.Skinned | RecipeFlag.AnimMesh)) != 0) return false;
         DbId o = SceneDb.PartObj[_oDbPart[i]];
         return SceneDb.Objects.Valid(o) && (SceneDb.ObjFlags[o.Index] & (ObjFlag.Static | ObjFlag.Sky)) == ObjFlag.Static;
     }
@@ -71,7 +72,7 @@ public sealed unsafe partial class AlloyRenderer
         // CX-120: the tenancy stamp is minted HERE, for THIS slot, and is unique to this seating -- the one
         // thing every reader of it means by it ("the slot changed hands"). It used to be the generation
         // current at the seat, with DbOrder re-stamping every live slot afterwards; see DbOrder.
-        _gate[i].EnrollGen = _oClaim[i] = ++_enrollGen;
+        _gate[i].EnrollGen = ++_enrollGen;
         DbWriteColumns(i, part, recipe);
         SceneDb.PartSlot[part] = i;
         _dbSeated++;

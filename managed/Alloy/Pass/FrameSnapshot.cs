@@ -44,7 +44,7 @@ internal static unsafe class FrameSnapshot
     /// <summary>The copy for THIS pass is taken and sampleable. False whenever the Alloy water stage must not
     /// draw -- which is also the signal <see cref="BucketGate"/>'s bucket-6 gate reads, so the engine
     /// keeps drawing its own water rather than nobody drawing any.</summary>
-    internal static bool Ready { get; private set; }
+    internal static bool Ready { get => _gl.Ready; private set => _gl.Ready = value; }
 
     /// <summary>Alloy copies taken this session, and the number the [alloy] line reports. The acceptance
     /// criterion is one per frame that has water on screen -- see <see cref="BucketGate"/> for the
@@ -55,10 +55,23 @@ internal static unsafe class FrameSnapshot
     /// down and the engine drew water instead: correct, just not ours.</summary>
     internal static int Refusals => _down.Refusals;
 
-    private static uint _fbo, _colTex, _depTex;
-    private static int _w, _h;
-    private static uint _depFormat, _depMask;
-    private static bool _hdr;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name, probed
+    /// depth format or copy size from the dead context survives as a field nobody remembered to zero.
+    /// <see cref="Ready"/> rides here with the targets it names; the per-pass edge clears that one field.</summary>
+    private sealed class SnapshotState
+    {
+        public uint Fbo, ColTex, DepTex;
+        public int W, H;
+        public uint DepFormat, DepMask;
+        /// <summary>The copy pair was allocated against an armed HDR target, so its colour half is RGBA16F.</summary>
+        public bool Hdr;
+        /// <summary>The copy for the current pass is taken and sampleable.</summary>
+        public bool Ready;
+        /// <summary>The REPEAT sampler the noise texture is bound under.</summary>
+        public uint NoiseSamp;
+    }
+
+    private static SnapshotState _gl = new();
     private static readonly StandDown _down = new("FrameSnapshot");
     private static ExtenderLog? _log;
 
@@ -96,8 +109,8 @@ internal static unsafe class FrameSnapshot
     /// this forgets rather than deletes -- same rule as <see cref="PostChain.Forget"/>.</summary>
     internal static void Forget()
     {
-        _fbo = 0; _colTex = 0; _depTex = 0; _w = 0; _h = 0;
-        _depFormat = 0; _depMask = 0; _hdr = false; Ready = false; _noiseSamp = 0; _down.Forget();
+        _gl = new SnapshotState();
+        _down.Forget();
     }
 
     /// <summary>Nothing is drawn from the copy any more -- called at the top of every Alloy colour pass so a
@@ -143,8 +156,8 @@ internal static unsafe class FrameSnapshot
 
         Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, (uint)src);
-        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
-        Gl.BlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, Gl.COLOR_BUFFER_BIT | (depth ? _depMask : 0), (uint)Gl.NEAREST);
+        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _gl.Fbo);
+        Gl.BlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, Gl.COLOR_BUFFER_BIT | (depth ? _gl.DepMask : 0), (uint)Gl.NEAREST);
         LastRectFrac = (float)(x1 - x0) * (y1 - y0) / ((float)w * h);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src);
         // ...and the blit is CHECKED, because its whole-or-nothing failure mode is silent and total. A depth
@@ -154,8 +167,8 @@ internal static unsafe class FrameSnapshot
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
         if (err != 0)
         {
-            uint chosen = _depFormat;
-            _depFormat = 0;                       // re-probe: the format we chose is the prime suspect
+            uint chosen = _gl.DepFormat;
+            _gl.DepFormat = 0;                    // re-probe: the format we chose is the prime suspect
             return Fail($"the framebuffer blit raised 0x{err:x} (depth format 0x{chosen:x} mismatched?)");
         }
         Copies++;
@@ -180,13 +193,13 @@ internal static unsafe class FrameSnapshot
         if (src != 0) Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
         Gl.ReadPixels(x, y, 1, 1, Gl.RGBA, Gl.FLOAT, sc);
         Gl.ReadPixels(x, y, 1, 1, Gl.DEPTH_COMPONENT, Gl.FLOAT, &sd);
-        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _gl.Fbo);
         Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
         Gl.ReadPixels(x, y, 1, 1, Gl.RGBA, Gl.FLOAT, dc);
         Gl.ReadPixels(x, y, 1, 1, Gl.DEPTH_COMPONENT, Gl.FLOAT, &dd);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
-        _log?.Info($"[waterdiag] src fbo {src} (post hdr fbo {PostChain.Fbo}, copy fbo {_fbo}) centre pixel ({x},{y}) -- source rgb({sc[0]:F4},{sc[1]:F4},{sc[2]:F4}) " +
+        _log?.Info($"[waterdiag] src fbo {src} (post hdr fbo {PostChain.Fbo}, copy fbo {_gl.Fbo}) centre pixel ({x},{y}) -- source rgb({sc[0]:F4},{sc[1]:F4},{sc[2]:F4}) " +
                    $"depth {sd:F6} | copy rgb({dc[0]:F4},{dc[1]:F4},{dc[2]:F4}) depth {dd:F6} | " +
                    // The COLOUR pair is the verdict. A blit is all-or-nothing, so colour landing means the
                    // whole call landed -- and reading depth back out of the source FBO proved unreliable
@@ -199,27 +212,27 @@ internal static unsafe class FrameSnapshot
     /// <summary>Bind the copy on <see cref="ColorUnit"/>/<see cref="DepthUnit"/> and leave unit 0 current --
     /// the diffuse rebinds there, and every other pass in the frame assumes it.</summary>
     /// <summary>The colour copy's GL name for a reader outside the water program (grass), 0 until a copy has landed.</summary>
-    internal static uint ColorTex => Ready ? _colTex : 0;
+    internal static uint ColorTex => Ready ? _gl.ColTex : 0;
 
     /// <summary>Diag: a 3x3 grid of colour texels read from the copy and from <paramref name="src"/>, printed
     /// side by side with the scissor state and the source's colour attachment name.</summary>
     internal static void Compare(uint src, int w, int h, string tag)
     {
-        if (Gl.ReadPixels == null || Gl.ReadBuffer == null || _fbo == 0) return;
+        if (Gl.ReadPixels == null || Gl.ReadBuffer == null || _gl.Fbo == 0) return;
         int sc = Gl.IsEnabled(Gl.SCISSOR_TEST);
         int* box = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, box);
         int name = 0;
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
         if (src != 0) Gl.GetFramebufferAttachmentParameteriv(Gl.READ_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
         var sb = new System.Text.StringBuilder();
-        sb.Append($"[grassground] {tag}: src fbo {src} colour0 = tex {name}, copy tex {_colTex}, scissor {sc} box {box[0]},{box[1]} {box[2]}x{box[3]} |");
+        sb.Append($"[grassground] {tag}: src fbo {src} colour0 = tex {name}, copy tex {_gl.ColTex}, scissor {sc} box {box[0]},{box[1]} {box[2]}x{box[3]} |");
         float* a = stackalloc float[4]; float* b = stackalloc float[4];
         for (int j = 1; j <= 3; j++) for (int i = 1; i <= 3; i++)
         {
             int x = w * i / 4, y = h * j / 4;
             Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src); if (src != 0) Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
             Gl.ReadPixels(x, y, 1, 1, Gl.RGBA, Gl.FLOAT, a);
-            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo); Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
+            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _gl.Fbo); Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
             Gl.ReadPixels(x, y, 1, 1, Gl.RGBA, Gl.FLOAT, b);
             sb.Append($" ({x},{y}) src {a[0]:F2},{a[1]:F2},{a[2]:F2} copy {b[0]:F2},{b[1]:F2},{b[2]:F2}{(a[0]==b[0]&&a[1]==b[1]&&a[2]==b[2] ? "" : " DIFF")};");
         }
@@ -230,9 +243,9 @@ internal static unsafe class FrameSnapshot
     internal static void Bind()
     {
         Gl.ActiveTexture(Gl.TEXTURE0 + ColorUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _colTex);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.ColTex);
         Gl.ActiveTexture(Gl.TEXTURE0 + DepthUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _depTex);
+        Gl.BindTexture(Gl.TEXTURE_2D, _gl.DepTex);
         // #339: re-resolved every bind and never cached -- a CAurTexture* is borrowed and the engine frees
         // it on an area transition (see AurTex). A miss binds nothing, which reads as a dead-flat sea rather
         // than as a wrong one, so it is logged once.
@@ -261,7 +274,7 @@ internal static unsafe class FrameSnapshot
         // position at four scales, so anything but REPEAT samples one edge texel over a whole harbour --
         // the same flat sea a missing texture gives, and just as silent. The engine's own params on this
         // object are not ours to assume, and not ours to change either.
-        if (EnsureNoiseSampler()) Gl.BindSampler(NoiseUnit, _noiseSamp);
+        if (EnsureNoiseSampler()) Gl.BindSampler(NoiseUnit, _gl.NoiseSamp);
 
         // #339: the scene's environment map, on its own unit. Re-read per bind for AurTex's reason -- the
         // pointer is borrowed and an area transition frees it.
@@ -288,12 +301,12 @@ internal static unsafe class FrameSnapshot
     /// parameters in a later pass.</summary>
     internal static void Unbind()
     {
-        if (_noiseSamp != 0 && Gl.BindSampler != null) Gl.BindSampler(NoiseUnit, 0);
+        if (_gl.NoiseSamp != 0 && Gl.BindSampler != null) Gl.BindSampler(NoiseUnit, 0);
     }
 
     private static bool EnsureNoiseSampler()
     {
-        if (_noiseSamp != 0) return true;
+        if (_gl.NoiseSamp != 0) return true;
         if (Gl.GenSamplers == null || Gl.BindSampler == null || Gl.SamplerParameteri == null) return false;
         uint sm; Gl.GenSamplers(1, &sm);
         if (sm == 0) return false;
@@ -304,12 +317,11 @@ internal static unsafe class FrameSnapshot
         // sampler exists to prevent. Add mips (and the level query behind them) if the far sea aliases.
         Gl.SamplerParameteri(sm, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
         Gl.SamplerParameteri(sm, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        _noiseSamp = sm;
+        _gl.NoiseSamp = sm;
         return true;
     }
 
     private static bool _noiseMissed;
-    private static uint _noiseSamp;
     /// <summary>The GL id the noise texture last resolved to, on the <c>/water</c> line. Zero with water on
     /// screen is the whole diagnosis of a flat sea: no noise, no wave amplitude.</summary>
     private static int _noiseTid;
@@ -324,37 +336,38 @@ internal static unsafe class FrameSnapshot
     /// depth buffer -- which reads as "every screen-space ray hits the near plane".</summary>
     private static bool EnsureTargets(int w, int h)
     {
+        var g = _gl;
         bool hdr = PostChain.Armed;
         // ...and on the COLOUR FORMAT, not only the size. #139 can arm or disarm mid-session at an unchanged
         // resolution (a /post hdr toggle, a target the pass refuses on one frame and takes on the next), and
         // a cache keyed on size alone would then blit a linear HDR frame into an 8-bit copy and clip every
         // highlight the water was about to reflect.
-        if (_fbo != 0 && _w == w && _h == h && _hdr == hdr && _colTex != 0 && _depTex != 0) return true;
-        _w = w; _h = h; _hdr = hdr;
-        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        if (_fbo == 0) return Fail("could not create the copy framebuffer");
+        if (g.Fbo != 0 && g.W == w && g.H == h && g.Hdr == hdr && g.ColTex != 0 && g.DepTex != 0) return true;
+        g.W = w; g.H = h; g.Hdr = hdr;
+        if (g.Fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); g.Fbo = f; }
+        if (g.Fbo == 0) return Fail("could not create the copy framebuffer");
 
         // #139: RGBA16F while the HDR target is armed, because that is what the copy SOURCE holds -- an 8-bit
         // copy of a linear HDR frame clips every highlight the water would reflect, and those are exactly the
         // pixels a reflection is made of.
         // LINEAR on both: the refraction and the SSR march sample at an offset, not at texel centres.
-        RenderTarget.AllocColor(ref _colTex, hdr, w, h, Gl.LINEAR);
-        bool packed = RenderTarget.Packed(_depFormat);
-        RenderTarget.AllocDepth(ref _depTex, _depFormat, w, h, Gl.LINEAR);
-        if (_colTex == 0 || _depTex == 0) return Fail("could not create the copy targets");
+        RenderTarget.AllocColor(ref g.ColTex, hdr, w, h, Gl.LINEAR);
+        bool packed = RenderTarget.Packed(g.DepFormat);
+        RenderTarget.AllocDepth(ref g.DepTex, g.DepFormat, w, h, Gl.LINEAR);
+        if (g.ColTex == 0 || g.DepTex == 0) return Fail("could not create the copy targets");
 
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _colTex, 0);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, g.Fbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, g.ColTex, 0);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER,
-            packed ? Gl.DEPTH_STENCIL_ATTACHMENT : Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _depTex, 0);
+            packed ? Gl.DEPTH_STENCIL_ATTACHMENT : Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, g.DepTex, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
-            _w = _h = 0;
+            g.W = g.H = 0;
             return Fail($"the copy framebuffer is incomplete (0x{status:x})");
         }
         _log?.Info($"FrameSnapshot: framebuffer copy {w}x{h}, colour {(hdr ? "RGBA16F" : "RGBA8")}, " +
-                   $"depth 0x{_depFormat:x} -- one copy per frame, /water enabled 0 disables");
+                   $"depth 0x{g.DepFormat:x} -- one copy per frame, /water enabled 0 disables");
         return true;
     }
 
@@ -364,12 +377,12 @@ internal static unsafe class FrameSnapshot
     /// GL_DEPTH_ATTACHMENT is not a legal name.</summary>
     private static bool ProbeDepth(uint src, int w, int h)
     {
-        if (_depFormat != 0 && _w == w && _h == h) return true;
+        if (_gl.DepFormat != 0 && _gl.W == w && _gl.H == h) return true;
         uint fmt = RenderTarget.ProbeDepthFormat(src);
         if (fmt == 0) return Refuse("the pass target has no depth attachment to copy");
-        _depFormat = fmt;
-        bool packed = RenderTarget.Packed(_depFormat);
-        _depMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
+        _gl.DepFormat = fmt;
+        bool packed = RenderTarget.Packed(_gl.DepFormat);
+        _gl.DepMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
         return true;
     }
 

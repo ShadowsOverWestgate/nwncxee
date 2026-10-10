@@ -32,20 +32,8 @@ public sealed unsafe partial class CasterPass
 
     private static int _maskNoTex, _maskNoProg;
 
-    /// <summary>The masked (alpha-tested) depth program and its uniforms. Zero = it could not build, and
-    /// masked casters then stay out of every bake.</summary>
-    private static uint _progMask;
-    private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1, _locMaskDither = -1, _locMaskEnv = -1;
-    /// <summary><c>uAlphaMip</c> on the four masked caster programs (<c>alloy.cutmip</c>).</summary>
-    private static int _locMaskMip = -1, _locMaskHMip = -1, _locLayerMaskMip = -1, _locLayerMaskHMip = -1;
-    /// <summary>The masked depth program that samples the mask through the record's bindless handle
-    /// (<c>uTexH</c> slot 0) instead of a bound unit, so masked batches no longer split per texture.
-    /// Built only when the renderer's bindless path is armed; <c>/shadow maskh 0</c> is the A/B.</summary>
-    private static uint _progMaskH, _progLayerMaskH;
-    private static int _locMaskHVp = -1, _locMaskHCut = -1, _locLayerMaskHCut = -1, _locMaskHDither = -1, _locLayerMaskHDither = -1, _locMaskHEnv = -1, _locLayerMaskHEnv = -1;
     private static bool _maskH => Shadows.MaskH.V;
-    private static bool HandleMaskReady => _maskH && _progMaskH != 0 && (_progLayer == 0 || _progLayerMaskH != 0);
-    private static bool _maskHFailed;
+    private static bool HandleMaskReady => _maskH && _gl.ProgMaskH != 0 && (_gl.ProgLayer == 0 || _gl.ProgLayerMaskH != 0);
 
     /// <summary>Build the handle-sampling pair once the renderer's bindless path is armed. Lazy because the
     /// bindless probe runs in the first COLOUR frame and this pass's programs are built in the shadow
@@ -53,20 +41,20 @@ public sealed unsafe partial class CasterPass
     /// when the pair becomes usable, so the standing key picks it up.</summary>
     private static void EnsureHandleMask()
     {
-        if (_maskHFailed || _progMask == 0 || !AlloyRenderer.Bindless || CastMaskHFs == CastMaskHFsSrc) return;
-        if (_progMaskH == 0)
+        if (_gl.MaskHFailed || _gl.ProgMask == 0 || !AlloyRenderer.Bindless || CastMaskHFs == CastMaskHFsSrc) return;
+        if (_gl.ProgMaskH == 0)
         {
-            _progMaskH = GlProgram.Graphics(CastMaskHVs, CastMaskHFs, _log, "CasterPass handle-masked depth program");
-            if (_progMaskH == 0) { _maskHFailed = true; return; }
-            _locMaskHVp = GlProgram.Loc(_progMaskH, "uVP"); _locMaskHCut = GlProgram.Loc(_progMaskH, "uAlphaCut"); _locMaskHDither = GlProgram.Loc(_progMaskH, "uDither"); _locMaskHEnv = GlProgram.Loc(_progMaskH, "uEnvAlpha"); _locMaskHMip = GlProgram.Loc(_progMaskH, "uAlphaMip");
+            _gl.ProgMaskH = GlProgram.Graphics(CastMaskHVs, CastMaskHFs, _log, "CasterPass handle-masked depth program");
+            if (_gl.ProgMaskH == 0) { _gl.MaskHFailed = true; return; }
+            _gl.LocMaskHVp = GlProgram.Loc(_gl.ProgMaskH, "uVP"); _gl.LocMaskHCut = GlProgram.Loc(_gl.ProgMaskH, "uAlphaCut"); _gl.LocMaskHDither = GlProgram.Loc(_gl.ProgMaskH, "uDither"); _gl.LocMaskHEnv = GlProgram.Loc(_gl.ProgMaskH, "uEnvAlpha"); _gl.LocMaskHMip = GlProgram.Loc(_gl.ProgMaskH, "uAlphaMip");
             _listVer++;
             _log?.Info("CasterPass: handle-sampled masks armed -- masked batches merge per VAO (/shadow maskh 0 is the A/B)");
         }
-        if (_progLayer != 0 && _progLayerMaskH == 0)
+        if (_gl.ProgLayer != 0 && _gl.ProgLayerMaskH == 0)
         {
-            _progLayerMaskH = GlProgram.Graphics(CastLayerMaskHVs, CastMaskHFs, _log, "CasterPass layered handle-masked depth program");
-            if (_progLayerMaskH == 0) { _maskHFailed = true; return; }
-            _locLayerMaskHCut = GlProgram.Loc(_progLayerMaskH, "uAlphaCut"); _locLayerMaskHDither = GlProgram.Loc(_progLayerMaskH, "uDither"); _locLayerMaskHEnv = GlProgram.Loc(_progLayerMaskH, "uEnvAlpha"); _locLayerMaskHMip = GlProgram.Loc(_progLayerMaskH, "uAlphaMip");
+            _gl.ProgLayerMaskH = GlProgram.Graphics(CastLayerMaskHVs, CastMaskHFs, _log, "CasterPass layered handle-masked depth program");
+            if (_gl.ProgLayerMaskH == 0) { _gl.MaskHFailed = true; return; }
+            _gl.LocLayerMaskHCut = GlProgram.Loc(_gl.ProgLayerMaskH, "uAlphaCut"); _gl.LocLayerMaskHDither = GlProgram.Loc(_gl.ProgLayerMaskH, "uDither"); _gl.LocLayerMaskHEnv = GlProgram.Loc(_gl.ProgLayerMaskH, "uEnvAlpha"); _gl.LocLayerMaskHMip = GlProgram.Loc(_gl.ProgLayerMaskH, "uAlphaMip");
             _listVer++;
         }
     }

@@ -173,7 +173,6 @@ public static unsafe partial class DbAnim
         // compose O(what has changed since the last one).
         _dirtyUpTo = 0;
         _danglyDt = dt;
-        _clock += dt;
         _periodDt += dt; _periodCalls++;
         int si = scene.Index;
         DbList? members = SceneDb.SceneObjects[si];

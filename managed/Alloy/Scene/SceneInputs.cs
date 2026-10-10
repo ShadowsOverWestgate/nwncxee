@@ -94,6 +94,10 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static readonly int[] _ghostLeft = new int[MaxGhosts];
     private static int _ghostN;
 
+    /// <summary>World edge: the last set and its ghosts are the departed area's lights, at its positions; none
+    /// of them may fade out inside the next one.</summary>
+    internal static void Revoke() { _prevN = 0; _ghostN = 0; }
+
     /// <summary>The fade bookkeeping, headless. It is a set difference over two flat arrays with a
     /// swap-remove in the middle, and every way it can go wrong is silent -- a ghost that never retires is a
     /// light that never goes out, a missed leaver is the pop this exists to remove.</summary>

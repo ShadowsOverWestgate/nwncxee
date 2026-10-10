@@ -99,6 +99,8 @@ public sealed unsafe partial class MovieService : IExtenderService
 
     // ---- the draw ----
 
+    /// <summary>Names in the ENGINE's context, which lives for the process: the 4.6 context-loss edge is not
+    /// theirs, and no other edge exists to clear them on.</summary>
     private static uint _prog, _vao, _vbo, _sampler;
     private static bool _samplerSaid;
     private static int _uTex;

@@ -229,7 +229,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     // lifecycle
     private static int _tableGen = -1, _sinceEnroll;
-    private static bool _wasInModule;
+    private static readonly EdgeState _was = new();
 
     /// <summary>The <see cref="Counters._cutBy"/> labels, by index.</summary>
     private static readonly string[] CutTerms = { "vao", "feat", "dissolve", "blend", "cull", "prim", "lit", "tex" };
@@ -509,7 +509,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
         // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so
         // every record is rebuilt rather than assumed still on the GPU.
-        Issue._slotRange = default; StreamRing.ContextLost(); _recCapGpu = 0; InvalidateRecords();
+        Issue.ContextLost(); StreamRing.ContextLost(); _recCapGpu = 0; InvalidateRecords();
         // ...and the VAO cache. RevokeAll marks the slots stale, and EnsureVao DELETES a stale non-zero name
         // before rebuilding -- which on a name minted by a context that no longer exists is a delete aimed at
         // whatever the next context recycles that number for.
@@ -523,6 +523,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         PresentTarget.ContextLost();   // #456: names only -- the images died with the context
         GuiPass.ContextLost();
         _nullSunShadow = 0; _nullCubeShadow = 0;
+        BlendProfile.ContextLost();
         PassContextLost();
     }
 
@@ -553,10 +554,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        ") -- the Alloy world pass is off for this session and no [alloy] lines will follow");
             return;
         }
-        if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
+        bool lost = _was.Available && !GlContextService.Available;
+        _was.Available = GlContextService.Available;
+        if (!GlContextService.Available) RevokeAll("4.6 context lost");
+        // On the edge only: the owners' reset allocates, and the context stays lost for the session.
+        if (lost) PassRegistry.Global.ContextLost();
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); AlloyEnvMap.ModuleUnloaded(); DbFeed.ModuleEdge(_log); }
-        _wasInModule = inModule;
+        if (_was.InModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); AlloyEnvMap.ModuleUnloaded(); DbFeed.ModuleEdge(_log); }
+        _was.InModule = inModule;
         // #571: the stock graphics snapshot is retaken per world scene (boot, every area), and a toggle the player
         // flips off after the decision froze has nothing behind it (exclusive residency): the gamma precedent's Fail.
         if (inModule && !DbPassScene.IsNull)

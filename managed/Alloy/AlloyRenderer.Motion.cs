@@ -38,10 +38,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The dangly solve's hand-off, called before it overwrites <paramref name="dst"/>: keep the
     /// outgoing positions of an OWNED part for the mover sweep. Main thread, per dangly part per frame;
     /// allocates only when the stage grows, and a refused grow drops the part to its rigid vectors.</summary>
-    internal static void NoteDanglyPrev(IntPtr part, float* dst, int n)
+    internal static void NoteDanglyPrev(int part, float* dst, int n)
     {
         // Unarmed, _frameSeq stands still and the stage would never reset.
-        int i = _armed ? OwnedSlotOf(part) : -1;
+        int i = _armed ? SlotOfPart(part) : -1;
         if (i < 0) return;
         if (_dpSeq != _frameSeq) { _dpSeq = _frameSeq; _dpUsed = 0; }
         int need = _dpUsed + n * 3;

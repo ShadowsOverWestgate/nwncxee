@@ -18,8 +18,15 @@ internal static unsafe class ToonStage
     private static ExtenderLog? _log;
     private static Matrix4x4 _proj;
     private static float* _depthEdge, _colorEdge, _hardness;
-    private static int _locProj, _locBands, _locInk, _locEdge, _locDepthThresh, _locColorThresh, _locHardness;
-    private static uint _prog;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no program name
+    /// or uniform location from the dead context survives as a field nobody remembered to zero.</summary>
+    private sealed class ToonState
+    {
+        public uint Prog;
+        public int LocProj, LocBands, LocInk, LocEdge, LocDepthThresh, LocColorThresh, LocHardness;
+    }
+
+    private static ToonState _gl = new();
     /// <summary>Stock defaults, and what the stage assumes if a slider's global is unresolved.</summary>
     private const float StockDepthEdge = 0.02f, StockColorEdge = 1f, StockHardness = 0.8f;
 
@@ -35,7 +42,7 @@ internal static unsafe class ToonStage
     }
 
     /// <summary>Context loss: the locations belong to a program the stack rebuilds.</summary>
-    internal static void Forget() { _prog = 0; }
+    internal static void Forget() { _gl = new ToonState(); }
 
     /// <summary>From the frame, beside <see cref="PostStack.Begin"/>: the projection this frame drew with.
     /// Only <c>[2].z</c>/<c>[3].z</c> are read, which the TAA jitter does not touch.</summary>
@@ -58,24 +65,25 @@ internal static unsafe class ToonStage
     /// options moves the next frame. Binds nothing and leaves no target behind. Hot: allocates nothing.</summary>
     internal static void Prepare(uint src, uint prog, int* viewport)
     {
-        if (prog != _prog)
+        var g = _gl;
+        if (prog != g.Prog)
         {
-            _prog = prog;
-            _locProj = GlProgram.Loc(prog, "uProj"); _locBands = GlProgram.Loc(prog, "uBands");
-            _locInk = GlProgram.Loc(prog, "uInk"); _locEdge = GlProgram.Loc(prog, "uEdge");
-            _locDepthThresh = GlProgram.Loc(prog, "uDepthThresh");
-            _locColorThresh = GlProgram.Loc(prog, "uColorThresh");
-            _locHardness = GlProgram.Loc(prog, "uHardness");
+            g.Prog = prog;
+            g.LocProj = GlProgram.Loc(prog, "uProj"); g.LocBands = GlProgram.Loc(prog, "uBands");
+            g.LocInk = GlProgram.Loc(prog, "uInk"); g.LocEdge = GlProgram.Loc(prog, "uEdge");
+            g.LocDepthThresh = GlProgram.Loc(prog, "uDepthThresh");
+            g.LocColorThresh = GlProgram.Loc(prog, "uColorThresh");
+            g.LocHardness = GlProgram.Loc(prog, "uHardness");
         }
         float hardness = Hardness;
         Gl.UseProgram(prog);
-        fixed (Matrix4x4* p = &_proj) Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)p);
-        Gl.Uniform1f(_locBands, Post.ToonBands.V);
-        Gl.Uniform1f(_locInk, hardness <= 0f ? 0f : Post.ToonInk.V);
-        Gl.Uniform1f(_locEdge, Post.ToonEdge.V);
-        Gl.Uniform1f(_locDepthThresh, MathF.Max(DepthEdge, 1e-4f));
-        Gl.Uniform1f(_locColorThresh, MathF.Max(ColorEdge, 1e-4f));
-        Gl.Uniform1f(_locHardness, Math.Clamp(hardness, 0f, 1f));
+        fixed (Matrix4x4* p = &_proj) Gl.UniformMatrix4fv(g.LocProj, 1, 0, (float*)p);
+        Gl.Uniform1f(g.LocBands, Post.ToonBands.V);
+        Gl.Uniform1f(g.LocInk, hardness <= 0f ? 0f : Post.ToonInk.V);
+        Gl.Uniform1f(g.LocEdge, Post.ToonEdge.V);
+        Gl.Uniform1f(g.LocDepthThresh, MathF.Max(DepthEdge, 1e-4f));
+        Gl.Uniform1f(g.LocColorThresh, MathF.Max(ColorEdge, 1e-4f));
+        Gl.Uniform1f(g.LocHardness, Math.Clamp(hardness, 0f, 1f));
     }
 
     /// <summary>The stage text. Display space in, display space out; the size comes off the depth texture

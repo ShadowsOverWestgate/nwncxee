@@ -33,21 +33,30 @@ internal static unsafe class FbPostStage
     private static ExtenderLog? _log;
     private static Matrix4x4 _view = Matrix4x4.Identity;
     private static float _near = 0.1f, _far = 100f;
-    private static uint _prog, _sampler;
-    private static AlloyRenderer.FeatLoc _feat;
-    private static int _locView, _locPixel, _locClip, _locFrame, _locHour, _locMonth, _locDay, _locTransition, _locPlayer,
-                       _locFbColor, _locFbDepth;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no name or
+    /// uniform location from the dead context survives as a field nobody remembered to zero. The build
+    /// tokens ride here because they describe the program that holds those locations.</summary>
+    private sealed class FbPostState
+    {
+        public uint Prog, Sampler;
+        public AlloyRenderer.FeatLoc Feat;
+        public int LocView, LocPixel, LocClip, LocFrame, LocHour, LocMonth, LocDay, LocTransition, LocPlayer,
+                   LocFbColor, LocFbDepth;
+        public int BuildMask = -1, BuildQuality = -1;
+    }
+
+    private static FbPostState _gl = new();
 
     /// <summary>What the text is built against: expanded into the source as <c>$POSTMASK$</c> and <c>$SQM$</c>
     /// by <see cref="ShaderResource.Tokens"/>. -1 = not built yet.</summary>
-    internal static int BuildMask { get; private set; } = -1;
-    internal static int BuildQuality { get; private set; } = -1;
+    internal static int BuildMask { get => _gl.BuildMask; private set => _gl.BuildMask = value; }
+    internal static int BuildQuality { get => _gl.BuildQuality; private set => _gl.BuildQuality = value; }
 
     internal static void Attach(ExtenderLog log) => _log = log;
     /// <summary>Context loss: every GL name is gone.</summary>
-    internal static void Forget() { DropProgram(); _sampler = 0; }
+    internal static void Forget() { _gl = new FbPostState(); }
     /// <summary>The program is dropped (module change, option change); the sampler object outlives it.</summary>
-    internal static void DropProgram() { _prog = 0; BuildMask = -1; BuildQuality = -1; }
+    internal static void DropProgram() { _gl.Prog = 0; BuildMask = -1; BuildQuality = -1; }
 
     /// <summary>The bits the hosted text carries, of the engine's mask.</summary>
     internal static int HostedMask(int mask) => mask & ~MaskStripped;
@@ -70,35 +79,36 @@ internal static unsafe class FbPostStage
     /// the source unit (the stack's textures are NEAREST), which Run unbinds after the draw.</summary>
     internal static void Prepare(uint src, uint prog, int* viewport)
     {
-        if (prog != _prog)
+        var g = _gl;
+        if (prog != g.Prog)
         {
-            _prog = prog;
-            _feat = Programs.FeatLocs(prog);
-            _locView = GlProgram.Loc(prog, "m_view"); _locPixel = GlProgram.Loc(prog, "pixelParams");
-            _locClip = GlProgram.Loc(prog, "clipParams"); _locFrame = GlProgram.Loc(prog, "sceneCurrentFrame");
-            _locHour = GlProgram.Loc(prog, "moduleHour"); _locMonth = GlProgram.Loc(prog, "moduleMonth");
-            _locDay = GlProgram.Loc(prog, "moduleDay"); _locTransition = GlProgram.Loc(prog, "moduleTimeIntoTransition");
-            _locPlayer = GlProgram.Loc(prog, "uPlayerPos");
-            _locFbColor = GlProgram.Loc(prog, "texFBColor"); _locFbDepth = GlProgram.Loc(prog, "texFBDepth");
+            g.Prog = prog;
+            g.Feat = Programs.FeatLocs(prog);
+            g.LocView = GlProgram.Loc(prog, "m_view"); g.LocPixel = GlProgram.Loc(prog, "pixelParams");
+            g.LocClip = GlProgram.Loc(prog, "clipParams"); g.LocFrame = GlProgram.Loc(prog, "sceneCurrentFrame");
+            g.LocHour = GlProgram.Loc(prog, "moduleHour"); g.LocMonth = GlProgram.Loc(prog, "moduleMonth");
+            g.LocDay = GlProgram.Loc(prog, "moduleDay"); g.LocTransition = GlProgram.Loc(prog, "moduleTimeIntoTransition");
+            g.LocPlayer = GlProgram.Loc(prog, "uPlayerPos");
+            g.LocFbColor = GlProgram.Loc(prog, "texFBColor"); g.LocFbDepth = GlProgram.Loc(prog, "texFBDepth");
         }
         Gl.UseProgram(prog);
-        Gl.Uniform1i(_locFbColor, (int)TextureSlots.PostHdr);
-        Gl.Uniform1i(_locFbDepth, (int)TextureSlots.PostBloom);
-        AlloyRenderer.UploadVanillaEnv(in _feat);
-        fixed (Matrix4x4* v = &_view) Gl.UniformMatrix4fv(_locView, 1, 0, (float*)v);
+        Gl.Uniform1i(g.LocFbColor, (int)TextureSlots.PostHdr);
+        Gl.Uniform1i(g.LocFbDepth, (int)TextureSlots.PostBloom);
+        AlloyRenderer.UploadVanillaEnv(in g.Feat);
+        fixed (Matrix4x4* v = &_view) Gl.UniformMatrix4fv(g.LocView, 1, 0, (float*)v);
         float w = viewport[2] > 0 ? viewport[2] : 1f, h = viewport[3] > 0 ? viewport[3] : 1f;
-        Gl.Uniform3f(_locPixel, 1f / w, 1f / h, w / h);
+        Gl.Uniform3f(g.LocPixel, 1f / w, 1f / h, w / h);
         // clipParams = (near, far, 1 - near/far): inc_common.shd's own triple
-        Gl.Uniform3f(_locClip, _near, _far, 1f - _near / MathF.Max(_far, 1e-6f));
-        Gl.Uniform1i(_locFrame, AlloyRenderer.FrameSeq);
+        Gl.Uniform3f(g.LocClip, _near, _far, 1f - _near / MathF.Max(_far, 1e-6f));
+        Gl.Uniform1i(g.LocFrame, AlloyRenderer.FrameSeq);
         Vector3 p = AlloyRenderer.PlayerPos;
-        Gl.Uniform3f(_locPlayer, p.X, p.Y, p.Z);
-        Gl.Uniform1i(_locHour, AlloyRenderer.ModuleHour);
-        Gl.Uniform1i(_locMonth, AlloyRenderer.ModuleMonth);
-        Gl.Uniform1i(_locDay, AlloyRenderer.ModuleDay);
-        Gl.Uniform1f(_locTransition, AlloyRenderer.ModuleTimeIntoTransition);
-        if (_sampler == 0) _sampler = Gl.LinearClampSampler();
-        if (_sampler != 0) Gl.BindSampler(TextureSlots.PostHdr, _sampler);
+        Gl.Uniform3f(g.LocPlayer, p.X, p.Y, p.Z);
+        Gl.Uniform1i(g.LocHour, AlloyRenderer.ModuleHour);
+        Gl.Uniform1i(g.LocMonth, AlloyRenderer.ModuleMonth);
+        Gl.Uniform1i(g.LocDay, AlloyRenderer.ModuleDay);
+        Gl.Uniform1f(g.LocTransition, AlloyRenderer.ModuleTimeIntoTransition);
+        if (g.Sampler == 0) g.Sampler = Gl.LinearClampSampler();
+        if (g.Sampler != 0) Gl.BindSampler(TextureSlots.PostHdr, g.Sampler);
     }
 
     /// <summary>The stage text: the environment the chain reads (inc_common/inc_uniforms as the fragment half

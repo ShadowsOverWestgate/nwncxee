@@ -139,16 +139,17 @@ internal static class DbEmitterChannels
         }
     }
 
-    internal static void Reset()
-    {
-        for (int b = 0; b < _blockN; b++) _blockOf[_partOf[b]] = 0;
-        _blockN = 0; _writes = 0; _refused = 0; _unknown = 0;
-    }
-
     /// <summary>Install the sink. Called at boot beside the feed's other lifetime wiring.</summary>
     internal static void Attach()
     {
         DbAnim.ChannelSink = Write;
+    }
+
+    /// <summary>The self-check's teardown. No session edge calls it: a block dies with its part, in <see cref="Forget"/>.</summary>
+    private static void Reset()
+    {
+        for (int b = 0; b < _blockN; b++) _blockOf[_partOf[b]] = 0;
+        _blockN = 0; _writes = 0; _refused = 0; _unknown = 0;
     }
 
     internal static string Stats()

@@ -21,10 +21,10 @@ internal static unsafe class EnvProbe
     internal static int Mips { get; private set; }
     /// <summary>The GGX-prefiltered cube, or 0 when it has not been built. Sampled by the Alloy lit stage on
     /// <see cref="ProbeUnit"/>.</summary>
-    internal static uint Tex { get; private set; }
+    internal static uint Tex { get => _gl.Tex; private set => _gl.Tex = value; }
     /// <summary>A capture has COMPLETED. Until then the Alloy pass feeds no ambient specular at all, never
     /// a half-written cube.</summary>
-    internal static bool Ready { get; private set; }
+    internal static bool Ready { get => _gl.Ready; private set => _gl.Ready = value; }
     /// <summary>World point the live cube was captured from: the parallax correction's centre, and the one the
     /// "has the player walked out of this probe" test measures from.</summary>
     internal static Vector3 Origin { get; private set; }
@@ -58,17 +58,30 @@ internal static unsafe class EnvProbe
     /// <summary>9 vec4 of SH plus the capture origin, std140 = std430 for vec4s.</summary>
     private const int ShBytes = 10 * 16;
 
-    private static uint _fbo;
-    /// <summary>The capture target: raw radiance plus its box chain, read only by the two dispatches.</summary>
-    private static uint _cap;
-    /// <summary>The SH9 buffer: written as SSBO <see cref="ShOutBinding"/>, read as UBO <see cref="ShBinding"/>.</summary>
-    private static uint _sh;
-    /// <summary>The two prefilter compute programs.</summary>
-    private static uint _progGgx, _progSh;
-    /// <summary><c>cx_probe_ggx</c>'s <c>uLevel</c>: the level (so the roughness) being written.</summary>
-    private static int _locLevel;
-    /// <summary><c>cx_probe_sh</c>'s <c>uOrigin</c>: the capture point it publishes beside the SH.</summary>
-    private static int _locOrigin;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so no cube, buffer,
+    /// program or uniform location from the dead context survives as a field nobody remembered to zero.
+    /// <see cref="Ready"/> rides here because a cube the dead context built is stale either way; the world
+    /// edge clears that one field on its own.</summary>
+    private sealed class EnvProbeState
+    {
+        public uint Fbo;
+        /// <summary>The capture target: raw radiance plus its box chain, read only by the two dispatches.</summary>
+        public uint Cap;
+        /// <summary>The SH9 buffer: written as SSBO <see cref="ShOutBinding"/>, read as UBO <see cref="ShBinding"/>.</summary>
+        public uint Sh;
+        /// <summary>The GGX-prefiltered cube the lit stage samples.</summary>
+        public uint Tex;
+        /// <summary>The two prefilter compute programs.</summary>
+        public uint ProgGgx, ProgSh;
+        /// <summary><c>cx_probe_ggx</c>'s <c>uLevel</c>: the level (so the roughness) being written.</summary>
+        public int LocLevel;
+        /// <summary><c>cx_probe_sh</c>'s <c>uOrigin</c>: the capture point it publishes beside the SH.</summary>
+        public int LocOrigin;
+        /// <summary>A capture has COMPLETED on this context's cube.</summary>
+        public bool Ready;
+    }
+
+    private static EnvProbeState _gl = new();
     /// <summary><c>light.probe</c>: gates <see cref="Wanted"/>, which is re-asked every frame, so the probe
     /// idles rather than un-arming and a re-enable captures at the next edge.</summary>
     private static bool _on => Lighting.Probe.V;
@@ -159,7 +172,7 @@ internal static unsafe class EnvProbe
         Origin = eye; _lastFrame = frame;
         _far = far > FaceNear * 4f ? far : FaceNear * 4f;
         Ready = false;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _gl.Fbo);
         Gl.Viewport(0, 0, Size, Size);
         // alpha 0 = nothing there, infinitely far: the parallax correction leaves the direction alone
         Gl.ClearColor(clear.X, clear.Y, clear.Z, 0f);
@@ -182,7 +195,7 @@ internal static unsafe class EnvProbe
     {
         vp = ShadowMath.PointLightFaceViewProj(Origin, face, FaceNear, _far);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0,
-                                Gl.TEXTURE_CUBE_MAP_POSITIVE_X + (uint)face, _cap, 0);
+                                Gl.TEXTURE_CUBE_MAP_POSITIVE_X + (uint)face, _gl.Cap, 0);
         if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
         { Fail("the probe framebuffer is incomplete"); return false; }
         Gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
@@ -194,7 +207,7 @@ internal static unsafe class EnvProbe
     internal static void End()
     {
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        Gl.GenerateTextureMipmap(_cap);
+        Gl.GenerateTextureMipmap(_gl.Cap);
         Prefilter();
         Captures++;
         // the roughest level's six faces, one texel each: a black probe shows here and nowhere else, and a
@@ -228,8 +241,9 @@ internal static unsafe class EnvProbe
     /// owned them is gone -- the names are simply dropped so the next capture builds fresh ones.</summary>
     internal static void Forget()
     {
-        Tex = _cap = _sh = _progGgx = _progSh = _fbo = 0; _down.Forget();
-        Revoke();   // a cube built by a dead context is stale for the world reason too
+        // the cube's freshness goes with the names: one built by a dead context is stale for the world reason too
+        _gl = new EnvProbeState();
+        _down.Forget();
     }
 
     /// <summary>The world edge. The cube describes an area that has gone away, and this is the only thing
@@ -248,37 +262,38 @@ internal static unsafe class EnvProbe
     /// use (zeroed) so the block is backed even before a capture; <c>uProbeMips</c> 0 keeps it unread till then.</summary>
     internal static void BindSh()
     {
-        if (_sh == 0)
+        if (_gl.Sh == 0)
         {
             uint b; Gl.CreateBuffers(1, &b);
             byte* zero = stackalloc byte[ShBytes];
             new Span<byte>(zero, ShBytes).Clear();
             Gl.NamedBufferStorage(b, (IntPtr)ShBytes, zero, 0);
-            _sh = b;
+            _gl.Sh = b;
         }
-        Gl.BindBufferBase(Gl.UNIFORM_BUFFER, ShBinding, _sh);
+        Gl.BindBufferBase(Gl.UNIFORM_BUFFER, ShBinding, _gl.Sh);
     }
 
     /// <summary>The two dispatches over the fresh capture: GGX into every level of <see cref="Tex"/>, SH9
-    /// into <see cref="_sh"/>. Compute, so no raster state is touched; the program and the unit are put back.</summary>
+    /// into the SH9 buffer. Compute, so no raster state is touched; the program and the unit are put back.</summary>
     private static void Prefilter()
     {
+        var g = _gl;
         int prev; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prev);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, _cap);
-        Gl.UseProgram(_progGgx);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, g.Cap);
+        Gl.UseProgram(g.ProgGgx);
         for (int i = 0; i < Mips; i++)
         {
             uint groups = (uint)(Math.Max(Size >> i, 1) + 7) / 8;
-            Gl.Uniform1i(_locLevel, i);
-            Gl.BindImageTexture(0, Tex, i, 1, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
+            Gl.Uniform1i(g.LocLevel, i);
+            Gl.BindImageTexture(0, g.Tex, i, 1, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
             Gl.DispatchCompute(groups, groups, 6);
         }
         Gl.BindImageTexture(0, 0, 0, 0, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
         BindSh();
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, _sh);
-        Gl.UseProgram(_progSh);
-        Gl.Uniform3f(_locOrigin, Origin.X, Origin.Y, Origin.Z);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, g.Sh);
+        Gl.UseProgram(g.ProgSh);
+        Gl.Uniform3f(g.LocOrigin, Origin.X, Origin.Y, Origin.Z);
         Gl.DispatchCompute(1, 1, 1);
         Gl.MemoryBarrier(Gl.TEXTURE_FETCH_BARRIER_BIT | Gl.UNIFORM_BARRIER_BIT);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, 0);
@@ -294,14 +309,14 @@ internal static unsafe class EnvProbe
         { Fail("a required GL entry point for the probe is missing"); return false; }
         if (Gl.DispatchCompute == null || Gl.BindImageTexture == null || Gl.MemoryBarrier == null || Gl.CreateBuffers == null)
         { Fail("compute, image stores or buffer creation are missing, so the probe cannot be prefiltered"); return false; }
-        if (_progGgx == 0)
+        if (_gl.ProgGgx == 0)
         {
-            _progGgx = GlProgram.Compute("cx_probe_ggx", ShaderSource.Get("cx_probe_ggx.glsl"), _log, "EnvProbe GGX prefilter");
-            _progSh = GlProgram.Compute("cx_probe_sh", ShaderSource.Get("cx_probe_sh.glsl"), _log, "EnvProbe SH9 projection");
-            if (_progGgx == 0 || _progSh == 0)
+            _gl.ProgGgx = GlProgram.Compute("cx_probe_ggx", ShaderSource.Get("cx_probe_ggx.glsl"), _log, "EnvProbe GGX prefilter");
+            _gl.ProgSh = GlProgram.Compute("cx_probe_sh", ShaderSource.Get("cx_probe_sh.glsl"), _log, "EnvProbe SH9 projection");
+            if (_gl.ProgGgx == 0 || _gl.ProgSh == 0)
             { Fail("the prefilter or SH9 program did not build"); return false; }
-            _locLevel = GlProgram.Loc(_progGgx, "uLevel");
-            _locOrigin = GlProgram.Loc(_progSh, "uOrigin");
+            _gl.LocLevel = GlProgram.Loc(_gl.ProgGgx, "uLevel");
+            _gl.LocOrigin = GlProgram.Loc(_gl.ProgSh, "uOrigin");
         }
 
         Mips = 1;
@@ -329,7 +344,7 @@ internal static unsafe class EnvProbe
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, d, 0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
 
-        Tex = t; _cap = cap; _fbo = f2;
+        _gl.Tex = t; _gl.Cap = cap; _gl.Fbo = f2;
         return true;
     }
 

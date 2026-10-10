@@ -14,9 +14,6 @@ internal static class SkyBox
     /// <summary>The player's own switch (<c>effects.sky</c>), live rather than a relaunch.</summary>
     internal static bool Disabled => !Effects.Sky.V;
 
-    /// <summary>Every enrolled identity is void: the parts belonged to gobs the area unload freed.</summary>
-    internal static void Forget() { }
-
     /// <summary>Zeroed with the rest of the period report's counters: a cumulative one would keep printing
     /// a healthy number long after the sky stopped being drawn, which is the opposite of the question.</summary>
     internal static void ResetPeriod() { _hosted = 0; }

@@ -266,9 +266,9 @@ public sealed unsafe partial class CasterPass
             // instead and skips the mode-2 hole gate, which would hand it straight back to the solid stage.
             bool glass = drawTex != 0 && _maskDither > 0
                          && (_liveBlend[i] || (db ? dbGraded : TexGraded(drawTex)) >= _maskGraded);
-            int masked = drawTex != 0 && _progMask != 0 && _maskMode != 0
+            int masked = drawTex != 0 && _gl.ProgMask != 0 && _maskMode != 0
                          && (glass || (db ? dbHoles > 0f : TexHasAlpha(drawTex))) ? drawTex : 0;
-            if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
+            if (masked == 0 && _liveTex[i] != 0 && _gl.ProgMask == 0) _maskNoProg++;
             // The mask MODE is decided here, in the key, not at the draw: a masked texture the mode draws
             // solid merges into its (VAO, prim) batch instead of costing one indirect call per view per
             // texture. The knobs bump _listVer so a change re-stages.
@@ -352,17 +352,17 @@ public sealed unsafe partial class CasterPass
             if (mode != boundMode)
             {
                 boundMode = mode;
-                Gl.UseProgram(mode == 0 ? _prog : mode == 1 ? _progMask : _progMaskH);
-                Gl.UniformMatrix4fv(mode == 0 ? _locVp : mode == 1 ? _locMaskVp : _locMaskHVp, 1, 0, (float*)vp);
-                if (mode == 1) Gl.Uniform1i(_locMaskTex, 0);
+                Gl.UseProgram(mode == 0 ? _gl.Prog : mode == 1 ? _gl.ProgMask : _gl.ProgMaskH);
+                Gl.UniformMatrix4fv(mode == 0 ? _gl.LocVp : mode == 1 ? _gl.LocMaskVp : _gl.LocMaskHVp, 1, 0, (float*)vp);
+                if (mode == 1) Gl.Uniform1i(_gl.LocMaskTex, 0);
                 boundCut = -1f;
             }
             if (mode != 0 && _gCut[g] != boundCut)
             {
-                boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locMaskCut : _locMaskHCut, boundCut);
-                Gl.Uniform1f(mode == 1 ? _locMaskMip : _locMaskHMip, Renderer.CutMip.V);
-                Gl.Uniform1i(mode == 1 ? _locMaskDither : _locMaskHDither, _maskDither);
-                Gl.Uniform1i(mode == 1 ? _locMaskEnv : _locMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
+                boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _gl.LocMaskCut : _gl.LocMaskHCut, boundCut);
+                Gl.Uniform1f(mode == 1 ? _gl.LocMaskMip : _gl.LocMaskHMip, Renderer.CutMip.V);
+                Gl.Uniform1i(mode == 1 ? _gl.LocMaskDither : _gl.LocMaskHDither, _maskDither);
+                Gl.Uniform1i(mode == 1 ? _gl.LocMaskEnv : _gl.LocMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
             }
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }

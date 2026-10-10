@@ -9,18 +9,10 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>The OWNERSHIP WALK: one pass over the scene's parts decides what Alloy takes this generation --
-/// material read, feature classification, texture and VDO interning, the per-VDO attribute harvest and the
-/// 4.6-side VAO built over it -- and revocation is its inverse. Cold: it runs on an enrollment edge, never per
-/// frame.</summary>
+/// <summary>The ownership slot table's plumbing: the stable slot allocator the database seat and release use,
+/// the world edge's GL-side teardown, and the radix order the batch cut walks. Cold: each runs on an edge.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>May this slot's ENGINE pointers be dereferenced? Not the same as live: a database slot's
-    /// <c>_oTri</c> is a deliberately non-canonical sentinel (so an unbranched deref faults loudly rather than
-    /// reading garbage) and its <c>_oVdo</c>/<c>_oNode</c>/<c>_oMat</c> are null, so every enrolment-only walk
-    /// tests THIS, not <c>_oTri != Zero</c>.</summary>
-    private static bool EngineSlot(int i) => _oTri[i] != IntPtr.Zero && _oDbPart[i] < 0;
-
     /// <summary>Retire a slot WITHOUT touching its entry's OwnFlag or the revoke counter. The enrollment
     /// sweeps need this variant: a PartTable entry can change hands between enrollments, so by sweep time
     /// <c>_oEntry[i]</c> may name an entry a DIFFERENT slot claimed this scan, and clearing its flag would
@@ -40,20 +32,11 @@ public sealed unsafe partial class AlloyRenderer
         _freeSlots[_freeCount++] = i;
     }
 
-    /// <summary>Stable ownership slots: a part KEEPS its slot across enrollments, because the slot index is the
+    /// <summary>Stable ownership slots: a part KEEPS its slot while it lives, because the slot index is the
     /// identity every persistent slot-keyed table hangs off (per-draw records, sphere tables, shadow tenancy
-    /// stamps, cull buffers) -- dense renumbering flaps tenancy and flickers shadows. The hash maps a live tenant
-    /// to its slot (generation-stamped, never cleared); the claim stamp tells a re-claimed slot from a departed one.</summary>
-    private static readonly int[] _oClaim = new int[MaxOwned];
+    /// stamps, cull buffers).</summary>
     private static readonly int[] _freeSlots = new int[MaxOwned];
     private static int _freeCount, _ownLive;
-    // MaxOwned MUST stay below 1<<SlotHashBits or HashLiveSlots's probe loop never finds an empty bucket
-    private const int SlotHashBits = 19;   // 1<<19 = 524288, >= 3x MaxOwned: probe chains stay short
-    private static readonly int[] _shSlot = new int[1 << SlotHashBits];
-    private static readonly int[] _shGen = new int[1 << SlotHashBits];
-
-    private static int SlotHash(IntPtr tri)
-        => (int)((ulong)(long)tri * 0x9E3779B97F4A7C15UL >> (64 - SlotHashBits));
 
     /// <summary>A newcomer's slot: a vacated one if any sweep left one, the next high-water slot otherwise.
     /// Never overflows past MaxOwned -- the capacity gate refuses on the LIVE count, and every slot below the

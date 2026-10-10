@@ -38,30 +38,33 @@ internal static unsafe class SkyStage
         public AlloyRenderer.FeatLoc Feat;
     }
 
-    private static readonly Entry[] _progs = new Entry[MaxProgs];
-    private static int _count;
+    /// <summary>Everything the GL context owns, in one object: context loss replaces it, so neither a program
+    /// name nor the failure latch taken against the dead context survives as a field nobody remembered to
+    /// zero.</summary>
+    private sealed class SkyState
+    {
+        public readonly Entry[] Progs = new Entry[MaxProgs];
+        public int Count;
+        /// <summary>The program whose per-pass uniforms are already uploaded this pass, so a role's several
+        /// parts cost one upload. Cleared by <see cref="BeginPass"/>.</summary>
+        public uint Primed;
+    }
+
+    private static SkyState _gl = new();
     private static ExtenderLog? _log;
-    /// <summary>The program whose per-pass uniforms are already uploaded this pass, so a role's several parts
-    /// cost one upload. Cleared by <see cref="BeginPass"/>.</summary>
-    private static uint _primed;
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
     /// <summary>Context loss: every GL name is gone, and a failure latch taken against the old context is not
     /// evidence about the new one.</summary>
-    internal static void Forget()
-    {
-        for (int i = 0; i < _count; i++) _progs[i] = default;
-        _count = 0;
-        _primed = 0;
-    }
+    internal static void Forget() => _gl = new SkyState();
 
     /// <summary>Module change: the spliced text came off THAT module's resource chain, so it has a module
     /// lifetime (the server-switch trap -- a program built from one server's chain running on another's). Rebuilds
     /// lazily on the next sky frame.</summary>
     internal static void DropPrograms()
     {
-        for (int i = 0; i < _count; i++) if (_progs[i].Prog != 0) Gl.DeleteProgram(_progs[i].Prog);
+        for (int i = 0; i < _gl.Count; i++) if (_gl.Progs[i].Prog != 0) Gl.DeleteProgram(_gl.Progs[i].Prog);
         Forget();
     }
 
@@ -71,16 +74,17 @@ internal static unsafe class SkyStage
     internal static uint Program(string fs)
     {
         if (fs.Length == 0) return 0;
-        for (int i = 0; i < _count; i++)
-            if (string.Equals(fs, _progs[i].Ref, StringComparison.OrdinalIgnoreCase)) return _progs[i].Prog;
-        if (_count >= MaxProgs)
+        var g = _gl;
+        for (int i = 0; i < g.Count; i++)
+            if (string.Equals(fs, g.Progs[i].Ref, StringComparison.OrdinalIgnoreCase)) return g.Progs[i].Prog;
+        if (g.Count >= MaxProgs)
         {
             _log?.Always($"SkyStage: more than {MaxProgs} distinct sky fragment stages in one session -- the sky "
                        + "is NOT DRAWN for this area");
             return 0;
         }
         string resref = fs.ToLowerInvariant();
-        ref Entry e = ref _progs[_count++];
+        ref Entry e = ref g.Progs[g.Count++];
         e.Ref = resref;
         e.Prog = Build(resref);
         if (e.Prog == 0) { e.Failed = true; return 0; }
@@ -156,7 +160,7 @@ internal static unsafe class SkyStage
 
     /// <summary>A pass is starting: nothing is primed. Cheap, and it is what stops one pass's upload being
     /// credited to the next (the probe's six faces each have their own view-projection).</summary>
-    internal static void BeginPass() => _primed = 0;
+    internal static void BeginPass() => _gl.Primed = 0;
 
     /// <summary>Everything a sky program needs that does not vary per draw, uploaded once per program per
     /// pass: the view-projection, the sampler units, the camera's world matrix (stock reads its translation
@@ -164,17 +168,18 @@ internal static unsafe class SkyStage
     /// <c>m_shaderExposedRuntimeData</c> -- the same values the engine feeds its own copy. Hot.</summary>
     internal static void Prepare(uint prog, Matrix4x4* vp, int* viewport)
     {
+        var g = _gl;
         int at = -1;
-        for (int i = 0; i < _count; i++) if (_progs[i].Prog == prog) { at = i; break; }
+        for (int i = 0; i < g.Count; i++) if (g.Progs[i].Prog == prog) { at = i; break; }
         if (at < 0) return;
-        ref Entry e = ref _progs[at];
+        ref Entry e = ref g.Progs[at];
         Gl.UseProgram(prog);
-        if (_primed == prog)
+        if (g.Primed == prog)
         {
             Gl.UniformMatrix4fv(e.Vp, 1, 0, (float*)vp);
             return;
         }
-        _primed = prog;
+        g.Primed = prog;
         Gl.UniformMatrix4fv(e.Vp, 1, 0, (float*)vp);
         Gl.Uniform1i(e.Tex, 0);
         Gl.Uniform1i(e.Tex1, 1);
@@ -204,10 +209,11 @@ internal static unsafe class SkyStage
     /// gob).</summary>
     internal static void Draw(uint prog, int slot, float* tint, float alpha, float skyFog)
     {
+        var g = _gl;
         int at = -1;
-        for (int i = 0; i < _count; i++) if (_progs[i].Prog == prog) { at = i; break; }
+        for (int i = 0; i < g.Count; i++) if (g.Progs[i].Prog == prog) { at = i; break; }
         if (at < 0) return;
-        ref Entry e = ref _progs[at];
+        ref Entry e = ref g.Progs[at];
         Gl.Uniform1i(e.DrawBase, slot);
         Gl.Uniform3fv(e.Tint, 1, tint);
         Gl.Uniform4f(e.Global, tint[0], tint[1], tint[2], alpha);
@@ -218,10 +224,11 @@ internal static unsafe class SkyStage
     /// named" and "a stage that would not build" are different facts.</summary>
     internal static string Stats()
     {
-        if (_count == 0) return "none";
+        var g = _gl;
+        if (g.Count == 0) return "none";
         var sb = new System.Text.StringBuilder();
-        for (int i = 0; i < _count; i++)
-            sb.Append(i > 0 ? ", " : "").Append(_progs[i].Ref).Append(_progs[i].Failed ? " REFUSED" : " hosted");
+        for (int i = 0; i < g.Count; i++)
+            sb.Append(i > 0 ? ", " : "").Append(g.Progs[i].Ref).Append(g.Progs[i].Failed ? " REFUSED" : " hosted");
         return sb.ToString();
     }
 

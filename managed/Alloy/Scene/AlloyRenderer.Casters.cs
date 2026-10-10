@@ -177,23 +177,21 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The dangly solve's report for <paramref name="part"/>: this frame's largest per-vertex
     /// displacement, accumulated against <paramref name="still"/> (infinity forces a move). True when the
-    /// slot became a mover. Hot (per animated part per frame): the O(1) enrollment-hash probe
-    /// <see cref="NotePartDeath"/> uses, no allocation. A part not (yet) owned is not a caster and needs no stamp.</summary>
-    internal static bool NoteDanglyMoved(IntPtr part, float dist, float still)
+    /// slot became a mover. Hot (per dangly part per frame), allocation-free. A part not (yet) seated is not a
+    /// caster and needs no stamp.</summary>
+    internal static bool NoteDanglyMoved(int part, float dist, float still)
     {
-        int i = OwnedSlotOf(part);
+        int i = SlotOfPart(part);
         if (i < 0 || !Accumulate(ref _oDanglyAcc[i], dist, still)) return false;
         _oDanglyMovedAt[i] = _frameSeq;
         return true;
     }
 
-    /// <summary>The ownership slot holding <paramref name="part"/>, or -1: the O(1) enrollment-hash probe.</summary>
-    private static int OwnedSlotOf(IntPtr part)
+    /// <summary>The ownership slot database part <paramref name="part"/> is seated in, or -1.</summary>
+    private static int SlotOfPart(int part)
     {
-        int mask = (1 << SlotHashBits) - 1;
-        for (int j = SlotHash(part); _shGen[j] == _enrollGen; j = (j + 1) & mask)
-            if (_oTri[_shSlot[j]] == part) return _shSlot[j];
-        return -1;
+        int i = (uint)part < SceneDb.MaxParts ? SceneDb.PartSlot[part] : -1;
+        return i >= 0 && _oDbPart[i] == part ? i : -1;
     }
 
     /// <summary>The mover verdict: the displacement path length since the last report crosses the threshold.
