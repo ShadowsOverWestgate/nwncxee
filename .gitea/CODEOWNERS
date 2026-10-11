@@ -1,2 +1,3 @@
 # Gitea reads each pattern as a regular expression. Only an Owner approves a workflow change.
 .gitea/workflows/.* @NWNEE_CX/Owners
+.github/workflows/.* @NWNEE_CX/Owners
