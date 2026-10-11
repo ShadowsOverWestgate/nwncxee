@@ -336,6 +336,7 @@ public sealed unsafe partial class AlloyRenderer
         f.View = view; f.Proj = proj; f.Vp = vp; f.VpClean = vpClean;
         f.Jx = jx; f.Jy = jy; f.Near = near; f.Far = far; f.P00 = p00; f.P11 = p11;
         f.Perspective = perspective; f.LightingOn = lightingOn; f.Srgb = srgb; f.Groups = groups;
+        PresentTarget.MarkComposed();
         return true;
     }
 

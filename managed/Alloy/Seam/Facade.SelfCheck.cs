@@ -227,6 +227,10 @@ internal static unsafe class FacadeSelfCheck
         int viaPrimary = SeamVtables.Logical(SeamTable.StringGob, 94);
         check.Expect(viaString == viaPrimary && viaString >= 0,
             "CAurString slot 4 and StringGob slot 94 are the same implementation and must share one logical id");
+        // An override of a virtual BOTH bases declare stays in MSVC's primary too: nwmain.exe's StringGob vftable
+        // (rva 0xd81440) holds StringGob::GetExternalData at Windows 30, the slot a GUI click reads a label through.
+        check.Expect(SeamVtables.Windows(SeamTable.StringGob)[30] == SeamVtables.Windows(SeamTable.CAurString)[8],
+            "Windows StringGob slot 30 must be StringGob::GetExternalData (measured), not Gob's -- a label click is lost");
 
         // Every slot of every table resolves to a logical id: a -1 would be a hole the builder fills with
         // poison and nobody asked for.

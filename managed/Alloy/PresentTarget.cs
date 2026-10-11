@@ -17,6 +17,10 @@ internal static unsafe class PresentTarget
     private static int _w, _h;
     private static ExtenderLog? _log;
     private static bool _announced, _blitFailed;
+    private static ComposeState _compose = new();
+
+    /// <summary>Whether the world frame has composited into the texture since the last hand-back.</summary>
+    private sealed class ComposeState { internal bool Composed; }
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
@@ -52,6 +56,10 @@ internal static unsafe class PresentTarget
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
 
+    /// <summary>The world frame is about to composite into the texture: the GUI flush draws over it as it is
+    /// instead of taking the stale screen back over it.</summary>
+    internal static void MarkComposed() { if (Needed) _compose.Composed = true; }
+
     /// <summary>Blit the finished frame into the real default framebuffer. MUST run in the ENGINE's context,
     /// after the bracket has closed: that is the whole point, and calling it inside the bracket reintroduces
     /// the bug it exists to fix.</summary>
@@ -74,6 +82,7 @@ internal static unsafe class PresentTarget
         }
         Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        _compose.Composed = false;
     }
 
     /// <summary>The present texture and its size, for the GUI pass's own framebuffer (colour = this texture,
@@ -85,11 +94,11 @@ internal static unsafe class PresentTarget
     internal static int Height => _h;
 
     /// <summary>The reverse of <see cref="HandBack"/>, in the ENGINE context: copy the real default framebuffer
-    /// INTO the present texture, so a GUI flush draws over what is on screen now -- the world frame's hand-back,
-    /// or the engine's clear on a frame with no world.</summary>
+    /// INTO the present texture, so a GUI flush on a frame with no world draws over what is on screen now. A frame
+    /// the world composited skips it: the screen is last frame's, and copying it would erase the world.</summary>
     internal static void TakeBack()
     {
-        if (!Needed || _tex == 0) return;
+        if (!Needed || _tex == 0 || _compose.Composed) return;
         if (_fboEng == 0) { uint f; Gl.GenFramebuffers(1, &f); _fboEng = f; }
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fboEng);
         Gl.FramebufferTexture2D(Gl.DRAW_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _tex, 0);
@@ -100,5 +109,5 @@ internal static unsafe class PresentTarget
     }
 
     /// <summary>GL names die with the context. Names only -- the images are gone already.</summary>
-    internal static void ContextLost() { _tex = 0; _fbo46 = 0; _fboEng = 0; _w = _h = 0; }
+    internal static void ContextLost() { _tex = 0; _fbo46 = 0; _fboEng = 0; _w = _h = 0; _compose = new(); }
 }

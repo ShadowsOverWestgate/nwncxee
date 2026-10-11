@@ -130,6 +130,21 @@ def win_order(base_rows, extra=(), overrides=()):
     return [out.get(i, -1) for i in range(n)]
 
 
+def win_patched(order, extra_rows):
+    """A derived primary's Windows table with the overrides `derived_primary` patches in on Linux. An override
+    of a virtual BOTH bases declare sits in the primary under MSVC too (nwmain.exe's StringGob vftable @0xd81440
+    holds StringGob::GetExternalData at 30); only an override of a secondary-only virtual is absent from it."""
+    out = list(order)
+    for r in extra_rows:
+        k = base_name(r["linux_symbol_demangled"])
+        if int(r["slot_index"]) < 2 or k not in gob_by_key:
+            continue
+        w, _ = win_slot(next(g for g in gob_rows if int(g["slot_index"]) == gob_by_key[k])["windows_slot"])
+        if w is not None and w < len(out):
+            out[w] = logical_id(r)
+    return out
+
+
 tables = []
 # Gob: single inheritance, pairs 1:1.
 tables.append(("Gob", primary(gob_rows), win_order(gob_rows), 0))
@@ -140,7 +155,7 @@ tables.append(("Camera", primary(cam_rows), win_order(cam_rows), 0))
 # StringGob primary: Gob's layout with StringGob's overrides (read off the CAurString table's thunks)
 # and StringGob's own 49 appended.
 tables.append(("StringGob", derived_primary(gob_rows, sgo_rows, 94, str_rows),
-               win_order(gob_rows, sgo_rows), 0))
+               win_patched(win_order(gob_rows, sgo_rows), str_rows), 0))
 # CAurString: the secondary sub-object table at +0x4c0.
 tables.append(("CAurString", primary(str_rows), win_order(str_rows), -0x4c0))
 # Camera's secondary Gob table at +8: Gob's layout with Camera's overrides patched in.
