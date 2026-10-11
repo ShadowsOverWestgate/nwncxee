@@ -70,7 +70,7 @@ jobs:
       - name: Build + package
         run: |
           set -euo pipefail
-          ./build.sh
+          ./build.sh --no-gates # source rules, not build steps: ci / gates ran them on the pull request
           rm -rf dist && mkdir -p dist
           # build.sh zips the CONTENTS of cx-linux-x64/ (flat), so
           # "unpack into bin/linux-x86" is literally the whole install.
