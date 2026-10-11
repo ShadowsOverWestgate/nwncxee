@@ -61,12 +61,9 @@ jobs:
           sudo apt-get install -y -q clang lld zlib1g-dev cmake pkg-config \
             libpipewire-0.3-dev libpulse-dev libasound2-dev   # CX-57: OpenAL Soft's backends
 
-      # CX-57: tools/deps.json's pinned archives (Steam Audio alone is 180 MB), keyed on the pins themselves.
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with: { path: ~/.cache/cx-deps, key: "cx-deps-${{ hashFiles('tools/deps.json') }}" }
-
       # The built libopenal.so.1: build.sh skips the OpenAL Soft compile when it is present. Keyed on the pin and
-      # on the script that holds the cmake flags.
+      # on the script that holds the cmake flags. openal-cache.yml keeps this entry alive on main, where a tag
+      # run can restore it.
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with: { path: build/openal, key: "openal-${{ runner.os }}-${{ hashFiles('tools/deps.json', 'tools/build-openal.sh') }}" }
 
@@ -101,9 +98,6 @@ jobs:
           dotnet-version: 10.0.401 # the SDK flake.lock pins; bump the two together
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with: { path: ~/.cache/cx-deps, key: "cx-deps-${{ hashFiles('tools/deps.json') }}" }
 
       # The symbol gate (tools/abi/check-win-symbols.py) needs llvm-undname and a real nwmain.exe; the
       # runner has neither, so the script skips it. It runs on the dev box via build-win.sh.
