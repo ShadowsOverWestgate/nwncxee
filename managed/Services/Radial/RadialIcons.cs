@@ -101,7 +101,7 @@ internal static unsafe class RadialIcons
             int n = Layers(icon, tids);
             log.Info($"[radial] icon slot=c kind={Classify(icon)} tid={(n > 0 ? tids[0] : 0)} layers={n} icon=0x{(long)icon:x} (0 = built on the next frame)");
         }
-        return new CascadeItem(ObjectName(id)) { IconHandle = (IntPtr)id };
+        return new CascadeItem(Native.EngineText(ObjectName(id))) { IconHandle = (IntPtr)id };
     }
 
     /// <summary>Have the engine build the item's own icon model when the icon is PLT-tinted (layered or armour), so its

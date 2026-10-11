@@ -119,9 +119,7 @@ public sealed unsafe partial class ChatService
         Open(draft: text.Length == 0);
         if (text.Length > 0 && IsTyping)
         {
-            // text was read Latin1 (char == source byte), so Latin1.GetBytes recovers the original
-            // UTF-8 bytes; UTF8.GetBytes here would re-encode and double-encode any multibyte name.
-            Edit.InsertUtf8(Encoding.Latin1.GetBytes(text));
+            Edit.Insert(Native.EngineText(text));
             Rebuild();
         }
     }
@@ -292,6 +290,7 @@ public sealed unsafe partial class ChatService
         if (_settings.Editing)   // typed chars go to the focused settings value box, not the chat line
         { _settings.EditInsert(s); return; }
         _completer.Reset();
+        s = Native.EngineTyped(s);
         if (s == " ") Edit.ExpandBeforeCaret(ShortcutLookup);
         Edit.Type(s, ChatKnobs.Pairs.V);
         Rebuild();   // reflect the new text in the footer
@@ -397,7 +396,7 @@ public sealed unsafe partial class ChatService
         byte* s = (byte*)p;
         int n = 0;
         while (s[n] != 0) n++;
-        Edit.InsertUtf8(new ReadOnlySpan<byte>(s, n));
+        Edit.Insert(Native.EngineTyped(Encoding.UTF8.GetString(s, n)));
         if (EngineFn.SdlFree != null) EngineFn.SdlFree(p);   // SDL_GetClipboardText returns SDL-malloc'd memory
         Rebuild();   // Ctrl+V early-returns from RouteKey before its trailing Rebuild -> redraw the footer here
     }

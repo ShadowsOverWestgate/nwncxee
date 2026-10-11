@@ -17,8 +17,9 @@ public static class ColorRunParser
 
     private const float DefaultR = 1f, DefaultG = 1f, DefaultB = 1f;
 
-    /// <summary>Parse <paramref name="s"/> into color runs. Text outside any tag gets the default color.</summary>
-    public static ColorRun[] Parse(string s)
+    /// <summary>Parse <paramref name="s"/> into color runs. Text outside any tag gets the default color. Engine text
+    /// (<paramref name="engine"/>) has each run decoded for display by <see cref="Native.EngineText"/>.</summary>
+    public static ColorRun[] Parse(string s, bool engine = true)
     {
         if (string.IsNullOrEmpty(s)) return System.Array.Empty<ColorRun>();
 
@@ -31,7 +32,7 @@ public static class ColorRunParser
         void Flush()
         {
             if (sb.Length == 0) return;
-            runs.Add(new ColorRun(sb.ToString(), cr, cg, cb));
+            runs.Add(new ColorRun(engine ? Native.EngineText(sb.ToString()) : sb.ToString(), cr, cg, cb));
             sb.Clear();
         }
 

@@ -87,6 +87,26 @@ public static unsafe class Native
         return buf == null || len == 0 || len > MaxExoLen ? "" : Encoding.Latin1.GetString(buf, (int)len);
     }
 
+    /// <summary>Engine text read byte-per-char (<see cref="ReadExo"/>) as Unicode for DISPLAY: each 0x80..0xff char
+    /// through <c>Encoding::SingleCharToUTF8(c, 0)</c> -- the same map vanilla's TTF atlas draws with (client
+    /// codepage). Run it after colour parsing (tag bytes are raw); keep the byte-space string for anything sent back.</summary>
+    public static string EngineText(string s)
+    {
+        var fn = EngineFn.Cx119EncodingSingleCharToUtf8;
+        if (fn == null) return s;
+        int i = 0;
+        while (i < s.Length && (s[i] < 0x80 || s[i] > 0xff)) i++;
+        if (i == s.Length) return s;
+        char[] r = s.ToCharArray();
+        for (; i < r.Length; i++)
+            if (r[i] is >= (char)0x80 and <= (char)0xff) r[i] = (char)fn((byte)r[i], 0);
+        return new string(r);
+    }
+
+    /// <summary>Typed or pasted text as a vanilla field holds and shows it: <c>FromUTF8</c> on the way in (what the
+    /// SDL_TEXTINPUT and Ctrl+V handlers run), the atlas map on the way out -- "łódź" reads "?ód?" on cp1252.</summary>
+    public static string EngineTyped(string s) => EngineText(Encoding.Latin1.GetString(EngineBytes(s)));
+
     /// <summary>The std::string and CExoString readers against hand-built layouts -- the stub host has no engine to call.</summary>
     public static void SelfCheck(ExtenderLog log)
     {

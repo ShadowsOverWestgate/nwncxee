@@ -51,6 +51,7 @@ public sealed unsafe partial class ChatService
             }
         }
         if (_playerResolver != null) names.AddRange(_playerResolver.OnlineNames());
+        for (int i = 0; i < names.Count; i++) names[i] = Native.EngineText(NameCompleter.Clean(names[i]));   // tags are raw bytes: strip first
         return names;
     }
 }

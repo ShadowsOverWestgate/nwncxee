@@ -138,7 +138,7 @@ public sealed unsafe partial class ChatService
                 ChatWindow[] wins = _layout.Windows;
                 if ((uint)decision.WindowIndex < (uint)wins.Length)
                 {
-                    var tab = new Tab($"T:{name}", 0x002, line.PlayerId) { PinnedName = name };
+                    var tab = new Tab($"T:{Native.EngineText(name)}", 0x002, line.PlayerId) { PinnedName = name };
                     wins[decision.WindowIndex].AddTab(tab);
                     wins[decision.WindowIndex].Dirty = true;
                     _log?.Info($"[chat] tell auto-open: new tab '{name}' (pid={line.PlayerId}) in window {decision.WindowIndex}");
@@ -149,7 +149,7 @@ public sealed unsafe partial class ChatService
             {
                 ChatWindow main = _layout.Main;
                 float offset = _layout.Count * 30f;
-                var tab = new Tab($"T:{name}", 0x002, line.PlayerId) { PinnedName = name };
+                var tab = new Tab($"T:{Native.EngineText(name)}", 0x002, line.PlayerId) { PinnedName = name };
                 var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H, new[] { tab });
                 if (_layout.AddWindow(win) != null)
                     _log?.Info($"[chat] tell auto-open: new window for '{name}' (pid={line.PlayerId})");
@@ -184,10 +184,7 @@ public sealed unsafe partial class ChatService
         {
             Open(draft: false);
             string cmd = $"/t \"{name}\" ";
-            // name was read Latin1 (char == source byte); Latin1.GetBytes recovers the original UTF-8
-            // bytes. UTF8.GetBytes would double-encode a non-ASCII name into the command.
-            byte[] utf8 = Encoding.Latin1.GetBytes(cmd);
-            Edit.InsertUtf8(utf8);
+            Edit.Insert(Native.EngineText(cmd));
             Rebuild();
             return;
         }
@@ -208,7 +205,7 @@ public sealed unsafe partial class ChatService
             case TellRoute.NewTab:
             {
                 ChatWindow win = _layout.Windows[decision.WindowIndex];
-                win.AddTab(new Tab($"T:{name}", 0x002, playerId) { PinnedName = name });
+                win.AddTab(new Tab($"T:{Native.EngineText(name)}", 0x002, playerId) { PinnedName = name });
                 win.SelectTab(win.Tabs.Count - 1);
                 _layout.FocusedIndex = decision.WindowIndex;
                 win.SendChannel = Channel.Tell;
@@ -218,7 +215,7 @@ public sealed unsafe partial class ChatService
             {
                 ChatWindow main = _layout.Main;
                 float offset = _layout.Count * 30f;
-                var tab = new Tab($"T:{name}", 0x002, playerId) { PinnedName = name };
+                var tab = new Tab($"T:{Native.EngineText(name)}", 0x002, playerId) { PinnedName = name };
                 var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H, new[] { tab });
                 if (_layout.AddWindow(win) != null)
                 {
@@ -252,7 +249,7 @@ public sealed unsafe partial class ChatService
     /// can read while standing in the scene they are tuning. Talk channel so it lands in the default tab.</summary>
     private static void EchoLocal(string text)
     {
-        _store.Append(new ChatLine(0x001, "", 0, "", ColorRunParser.Parse(text), DateTime.UtcNow, text, GameNow()));
+        _store.Append(new ChatLine(0x001, "", 0, "", ColorRunParser.Parse(text, engine: false), DateTime.UtcNow, text, GameNow()));
     }
 
     /// <summary>Route submitted text to the server on <paramref name="ch"/> via the vanilla

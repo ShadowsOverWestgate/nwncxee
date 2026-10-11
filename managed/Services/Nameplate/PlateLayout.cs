@@ -369,7 +369,7 @@ public static partial class PlateLayout
     public static string StripColours(string raw, out uint[]? colours)
     {
         colours = null;
-        if (raw.Length == 0 || raw.IndexOf('<') < 0) return raw;
+        if (raw.Length == 0 || raw.IndexOf('<') < 0) return Native.EngineText(raw);
 
         ColorRun[] runs = ColorRunParser.Parse(raw);
         int len = 0;

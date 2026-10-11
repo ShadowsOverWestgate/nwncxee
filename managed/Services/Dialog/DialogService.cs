@@ -173,7 +173,7 @@ public sealed unsafe class DialogService : IExtenderService
             _dialogId = dialogId;
             _speakerId = speakerId;
             _portraitResref = ResolvePortrait(speakerId);   // same thread ShowDialogEntry ran on -> safe
-            _speakerName = ResolveName(speakerId);
+            _speakerName = Native.EngineText(ResolveName(speakerId));
             _replies = System.Array.Empty<Reply>();
             _isEndDialog = false;
             _hover = -1;
