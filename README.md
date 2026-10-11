@@ -95,9 +95,6 @@ Fork the repository and open a pull request against `main`. CI doesn't run on a 
 fork until a maintainer approves it. Once you've had a pull request merged here, your CI runs start
 on their own.
 
-Owners push their branches as `owners/<name>`. Any other branch in this repository can't change a file
-under `.gitea/`, and that includes merging in a workflow change from `main`.
-
 ## Reporting a problem
 
 CX is silent by default. To get a log, create `cx.cfg` next to `nwn.ini` (Windows:
