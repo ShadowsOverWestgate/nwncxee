@@ -42,6 +42,10 @@ Per-machine paths -- the game, the decomp dump, the Ghidra project, content corp
 resolve through `tools/paths.py`: the environment, then `local.env` (gitignored; copy `local.env.example`),
 then a stock default (your Steam library). `$NWN_DECOMP` and `$GHIDRA_PROJECT` below name those keys. No tracked file names one machine's path; `local-paths.sh` refuses it.
 
+CI builds only when a pull request touches a path in the `paths` list of `.gitea/workflows/ci.yml`; every
+other path skips the build by design (an allowlist, not "unknown paths build"). When `build.sh` or a script
+it calls reads a new file, add that file to the list in the same change.
+
 `build.sh` stages a runtime folder `cx-linux-x64/` (launcher + 2 `.so` + the audio runtime) and a flat zip
 of its contents -- the install is "unpack into bin/linux-x86".
 Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./cx-linux-x64/cx-launch`
@@ -218,6 +222,8 @@ shrink. Adding a rule means adding its gate in the same change, and one line her
   goes on to log "passed". A self-check Claude writes names its oracle in the check's `<summary>`.
 - `server-neutral.sh`: `managed/` naming a specific server or its content (SoW, Westgate, Arelith) fails;
   describe it generically. `Framework/Product.cs` (the hosting URLs) is exempt.
+- `workflows.sh`: a workflow under `.gitea/workflows/` or `.github/workflows/` that actionlint refuses fails --
+  bad YAML or expressions, a runner label missing from `.github/actionlint.yaml`, a shellcheck warning in a `run:`.
 - `local-paths.sh`: a home directory, mount point or personal checkout path in a tracked file fails
   (`docs/adr/`, `docs/handoff/` exempt); a machine's paths go through `tools/paths.py`.
 

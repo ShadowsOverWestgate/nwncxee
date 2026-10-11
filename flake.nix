@@ -39,6 +39,8 @@
       gatesPackages = [
         pythonBase
         pkgs.git
+        pkgs.actionlint
+        pkgs.shellcheck
       ];
 
       # build.sh and run-demo.sh. The libraries go in buildInputs so pkg-config and CMake find
@@ -51,6 +53,9 @@
         pkgs.gnumake
         pkgs.pkg-config
         pkgs.git
+        # build.sh runs tools/gates/run.sh, and its workflows gate needs both.
+        pkgs.actionlint
+        pkgs.shellcheck
       ];
       ciLibraries = [
         pkgs.zlib
@@ -79,8 +84,9 @@
       pins = lib.importJSON ./tools/deps.json;
 
       # build.sh's libopenal.so.1, built by the same script from the same pinned source. Nix keeps it in the
-      # store, so it compiles once per pin and toolchain and CI never rebuilds it. No fixup: the file stays
-      # byte-for-byte what tools/build-openal.sh links.
+      # store, so it compiles once per pin and toolchain. CI pulls it from the binary cache, which a
+      # maintainer refills by hand (docs/binary-cache.md). No fixup: the file stays byte-for-byte what
+      # tools/build-openal.sh links.
       openal = pkgs.stdenv.mkDerivation {
         pname = "cx-openal-soft";
         version = lib.head (builtins.match "openal-soft-(.*)\\.tar\\.gz" pins.openal-src.file);
