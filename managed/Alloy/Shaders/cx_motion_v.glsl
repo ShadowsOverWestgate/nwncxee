@@ -3,8 +3,8 @@ layout(location = 0) in vec3 aPos;
 #include "cx_drawbuf.glsl"
 #include "cx_featdecl.glsl"
 #include "cx_bone_v.glsl"
-layout(std430, binding = 26) readonly buffer CxBonePrevBuf { mat4 uBonePrev[]; };
-layout(std430, binding = 27) readonly buffer CxDanglyPrevBuf { float uDanglyPrev[]; };
+layout(std430, binding = 8) readonly buffer CxBonePrevBuf { mat4 uBonePrev[]; };
+layout(std430, binding = 9) readonly buffer CxDanglyPrevBuf { float uDanglyPrev[]; };
 uniform mat4 uVP;
 uniform mat4 uPrevVP;    // last frame's view-projection, unjittered
 uniform int uDrawBase;

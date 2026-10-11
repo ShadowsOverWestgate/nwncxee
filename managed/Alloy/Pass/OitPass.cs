@@ -11,7 +11,7 @@ internal static unsafe class OitPass
 {
     private const uint R16F = 0x822D, RGBA32F = 0x8814;   // not-an-offset: GL internal-format enums
     /// <summary>SSBO binding points of the head table (count at 0, then one head per pixel) and the node pool.</summary>
-    private const uint BindHeads = 22, BindNodes = 23;   // 21 is CullPass.BindRej (#489)
+    private const uint BindHeads = SsboSlots.OitHeads, BindNodes = SsboSlots.OitNodes;
     private const int NodeBytes = 16;
     /// <summary>Mode 2 frames the weighted pair stays written after an overflow reads back.
     /// ponytail: a fixed ~2 s at 60 fps, unmeasured; tie it to the overflow rate if bursts outlast it.</summary>

@@ -11,7 +11,7 @@
 // the wrong palette row. So the pair texture is sampled NEAREST and this does the bilinear (and the mip
 // blend) itself -- the same arithmetic a filtered composite would have performed, with no composite.
 layout(binding = 19) uniform sampler2D uPltPal;
-layout(std430, binding = 24) readonly buffer CxPltBuf { uint uPltRow[]; };
+layout(std430, binding = 7) readonly buffer CxPltBuf { uint uPltRow[]; };
 
 #define CX_PLT_WORDS    6   // five row words (two 16-bit rows each) + one flag word
 #define CX_PLT_ROWWORDS 5

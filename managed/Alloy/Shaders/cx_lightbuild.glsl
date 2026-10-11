@@ -4,14 +4,14 @@
 // CPU prioritizer, its cost does not grow with draw count.
 #version 460 core
 layout(local_size_x = $GROUP$) in;
-layout(std430, binding = 0) readonly buffer LightBuf { vec4 uLights[]; };
-layout(std430, binding = 1) writeonly buffer ClusterCount { uint uClCount[]; };
-layout(std430, binding = 2) buffer ClusterIdx { uint uClIdx[]; };
+layout(std430, binding = 8) readonly buffer LightBuf { vec4 uLights[]; };
+layout(std430, binding = 9) writeonly buffer ClusterCount { uint uClCount[]; };
+layout(std430, binding = 10) buffer ClusterIdx { uint uClIdx[]; };
 // [0] froxels that overflowed CAP; [1..3] a sampled build's entry totals -- binned, the kept prefix a
 // fragment walks, and the floor candidates its light.relevance search reads (AlloyLights.TakeClusterOverflow)
-layout(std430, binding = 3) buffer Stats { uint uStats[]; };
+layout(std430, binding = 14) buffer Stats { uint uStats[]; };
 // CasterPass.CubeDynSphere, the lit stage's own mover spheres (xyz, r; r < 0 unused), $DYNSPH$ per cube slot
-layout(std430, binding = 25) readonly buffer DynMovers { vec4 uDynMovers[]; };
+layout(std430, binding = 11) readonly buffer DynMovers { vec4 uDynMovers[]; };
 uniform mat4 uView;
 uniform vec2 uProjXY;
 uniform vec2 uZ;

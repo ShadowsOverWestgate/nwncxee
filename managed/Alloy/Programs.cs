@@ -361,7 +361,7 @@ internal static unsafe class Programs
             Gl.GetIntegerv(Gl.MAX_VERTEX_SHADER_STORAGE_BLOCKS, &vsBlocks);
             Gl.GetIntegerv(Gl.MAX_SHADER_STORAGE_BUFFER_BINDINGS, &bindings);
             Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
-            int needBind = (int)CasterGather.BindView + 1;
+            int needBind = (int)SsboSlots.Budget;
             bool short_ = vsBlocks < VsSsboNeed || bindings < needBind || units < LitUnitsNeed;
             _log?.Info($"AlloyRenderer: driver limits -- vertex SSBO blocks {vsBlocks} (needs {VsSsboNeed}, GL 4.6 floor 0), " +
                        $"SSBO bindings {bindings} (needs {needBind}, floor 8), fragment texture units {units} " +

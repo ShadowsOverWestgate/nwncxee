@@ -267,10 +267,10 @@ internal static unsafe class MotionVectors
           && AlloyRenderer.MotionVs.Contains("invariant gl_Position;") && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * vec4(p, 1.0)"),
           "the mover sweep (#392) shares the convention, and its clip position is the prepass's exact text");
         check.Expect(AlloyRenderer.MotionVs.Contains("if (bb >= 0) gl_Position = uVP * d.model * pos;")
-          && AlloyRenderer.MotionVs.Contains($"binding = {AlloyRenderer.BindBonesPrev}")
+          && AlloyRenderer.MotionVs.Contains($"binding = {AlloyRenderer.BindBonesPrev})")
           && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * (CxPrevSkinMat(bb) * vec4(aPos, 1.0))"),
           "a skinned mover (CX-26) takes the prepass's skinned clip text and last frame's palette");
-        check.Expect(AlloyRenderer.MotionVs.Contains($"binding = {AlloyRenderer.BindDanglyPrev}")
+        check.Expect(AlloyRenderer.MotionVs.Contains($"binding = {AlloyRenderer.BindDanglyPrev})")
           && AlloyRenderer.MotionVs.Contains("int k = gl_VertexID - gl_BaseVertex;") && AlloyRenderer.MotionVs.Contains("k < uDangly.y"),
           "a dangly mover (CX-26) reads its own vertex's pre-solve position, bounded by the snapshot");
         check.Expect(ShaderContract.RecordSafe(AlloyRenderer.MotionVs),

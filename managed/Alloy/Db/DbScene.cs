@@ -131,6 +131,10 @@ public static unsafe class DbScene
         if (!SceneDb.Scenes.Valid(scene) || !SceneDb.Objects.Valid(obj)) return;
         DbList m = Members(scene);
         if (!fresh && m.IndexOf(obj) >= 0) return;
+        // One scene per object: the scene/ChildAdd slots join without updating the shell's +0x88 word, so the
+        // engine's Gob::SetScene can ChildRemove from a stale word and leave the object drawing in its old panel.
+        DbId was = SceneDb.ObjScene[obj.Index];
+        if (!fresh && was.Value != scene.Value && Leave(was, obj)) Stranded(was, scene, obj);
         m.Add(obj);
         SceneDb.ObjScene[obj.Index] = scene;
         SceneDb.ObjCrossScene[obj.Index] = scene;
@@ -143,13 +147,13 @@ public static unsafe class DbScene
     /// scene column goes with it: <c>Gob::SetScene</c> @0x43e020 removes through <c>ChildRemove</c> and then fires
     /// "UpdateScenes", whose propagation reads that column -- left set, a dislodged control's riders stayed in the
     /// panel it left (the examine panel's Identify label without its button).</summary>
-    public static void Leave(DbId scene, DbId obj)
+    public static bool Leave(DbId scene, DbId obj)
     {
-        if (!SceneDb.Scenes.Valid(scene)) return;
+        if (!SceneDb.Scenes.Valid(scene)) return false;
         if (SceneDb.Objects.Valid(obj) && SceneDb.ObjScene[obj.Index].Value == scene.Value)
             SceneDb.ObjScene[obj.Index] = default;
         int i = scene.Index;
-        if (SceneDb.SceneObjects[i]?.Remove(obj) != true) return;
+        if (SceneDb.SceneObjects[i]?.Remove(obj) != true) return false;
         SceneDb.SceneHighlights[i]?.Remove(obj);
         SceneDb.Unhighlight(scene, obj);
         if (SceneDb.SceneBlindLights[i] == obj) SceneDb.SceneBlindLights[i] = default;
@@ -159,6 +163,23 @@ public static unsafe class DbScene
             if (SceneDb.SceneSky(scene, k) == obj) SceneDb.SetSceneSky(scene, k, default);
         SceneDb.TouchScene(scene, Dirty.Tree);
         SceneShell.CountChanged(scene);
+        return true;
+    }
+
+    /// <summary>Joins that found the object still listed in another scene, and how many of them were said.</summary>
+    private sealed class StrandState { public long Moved; public int Said; }
+    private static StrandState _strand = new();
+
+    /// <summary>An object joined a scene while still a member of another: said a few times with both scene
+    /// names, because each one was a control left painting in a panel it had moved out of.</summary>
+    private static void Stranded(DbId was, DbId scene, DbId obj)
+    {
+        _strand.Moved++;
+        if (_strand.Said >= 16) return;
+        _strand.Said++;
+        _log?.Always($"DbScene: o={obj.Index} \"{SceneDb.ObjModel[obj.Index]?.Name ?? "-"}\" joined scene "
+            + $"\"{SceneDb.SceneName[scene.Index]}\" while still listed in \"{SceneDb.SceneName[was.Index]}\" -- "
+            + "taken out of the old one (it would have kept drawing there)");
     }
 
     /// <summary>Move <paramref name="obj"/> to the front of the scene's draw order
@@ -275,5 +296,6 @@ public static unsafe class DbScene
 
     internal static string Stats(int _)
         => $"scenes: {SceneDb.Scenes.Live} live ({_created} created, {_destroyed} destroyed), {_reorders} draw-order moves"
-         + (_refused > 0 ? $", {_refused} REFUSED (table full)" : "");
+         + (_refused > 0 ? $", {_refused} REFUSED (table full)" : "")
+         + (_strand.Moved > 0 ? $", {_strand.Moved} object(s) moved out of a scene that still listed them" : "");
 }

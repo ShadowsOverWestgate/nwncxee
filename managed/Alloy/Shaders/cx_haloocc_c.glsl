@@ -7,8 +7,8 @@
 // 1 + round(coverage * 1024).
 #version 460 core
 layout(local_size_x = 64) in;
-layout(std430, binding = 5) readonly buffer CxHaloBuf { vec4 uHalos[]; };   // (pos, radius), (rgb, flareradius)
-layout(std430, binding = 8) writeonly buffer CxHaloVis { uint uVis[]; };   // Halos.BindVis
+layout(std430, binding = 8) readonly buffer CxHaloBuf { vec4 uHalos[]; };   // (pos, radius), (rgb, flareradius)
+layout(std430, binding = 9) writeonly buffer CxHaloVis { uint uVis[]; };   // Halos.BindVis
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform sampler2D uSceneDepth;

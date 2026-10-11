@@ -52,9 +52,9 @@ internal static unsafe class EnvProbe
 
     /// <summary>UBO binding of the SH9 block (<c>cx_material</c>'s <c>CxProbeSh</c>); 0 is the pass block.</summary>
     internal const uint ShBinding = 1;
-    /// <summary>SSBO binding <c>cx_probe_sh</c> writes the same buffer through: above every other SSBO binding
-    /// (8 is the bindless handle table, 27 the dangly history), so the dispatch clobbers nothing.</summary>
-    private const uint ShOutBinding = 28;
+    /// <summary>SSBO binding <c>cx_probe_sh</c> writes the same buffer through; the dispatch unbinds it after
+    /// (<see cref="SsboSlots.ProbeSh"/> says why that is safe).</summary>
+    private const uint ShOutBinding = SsboSlots.ProbeSh;
     /// <summary>9 vec4 of SH plus the capture origin, std140 = std430 for vec4s.</summary>
     private const int ShBytes = 10 * 16;
 

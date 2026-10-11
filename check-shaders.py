@@ -691,6 +691,30 @@ def check_driver_link(progs, g):
     return bad
 
 
+SSBO_BUDGET = int(re.search(r"const uint Budget = (\d+);", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "managed/Alloy/Core/SsboSlots.cs")).read()).group(1))
+SSBO_DECL = re.compile(r"layout\(std430,\s*binding\s*=\s*(\d+)\)\s*(?:\w+\s+)*?buffer\s+(\w+)")
+
+
+def check_ssbo(progs):
+    """Across a program's stages (SsboSlots.Check sees one stage at a time): every SSBO point under the budget,
+    and no point claimed by two different blocks -- a vertex and a fragment stage that disagree link cleanly
+    and read one buffer as the other."""
+    bad = 0
+    for name, stages in progs.items():
+        claimed = {}
+        for src in stages:
+            for at, block in SSBO_DECL.findall(src):
+                at = int(at)
+                if at >= SSBO_BUDGET:
+                    print(f"ssbo: {name}: {block} on point {at}, past the budget of {SSBO_BUDGET}")
+                    bad = 1
+                elif claimed.setdefault(at, block) != block:
+                    print(f"ssbo: {name}: {block} and {claimed[at]} both claim point {at}")
+                    bad = 1
+    print(f"ssbo: {'ok' if not bad else 'FAILED'} ({len(progs)} programs under {SSBO_BUDGET} points, one block per point)")
+    return bad
+
+
 def main():
     g = spliced(shaders())
     try:
@@ -714,6 +738,7 @@ def main():
                 bad = 1
                 print(r.stdout, r.stderr)
     print(f"{len(progs)} programs from {len(g)} embedded .glsl")
+    bad |= check_ssbo(progs)
     bad |= check_driver_link(progs, g)
     bad |= check_early_z(progs)
     bad |= check_material(g)

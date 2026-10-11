@@ -25,7 +25,7 @@ internal static unsafe partial class LightmapBake
     /// <summary>Frames the queue must stand still before a page's bake opens: rects enrol as parts do, a
     /// few a frame, and a page finished per trickle is a finish pass and a readback per frame.</summary>
     private const int SettleFrames = 30, HoldSettleFrames = 4;
-    internal const uint BindChart = 6;
+    internal const uint BindChart = SsboSlots.Chart;
     internal const uint UnitA = 20, UnitB = 21, UnitC = 22;
     /// <summary>Bytes per page texel over the three planes: A (RG11B10F irradiance), B (RGBA8 direction) and
     /// C (RGBA8 mover shares) -- the readback, the cache blobs and every upload are sized by it.</summary>
@@ -133,7 +133,7 @@ internal static unsafe partial class LightmapBake
     }
 
     /// <summary>The GLSL the lit stage composes for its read: the record buffer by ownership slot, the
-    /// two page arrays and the decode. <c>binding = 6</c> = <see cref="BindChart"/>; the sampler units are
+    /// two page arrays and the decode, the buffer on <see cref="BindChart"/>; the sampler units are
     /// <see cref="UnitA"/>/<see cref="UnitB"/>. A content override that never declares the buffer simply never
     /// reads the lightmap.</summary>
     internal static string ChartBufDecl => ShaderSource.Get("cx_chartbuf.glsl");
@@ -144,9 +144,10 @@ internal static unsafe partial class LightmapBake
     {
         if (locPages < 0) return;
         bool live = Enabled && _gl.Layers > 0 && _gl.BufChart != 0 && _gl.BufFilled;
+        // a shared point: left alone, the stage's unconditional uChart read lands in a compute pass's scratch
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindChart, _gl.BufChart);
         if (live)
         {
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindChart, _gl.BufChart);
             Gl.ActiveTexture(Gl.TEXTURE0 + UnitA); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _gl.TexA);
             Gl.ActiveTexture(Gl.TEXTURE0 + UnitB); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _gl.TexB);
             Gl.ActiveTexture(Gl.TEXTURE0 + UnitC); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _gl.TexC);

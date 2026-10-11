@@ -2,7 +2,7 @@
 // origin in page texels, page texels per atlas texel; CX-56 pick = the four static lights (set indices, -1 =
 // none) whose mover shares page C's four bytes hold. Written on landing/enrol/vacate edges, never per frame.
 struct CxChart { vec4 rec; vec4 pick; };
-layout(std430, binding = 6) readonly buffer CxChartBuf { CxChart uChart[]; };
+layout(std430, binding = 13) readonly buffer CxChartBuf { CxChart uChart[]; };
 layout(binding = 20) uniform sampler2DArray uLmA;   // irradiance, RG11B10F
 layout(binding = 21) uniform sampler2DArray uLmB;   // dominant direction, RGBA8 as xyz * 0.5 + 0.5
 layout(binding = 22) uniform sampler2DArray uLmC;   // CX-56: per mover channel, the share of the texel a mover takes back

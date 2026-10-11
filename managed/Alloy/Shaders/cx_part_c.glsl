@@ -1,11 +1,11 @@
 #version 460 core
 layout(local_size_x = 256) in;
 #include "cx_partrec.glsl"
-layout(std430, binding = 11) buffer CxParticleIdx { uint partIdx[]; };
+layout(std430, binding = 15) buffer CxParticleIdx { uint partIdx[]; };
 // (record base, particles, index offset, -), one per emitter the pass placed
-layout(std430, binding = 17) readonly buffer CxSpanBuf { uvec4 spans[]; };
+layout(std430, binding = 8) readonly buffer CxSpanBuf { uvec4 spans[]; };
 // (first span, spans, index offset, particles | 0x80000000 when this group may be reordered)
-layout(std430, binding = 18) readonly buffer CxGroupBuf { uvec4 groups[]; };
+layout(std430, binding = 9) readonly buffer CxGroupBuf { uvec4 groups[]; };
 
 uniform vec3 uEye;
 

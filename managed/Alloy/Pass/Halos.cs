@@ -19,10 +19,9 @@ internal static unsafe class Halos
     /// number the simulation consumes, not a pixel.</summary>
     private const string OccCs = "cx_haloocc_c";
 
-    /// <summary>SSBO binding points. <see cref="BindVis"/> is 8 because nothing else in the pipeline uses 8 --
-    /// <c>BindBufferBase</c> is global state, and 6 (the lightmap chart buffer) only happens not to collide
-    /// because the lit pass draws first.</summary>
-    private const uint BindHalos = 5, BindVis = 8;
+    /// <summary>SSBO binding points, both shared: the draw binds <see cref="BindHalos"/> and the occlusion
+    /// probe it runs reads it there before binding <see cref="BindVis"/>.</summary>
+    private const uint BindHalos = SsboSlots.Halos, BindVis = SsboSlots.HaloVis;
     private const uint GlTriangleStrip = 0x0005;   // not-an-offset: GL primitive-mode enum
     /// <summary>Two vec4 per halo: (pos.xyz, world radius), (linear rgb with the engine fade folded in, flareradius).</summary>
     private const int Floats = 8;

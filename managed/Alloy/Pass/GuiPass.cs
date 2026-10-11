@@ -15,7 +15,7 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class GuiPass
 {
-    private const uint BindGui = 31;
+    private const uint BindGui = SsboSlots.Gui;
     /// <summary>Ahead of <c>UiHostService</c>'s window roll-call (20) on the <c>nk_sdl_render</c> chain: the panels sit
     /// under the CX windows and NUI, as they do in the engine's order.</summary>
     private const int NkPriority = 40;
@@ -130,12 +130,13 @@ internal static unsafe class GuiPass
         _log?.Info("GuiPass: program built -- the GUI is Alloy's from this frame");
     }
 
-    /// <summary>Our own mechanism failed: said once, the GUI goes back to the engine for the session.</summary>
+    /// <summary>Our own mechanism failed: said once. Nothing draws the game's panels after this -- the scene
+    /// database has no engine traversal underneath -- so it is a hard failure naming the way out.</summary>
     private static void Fail(string why)
     {
         _failed = true;
-        _log?.Always($"GuiPass: {why} -- the GUI is the ENGINE's draw for the rest of the session");
-        Notice.Show(_log, $"Alloy could not draw the interface ({why}); the game's renderer draws it instead.");
+        _log?.Always($"GuiPass: {why} -- the game's GUI panels are NOT DRAWN for the rest of the session");
+        AlloyGate.Fail($"the interface could not be drawn ({why})");
     }
 
     /// <summary>Flush now -- a caller whose draws must land before the next foreign draw (nuklear's own site).</summary>

@@ -252,9 +252,10 @@ internal static class ShaderContract
         // #208: run FIRST and unconditionally -- it names the slot that disagreed, which the && chain below
         // would swallow.
         bool slots = TextureSlots.Check(log);
+        bool ssbo = SsboSlots.Check(log);
         bool pass = PassCheck(log);
         // the record's field list, counted by field size: the 288-byte stride staged above (#392 and ADR 0026 grew it)
-        bool ok = slots && pass && DrawBufDecl.Contains($"binding = {BindDraw}")
+        bool ok = slots && ssbo && pass && DrawBufDecl.Contains($"binding = {BindDraw})")
                   && RecordSafe(DrawBufDecl) && DrawBufDecl.Contains("vec4 feat; mat4 prev; vec4 ext0; vec4 ext1; vec4 ext2; }")
                   && DrawBufDecl.Contains("vec4 emi") && DrawBufDecl.Contains("vec4 spc")
                   && DrawBufDecl.Contains("vec4 feat")
@@ -276,7 +277,7 @@ internal static class ShaderContract
                   // empty block and collapses the mesh to the origin, a wrong location reads whatever stream
                   // the engine left at 8/9. The weight guards are bounds protection on an SSBO index, not a
                   // micro-optimisation, so their absence is checked as well.
-                  && BoneVs.Contains($"binding = {BindBones}")
+                  && BoneVs.Contains($"binding = {BindBones})")
                   && BoneVs.Contains($"layout(location = {LocBoneIdx}) in vec4 aBoneIdx;")
                   && BoneVs.Contains($"layout(location = {LocBoneW}) in vec4 aBoneWeight;")
                   && BoneVs.Contains("aBoneWeight.w > 0.0")
@@ -357,7 +358,7 @@ internal static class ShaderContract
                   // draw would read a neighbour's record -- the wrong matrix and the wrong textures on every
                   // part, which is a misrender with nothing in the log. The binding lives twice (this const,
                   // that literal) for the same reason BindDraw does.
-                  && DrawBufDecl.Contains($"binding = {BindDrawIdx}")
+                  && DrawBufDecl.Contains($"binding = {BindDrawIdx})")
                   && DrawBufDecl.Contains("int CxSlot(int draw) { return uDrawIdx[draw]; }")
                   && OwnedVs.Contains("uDraw[CxSlot(uDrawBase + gl_DrawID)]")
                   && DepthVs.Contains("int id = CxSlot(uDrawBase + gl_DrawID);")

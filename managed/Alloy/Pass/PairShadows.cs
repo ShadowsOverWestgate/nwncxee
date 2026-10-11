@@ -18,10 +18,9 @@ internal static unsafe class PairShadows
     /// <summary>Floats per pair record, in <c>cx_pairbuf.glsl</c>'s std430 layout: mat4 vp, vec4 pr, vec4 col,
     /// vec4 sph, vec4 ix, vec4 fx.</summary>
     internal const int RecFloats = 36;
-    /// <summary><c>cx_pairbuf.glsl</c>'s SSBO binding point. SHARED with <see cref="EnvProbe"/>'s writeonly SH output,
-    /// which binds it around its own dispatch and unbinds after; every pair reader rebinds through
-    /// <see cref="BindAtlas"/>, so a new SH dispatch between that bind and a pair read corrupts a shadow matrix.</summary>
-    internal const uint Binding = 28;
+    /// <summary><c>cx_pairbuf.glsl</c>'s SSBO binding point, a shared one: every pair reader rebinds it through
+    /// <see cref="BindAtlas"/>.</summary>
+    internal const uint Binding = SsboSlots.Pair;
     /// <summary>Movers (bodies, and loose dynamic props) one light may pair with. Past it the newest go without
     /// that light's shadow, and the count says so out loud.</summary>
     internal const int MaxPerLight = CasterPass.DynSpheres;

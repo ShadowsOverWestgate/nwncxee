@@ -82,13 +82,12 @@ internal static unsafe partial class Particles
     /// colours as <c>uintBitsToFloat</c>. All WORLD space -- the build transforms the centre and the two
     /// axes, cheaper than the corners -- and <c>prev</c> is where that centre was LAST frame.</summary>
     private const int RecFloats = 28;
-    /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
-    /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
-    /// stage names, and the two descriptor buffers take the next free pair above the cull's.</summary>
-    internal const uint BindRecs = 10, BindIdx = 11;
+    /// <summary>The record and index buffers the vertex stage names, above the light rig it also reads
+    /// (<see cref="SsboSlots"/>).</summary>
+    internal const uint BindRecs = SsboSlots.ParticleRecs, BindIdx = SsboSlots.ParticleIdx;
     /// <summary>The compute stage's inputs. <see cref="BindSpans"/> is one entry per emitter the pass
     /// placed, <see cref="BindGroups"/> one per draw group.</summary>
-    private const uint BindSpans = 17, BindGroups = 18;
+    private const uint BindSpans = SsboSlots.ParticleSpans, BindGroups = SsboSlots.ParticleGroups;
 
     /// <summary>The index-build workgroup size, and the largest group the compute sort will order: one
     /// workgroup per draw group, one shared-memory bitonic network per blended group. ponytail: the cap is

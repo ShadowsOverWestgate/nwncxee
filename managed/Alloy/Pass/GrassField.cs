@@ -45,9 +45,10 @@ internal static unsafe partial class GrassField
     private const int NearSegments = 7, FarSegments = 1;
     /// <summary>Floats per drawn record: the card stage's two instance vec4s plus the ground's normal.</summary>
     private const int InstFloats = 12;
-    /// <summary>SSBO bindings of the scatter. Shared with <see cref="CullPass"/>'s 12..16 on purpose: that pass
-    /// rebinds all of them before every dispatch, and nothing but the two compute passes reads them.</summary>
-    private const uint BindFaces = 12, BindPatches = 13, BindMats = 14, BindOut = 15, BindCmd = 16;
+    /// <summary>SSBO bindings of the scatter, on shared points: it rebinds all of them before every dispatch, and
+    /// the blade draw rebinds <see cref="BindMats"/> itself.</summary>
+    private const uint BindFaces = SsboSlots.GrassFaces, BindPatches = SsboSlots.GrassPatches, BindMats = SsboSlots.GrassMats,
+                       BindOut = SsboSlots.GrassOut, BindCmd = SsboSlots.GrassCmd;
     /// <summary>vec4s per material in the shared table (<c>cx_gbladebuf.glsl</c>'s <c>CX_GRASS_MATV</c>).</summary>
     private const int MatVec4 = 16;
     /// <summary>Patches baked per frame. Walking into a fresh area makes every visible bin new at once, and

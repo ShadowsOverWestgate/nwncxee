@@ -13,7 +13,7 @@
 //   ix  = (atlas layer, one tile texel in uv, cube slot, bake-set index)
 //   fx  = x the shadow's strength 0..1 (PairShadows.BudgetWeight: thinning toward the per-mover light budget's cut)
 struct CxPair { mat4 vp; vec4 pr; vec4 col; vec4 sph; vec4 ix; vec4 fx; };
-layout(std430, binding = 28) readonly buffer CxPairBuf
+layout(std430, binding = 12) readonly buffer CxPairBuf
 {
     int uPairN;        // pairs the table holds this frame; 0 = nothing is paired and no reader goes further
     int uPairPad[3];   // std430 pads the struct array to 16 bytes anyway: named rather than implied

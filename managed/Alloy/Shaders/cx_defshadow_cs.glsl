@@ -59,7 +59,7 @@ uniform int uShRes;      // shadow.deferredres: the record's divisor, 1 = full r
 /// [3] shadow-casting lights left UNSHADOWED past shadow.perpixel's budget (the walk hardware-taps them only on
 /// a pixel with no record at all). A budget with a counter, never a budget with a silence. Shared with
 /// cx_deferred_cs (DeferredLights owns the buffer).
-layout(std430, binding = 29) buffer CxDeferredStats { uint uDefStats[]; };
+layout(std430, binding = 14) buffer CxDeferredStats { uint uDefStats[]; };
 
 shared uint sDrop;
 

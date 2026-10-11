@@ -6,11 +6,11 @@
 // material's alpha-tested cards (2 + slot). The record is the card stage's instance layout (iPos, iParam) plus
 // the ground's normal and the blade's fade (iNrm). A patch too big for one workgroup is split across Y.
 layout(local_size_x = 64) in;
-layout(std430, binding = 12) readonly buffer CxGrassFaces { vec4 uFace[]; };      // 3 per face
-layout(std430, binding = 13) readonly buffer CxGrassPatches { uvec4 uPatch[]; };  // 2 per visible patch
+layout(std430, binding = 8) readonly buffer CxGrassFaces { vec4 uFace[]; };      // 3 per face
+layout(std430, binding = 9) readonly buffer CxGrassPatches { uvec4 uPatch[]; };  // 2 per visible patch
 #include "cx_gbladebuf.glsl"
-layout(std430, binding = 15) writeonly buffer CxGrassOut { vec4 uOut[]; };
-layout(std430, binding = 16) buffer CxGrassCmd { uint uCmd[]; };                  // DrawArraysIndirectCommand each
+layout(std430, binding = 10) writeonly buffer CxGrassOut { vec4 uOut[]; };
+layout(std430, binding = 11) buffer CxGrassCmd { uint uCmd[]; };                  // DrawArraysIndirectCommand each
 const uint CX_GRASS_RECV = 3u;  // GrassField.InstFloats / 4
 uniform vec4 uPlanes[6];
 uniform vec3 uEyePos;

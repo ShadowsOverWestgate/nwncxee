@@ -15,11 +15,8 @@ internal static unsafe class PltColors
     /// each.</summary>
     internal const int Layers = SceneDb.PltLayers;
 
-    /// <summary>SSBO binding of the per-record PLT row block. 0..3 are the light rig, 4 the draw records,
-    /// 5/6 the caster pass, 7 the Alloy bones, 8 the texture handles, 9 the draw index, 10/11 particles,
-    /// 12..16 the cull dispatch, 17..20 the caster gather, 26/27 the previous-frame bone and dangly blocks.
-    /// 24 is the first unused one.</summary>
-    internal const uint Binding = 24;
+    /// <summary>SSBO binding of the per-record PLT row block: persistent, bound once per frame.</summary>
+    internal const uint Binding = SsboSlots.Plt;
 
     /// <summary>Records the block holds: one per ownership slot plus the sky's reserved block, i.e. exactly
     /// <c>AlloyRenderer.MaxRecords</c> -- the block is indexed by the same slot the draw record is.</summary>

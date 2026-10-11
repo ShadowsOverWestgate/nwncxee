@@ -1,7 +1,7 @@
 // One instanced quad per halo, corners from gl_VertexID, view-aligned. Reach follows vanilla:
 // gone at flareradius. Occlusion is the fragment stage's, per pixel.
 #version 460 core
-layout(std430, binding = 5) readonly buffer CxHaloBuf { vec4 uHalos[]; };   // (pos, radius), (rgb, flareradius)
+layout(std430, binding = 8) readonly buffer CxHaloBuf { vec4 uHalos[]; };   // (pos, radius), (rgb, flareradius)
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform float uGain;

@@ -13,12 +13,11 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class CullPass
 {
-    /// <summary>SSBO bindings. 0..3 are <see cref="AlloyLights"/>, 4 the per-draw records, 5/6
-    /// <see cref="CasterPass"/>, 7 the Alloy bones, 8 the bindless handles, 9 the per-draw index array,
-    /// 10/11 <see cref="Particles"/>. Everything here is private to the dispatch except
+    /// <summary>SSBO bindings (<see cref="SsboSlots"/>), private to the dispatch except
     /// <see cref="AlloyRenderer.BindDrawIdx"/>, which the compacted slot buffer takes at DRAW time.</summary>
-    internal const uint BindSrc = 12, BindSphere = 13, BindCmd = 14, BindOutSlot = 15, BindCount = 16,
-                        BindKey = 17, BindRej = 21;
+    internal const uint BindSrc = SsboSlots.CullSrc, BindSphere = SsboSlots.CullSphere, BindCmd = SsboSlots.CullCmd,
+                        BindOutSlot = SsboSlots.CullOut, BindCount = SsboSlots.CullCount, BindKey = SsboSlots.CullKey,
+                        BindRej = SsboSlots.CullRej;
 
     /// <summary>Uints per source record: index count, first index, base vertex, record slot, batch, and the
     /// batch's output base. Six rather than five because the batch's start offset is what turns an

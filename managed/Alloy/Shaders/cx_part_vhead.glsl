@@ -1,6 +1,6 @@
 #version 460 core
 #include "cx_partrec.glsl"
-layout(std430, binding = 11) readonly buffer CxParticleIdx { uint partIdx[]; };
+layout(std430, binding = 15) readonly buffer CxParticleIdx { uint partIdx[]; };
 
 uniform mat4 uView;
 uniform mat4 uProj;

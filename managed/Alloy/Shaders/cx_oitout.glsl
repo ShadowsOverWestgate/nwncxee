@@ -8,8 +8,8 @@ uniform sampler2D uOitDepth;
 // ...so the twin forces the GL depth test (the scene depth, attached read-only) ahead of the shader: a hidden
 // fragment is rejected before it runs, and the append and its atomics never see it
 layout(early_fragment_tests) in;
-layout(std430, binding = 22) buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
-layout(std430, binding = 23) writeonly buffer CxOitNodes { uvec4 uOitNode[]; };
+layout(std430, binding = 4) buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
+layout(std430, binding = 5) writeonly buffer CxOitNodes { uvec4 uOitNode[]; };
 #endif
 uniform ivec2 uOitDim;   // (head-table stride in pixels, node capacity)
 uniform int uOitGob;     // the batch's object id (1..255, 0 = none): one object composites as ONE layer

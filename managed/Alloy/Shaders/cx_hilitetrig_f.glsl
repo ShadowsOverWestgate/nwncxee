@@ -7,7 +7,7 @@
 #version 460 core
 in vec2 vUV;
 const int CX_TRIG_MAX = 8;
-layout(std430, binding = 30) readonly buffer CxTrigBuf { vec4 uTrig[]; };
+layout(std430, binding = 8) readonly buffer CxTrigBuf { vec4 uTrig[]; };
 // uTrig[k]                      = (first point, point count, world z min, world z max)
 // uTrig[CX_TRIG_MAX + k]        = (r, g, b, alpha)
 // uTrig[2 * CX_TRIG_MAX + p]    = (x, y, -, -)

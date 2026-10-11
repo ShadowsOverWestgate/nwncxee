@@ -351,6 +351,16 @@ internal static unsafe class DbSceneSelfCheck
         check.Expect(DbScene.MemberCount(jScene) == 0, "...and it leaves like any other member");
         check.Expect(SceneDb.ObjScene[jObj.Index].IsNull,
                      "...and its scene column goes with it (ChildRemove's UpdateScenes propagates that column)");
+        // Gob::SetScene's ChildAdd onto a new panel with no matching ChildRemove (its +0x88 word was stale):
+        // the old panel must stop listing the object, or it keeps drawing there after the move.
+        DbId kScene = DbScene.Create("strandFrom");
+        DbScene.Join(kScene, jObj);
+        DbScene.Join(jScene, jObj);
+        check.Expect(DbScene.MemberCount(kScene) == 0, "a join elsewhere takes the object out of the scene it was in");
+        check.Expect(DbScene.MemberCount(jScene) == 1 && SceneDb.ObjScene[jObj.Index] == jScene,
+                     "...and it is a member of the new one alone");
+        DbScene.Leave(jScene, jObj);
+        DbScene.Destroy(kScene);
         SceneDb.Objects.Free(jObj);
         DbScene.Destroy(jScene);
 

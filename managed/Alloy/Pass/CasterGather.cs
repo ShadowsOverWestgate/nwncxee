@@ -13,10 +13,9 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class CasterGather
 {
-    /// <summary>SSBO bindings private to this dispatch. 0..3 are <see cref="AlloyLights"/>, 10/11
-    /// <see cref="Particles"/>, 12..16 <see cref="CullPass"/> -- whose <see cref="CullPass.BindSphere"/> this
-    /// dispatch also reads, because the bounds are the colour cull's own.</summary>
-    internal const uint BindSrc = 17, BindCmd = 18, BindCount = 19;
+    /// <summary>SSBO bindings private to this dispatch (<see cref="SsboSlots"/>), beside
+    /// <see cref="CullPass.BindSphere"/>, which it also reads because the bounds are the colour cull's own.</summary>
+    internal const uint BindSrc = SsboSlots.GatherSrc, BindCmd = SsboSlots.GatherCmd, BindCount = SsboSlots.GatherCount;
 
     // CX-50: ...and the two COARSE runs of the same mesh, out of which every view picks one by its own texel
     // size. ONE record per caster whatever levels it has: the staging, its batch regions, the command buffer
@@ -376,7 +375,7 @@ internal static unsafe class CasterGather
     /// bits [0, <see cref="ViewShift"/>) are the ownership slot, the bits above are the view-table index the
     /// vertex stage reads its fit matrix and layer from. <c>CasterPass.SelfCheck</c> pins the shift against
     /// <see cref="AlloyRenderer.MaxOwned"/>.</summary>
-    internal const uint BindView = 20;
+    internal const uint BindView = SsboSlots.ViewTbl;
     internal const int ViewShift = 18;
     /// <summary>Floats per view-table record: mat4 vp + (focus, reach) + (dir, along) + (receiver, point,
     /// set, layer) + (the two detail thresholds, two spare). std430 gives this struct no padding.</summary>
@@ -518,14 +517,14 @@ internal static unsafe class CasterGather
     /// with an <c>atomicAdd</c>, so every batch keeps its boundaries and only its interior order moves. Both
     /// view tests are the CPU reference's, term for term, and the cone test is conservative BY CONSTRUCTION:
     /// admitting a caster a face cannot see costs a depth draw, rejecting one it can see deletes a shadow.</summary>
-    private static readonly string GatherCs = ("""
+    internal static readonly string GatherCs = ("""
         #version 460 core
         layout(local_size_x = 64) in;   // GroupSize
 
-        layout(std430, binding = 13) readonly buffer CxCullSphere { vec4 uSph[]; };
-        layout(std430, binding = 17) readonly buffer CxGatherSrc  { uint uSrc[]; };
-        layout(std430, binding = 18) writeonly buffer CxGatherCmd { uint uCmd[]; };
-        layout(std430, binding = 19) buffer CxGatherCount         { uint uCnt[]; };
+        layout(std430, binding = 9) readonly buffer CxCullSphere { vec4 uSph[]; };
+        layout(std430, binding = 8) readonly buffer CxGatherSrc  { uint uSrc[]; };
+        layout(std430, binding = 10) writeonly buffer CxGatherCmd { uint uCmd[]; };
+        layout(std430, binding = 11) buffer CxGatherCount         { uint uCnt[]; };
         uniform int uDrawN;
         uniform int uPoint;
         uniform int uCull;
@@ -595,14 +594,14 @@ internal static unsafe class CasterGather
     /// read out of the view table instead of uniforms and one thread per (draw, view) pair. A survivor's
     /// command region is its batch's staged region scaled by the chunk's view count, and its
     /// <c>baseInstance</c> packs the view-table index above the ownership slot, for routing by <c>gl_Layer</c>.</summary>
-    private static readonly string LayerCs = ("""
+    internal static readonly string LayerCs = ("""
         #version 460 core
         layout(local_size_x = 64, local_size_y = 1) in;   // GroupSize
 
-        layout(std430, binding = 13) readonly buffer CxCullSphere { vec4 uSph[]; };
-        layout(std430, binding = 17) readonly buffer CxGatherSrc  { uint uSrc[]; };
-        layout(std430, binding = 18) writeonly buffer CxGatherCmd { uint uCmd[]; };
-        layout(std430, binding = 19) buffer CxGatherCount         { uint uCnt[]; };
+        layout(std430, binding = 9) readonly buffer CxCullSphere { vec4 uSph[]; };
+        layout(std430, binding = 8) readonly buffer CxGatherSrc  { uint uSrc[]; };
+        layout(std430, binding = 10) writeonly buffer CxGatherCmd { uint uCmd[]; };
+        layout(std430, binding = 11) buffer CxGatherCount         { uint uCnt[]; };
 
         """ + ViewTblDecl + """
         uniform int uDrawN;
@@ -669,7 +668,7 @@ internal static unsafe class CasterGather
         => LayerCs.Contains($"float lim = t * {Slope} + 2.0 * r;")
            && LayerCs.Contains("offEnds = abs(t) > uViewTbl[vi].b.w + r;")
            && LayerCs.Contains("offAxis = dot(perp, perp) > (reach + r) * (reach + r);")
-           && LayerCs.Contains($"binding = {CullPass.BindSphere}") && LayerCs.Contains("CxCullSphere")
+           && LayerCs.Contains($"binding = {CullPass.BindSphere})") && LayerCs.Contains("CxCullSphere")
            && LayerCs.Contains("if (uCull != 0 && s.w < 1e29)")
            && LayerCs.Contains($"uint b = i * {SrcUints}u;")
            && LayerCs.Contains("if (set == 1 && uSrc[b + 6u] != 0u) return;")
@@ -691,7 +690,7 @@ internal static unsafe class CasterGather
            // the slot rides the low bits the depth stage masks back out
            && LayerCs.Contains($"uCmd[q + 4u] = uint(slot) | (vi << {ViewShift}u);")
            && LayerCs.Contains("uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);")
-           && LayerCs.Contains($"binding = {BindView}")
+           && LayerCs.Contains($"binding = {BindView})")
            // #488: the receiver cull is per-VIEW flagged (c.x), inside the uCull gate, and conservative in
            // the two-spheres form; a rejection tallies past the batch counts, never into one
            && LayerCs.Contains("bool offAxis, offEnds, rx = uRx != 0 && vc.x != 0.0;")
@@ -699,8 +698,8 @@ internal static unsafe class CasterGather
            && LayerCs.Contains("if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
            && LayerCs.Contains("if (dist <= r) rx = false;")
            && LayerCs.Contains("p1 = s.xyz + dir * max(0.0, uViewTbl[vi].b.w - t);")
-           && LayerCs.Contains($"binding = {BindSrc}") && LayerCs.Contains($"binding = {BindCmd}")
-           && LayerCs.Contains($"binding = {BindCount}");
+           && LayerCs.Contains($"binding = {BindSrc})") && LayerCs.Contains($"binding = {BindCmd})")
+           && LayerCs.Contains($"binding = {BindCount})");
 
     /// <summary>What <c>CasterPass.SelfCheck</c> pins about the dispatch: the cull it runs is the CPU
     /// reference's, over the SHARED sphere buffer, with the shared exemption, conservative in the direction
@@ -713,7 +712,7 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("offEnds = abs(t) > uAlong + r;")
            && GatherCs.Contains("offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);")
            // #303: the shared bounds, at the colour cull's own binding, with its own exemption value.
-           && GatherCs.Contains($"binding = {CullPass.BindSphere}") && GatherCs.Contains("CxCullSphere")
+           && GatherCs.Contains($"binding = {CullPass.BindSphere})") && GatherCs.Contains("CxCullSphere")
            && GatherCs.Contains("if (uCull != 0 && s.w < 1e29)")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
            // #488: same receiver cull, flagged per dispatch
@@ -745,6 +744,6 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("uint c1 = uSrc[b + 7u], c2 = uSrc[b + 9u];")
            && GatherCs.Contains("if (cnt != 0u && uLodR1 > 0.0)")
            && GatherCs.Contains("uCmd[q] = cnt;") && GatherCs.Contains("uCmd[q + 2u] = first;")
-           && GatherCs.Contains($"binding = {BindSrc}") && GatherCs.Contains($"binding = {BindCmd}")
-           && GatherCs.Contains($"binding = {BindCount}");
+           && GatherCs.Contains($"binding = {BindSrc})") && GatherCs.Contains($"binding = {BindCmd})")
+           && GatherCs.Contains($"binding = {BindCount})");
 }

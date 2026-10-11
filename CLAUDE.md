@@ -225,6 +225,10 @@ shrink. Adding a rule means adding its gate in the same change, and one line her
 - `media-size.sh`: a file under `media/` over 300 KB fails; compress it to WebP or WebM.
 - `workflows.sh`: a workflow under `.gitea/workflows/` or `.github/workflows/` that actionlint refuses fails --
   bad YAML or expressions, a runner label missing from `.github/actionlint.yaml`, a shellcheck warning in a `run:`.
+- `ssbo-bindings.sh`: an `std430` binding, a `SsboSlots` constant at or past `SsboSlots.Budget` (16, Intel's Windows
+  GL), or a numeric SSBO index passed straight to `BindBufferBase`/`BindBufferRange` under `managed/` fails.
+  Every point lives in `Alloy/Core/SsboSlots.cs`: 0..7 persistent and exclusive, 8..15 shared by readers that
+  bind before they draw; `SsboSlots.Check` and `check-shaders.py` pin the GLSL to it.
 - `local-paths.sh`: a home directory, mount point or personal checkout path in a tracked file fails
   (`docs/adr/`, `docs/handoff/` exempt); a machine's paths go through `tools/paths.py`.
 

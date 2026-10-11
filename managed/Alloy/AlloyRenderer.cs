@@ -50,23 +50,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// block immediately above them. The sky's parts are not in the ownership table (they are captured off the
     /// engine's matrix stack) and are restaged every pass, so they take a fixed block at the top.</summary>
     internal const int MaxRecords = MaxOwned + MaxSkyDraws;
-    /// <summary>SSBO binding point of the per-draw block. Must match <c>DrawBufDecl</c>'s literal; 0..3 belong
-    /// to <see cref="AlloyLights"/> (lights, cluster counts, cluster indices, stats).</summary>
-    internal const uint BindDraw = 4;
-    /// <summary>SSBO binding of the Alloy pass's bone block. 0..3 are AlloyLights', 4 is the per-draw record,
-    /// 5 and 6 belong to <see cref="CasterPass"/>; must match <c>BoneBufDecl</c>'s literal. Its own block
-    /// rather than a share of the caster pass's: that one is written at the shadow bracket and read at the
-    /// next bake, this one is written and read inside a single colour pass.</summary>
-    internal const uint BindBones = 7;
+    /// <summary>SSBO binding point of the per-draw block. Must match <c>DrawBufDecl</c>'s literal.</summary>
+    internal const uint BindDraw = SsboSlots.Draw;
+    /// <summary>SSBO binding of the Alloy pass's bone block; must match <c>BoneBufDecl</c>'s literal.</summary>
+    internal const uint BindBones = SsboSlots.Bones;
     /// <summary>Last frame's bone block, read by the mover sweep alone.</summary>
-    internal const uint BindBonesPrev = 26;
-    /// <summary>SSBO binding of the per-draw texture-handle block (8 uvec2 per record). 0..3 = the light rig,
-    /// 4 = draws, 5 = caster records, 6 = caster bones, 7 = Alloy bones.</summary>
-    internal const uint BindTexH = 8;
+    internal const uint BindBonesPrev = SsboSlots.BonesPrev;
+    /// <summary>SSBO binding of the per-draw texture-handle block (8 uvec2 per record).</summary>
+    internal const uint BindTexH = SsboSlots.TexH;
     /// <summary>SSBO binding of the per-DRAW index array -- draw n of this pass names the record slot it
-    /// reads. 0..3 are AlloyLights', 4 the records, 5/6 CasterPass', 7 the bones, 8 the handles. Must match
-    /// <c>DrawBufDecl</c>'s literal.</summary>
-    internal const uint BindDrawIdx = 9;
+    /// reads. Must match <c>DrawBufDecl</c>'s literal.</summary>
+    internal const uint BindDrawIdx = SsboSlots.DrawIdx;
     /// <summary>Bones per skinned part, fixed by the engine: <c>GLRender::m_bones</c> is a 64 x mat4 static
     /// array and the vertex stream's indices address it directly. The matrices already sit in GLSL's
     /// column-major order (see <see cref="SymbolMap.GlRenderBones"/>), so a snapshot is a straight memcpy.

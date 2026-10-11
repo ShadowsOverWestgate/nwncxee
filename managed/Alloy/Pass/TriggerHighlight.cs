@@ -23,7 +23,7 @@ internal static unsafe class TriggerHighlight
     /// <c>cx_hilitetrig_f.glsl</c>; <see cref="SelfCheck"/> is what keeps the two from drifting.</summary>
     private const int PointBase = 2 * MaxTriggers;
     private const int Vec4s = PointBase + MaxPoints;
-    private const uint BindTrig = 30;
+    private const uint BindTrig = SsboSlots.Trig;
 
     private static readonly float[] _stage = new float[Vec4s * 4];
     private static int _count, _points;

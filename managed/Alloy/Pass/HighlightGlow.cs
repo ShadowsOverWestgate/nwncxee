@@ -18,8 +18,8 @@ internal static unsafe class HighlightGlow
     /// <summary>ponytail: a fixed staging ceiling (1 MiB) -- a Tab-highlight-all in a crowded area is the
     /// worst case; past it the rest is NOT DRAWN and logged once. Grow it if the log ever says so.</summary>
     private const int MaxQuads = 16384;
-    /// <summary>Shared with <see cref="TriggerHighlight"/> and <c>PairDebt</c>: each rebinds it before its own draw.</summary>
-    private const uint BindGlow = 30;
+    /// <summary>A shared point (<see cref="SsboSlots"/>): rebound before every draw.</summary>
+    private const uint BindGlow = SsboSlots.Glow;
     /// <summary>A gob whose <c>+0x108</c> alpha is under this dims its highlight colour by alpha / this
     /// (the 0.4f at 0x12f1ba8).</summary>
     private const float FadeKnee = 0.4f;

@@ -1,16 +1,16 @@
 #include "cx_pass.glsl"
-layout(std430, binding = 0) readonly buffer CxLightBuf { vec4 uLights[]; };
+layout(std430, binding = 8) readonly buffer CxLightBuf { vec4 uLights[]; };
 // THREE words per cluster, two 16-bit counts each, over the list cx_lightbuild lays out as
 // [0, liveCand) [.., live) [.., live + refl) [.., coldCand) [.., kept) [.., n): word 0 = n | live, word 1 =
 // refl | liveCand, word 2 = coldCand | kept. live leads the cold statics; refl is R4's water-film picks (0 on
 // every frame with no film); kept ends what light.relevance can leave lit at an on-screen fragment, and the
 // two candidate runs are the only lights that can be a fragment's brightest. Read through the CxCluster*
 // accessors, never raw.
-layout(std430, binding = 1) readonly buffer CxClusterCount { uint uClCount[]; };
-layout(std430, binding = 2) readonly buffer CxClusterIdx { uint uClIdx[]; };
+layout(std430, binding = 9) readonly buffer CxClusterCount { uint uClCount[]; };
+layout(std430, binding = 10) readonly buffer CxClusterIdx { uint uClIdx[]; };
 // CasterPass.CubeDynSphere: CX_DYN_SPHERES spheres (xyz, r; r < 0 unused) per cube slot round the movers
 // its dyn page holds -- a hot light owes nothing outside their shadow cones
-layout(std430, binding = 25) readonly buffer CxDynMovers { vec4 uDynMovers[]; };
+layout(std430, binding = 11) readonly buffer CxDynMovers { vec4 uDynMovers[]; };
 const int CX_DYN_SPHERES = $DYNSPH$;
 // CX-43: the cluster terms (uGrid, uTile, uZ) and the curve (uFalloff, uAtten, uHot, uReach, uWrap,
 // uWrapN, uSss) ride the pass block; cx_pass.glsl says what each lane is.

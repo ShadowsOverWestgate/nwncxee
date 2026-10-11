@@ -32,7 +32,7 @@ public sealed unsafe partial class CasterPass
                   && CastMaskFs.Contains("float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;")
                   && CastMaskHFs.Contains("float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;")
                   && CastMaskVs.Contains("vAlpha = d.rot.w;") && CastLayerMaskVs.Contains("vAlpha = d.rot.w;")
-                  && CastMaskHFs.Contains($"binding = {AlloyRenderer.BindTexH}")
+                  && CastMaskHFs.Contains($"binding = {AlloyRenderer.BindTexH})")
                   && CastMaskHFs.Contains("(vDraw << 3) + 0]")
                   && CastMaskHVs.Contains("vDraw = gl_BaseInstance;")
                   && CastMaskHVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
@@ -47,10 +47,10 @@ public sealed unsafe partial class CasterPass
                   && CastVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
                   && CastMaskVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
                   && !CastVs.Contains("c.model") && !CastMaskVs.Contains("c.model")
-                  && AlloyRenderer.DrawBufDecl.Contains($"binding = {BindDraw}")
+                  && AlloyRenderer.DrawBufDecl.Contains($"binding = {BindDraw})")
                   // #96 through #302: the bone base is the RECORD's, at the colour path's binding, and the
                   // stage must still treat a negative base as rigid and guard every weighted lane.
-                  && AlloyRenderer.BoneVs.Contains($"binding = {BindBones}")
+                  && AlloyRenderer.BoneVs.Contains($"binding = {BindBones})")
                   && CastVs.Contains("int bb = CxBoneBase(d);")
                   && CastVs.Contains("if (bb >= 0)") && AlloyRenderer.BoneVs.Contains("aBoneWeight.w > 0.0")
                   // #119's standing constraint: the rigid arm is the prepass's clip expression verbatim,
@@ -109,8 +109,8 @@ public sealed unsafe partial class CasterPass
                   && (1 << CasterGather.ViewShift) - 1 == 0x3ffff
                   && (1 << CasterGather.ViewShift) >= AlloyRenderer.MaxOwned
                   && MaxBakeViews <= 1 << (30 - CasterGather.ViewShift)
-                  && CastLayerVs.Contains($"binding = {CasterGather.BindView}")
-                  && CastLayerMaskVs.Contains($"binding = {CasterGather.BindView}")
+                  && CastLayerVs.Contains($"binding = {CasterGather.BindView})")
+                  && CastLayerMaskVs.Contains($"binding = {CasterGather.BindView})")
                   && CastLayerVs.Contains("int bb = CxBoneBase(d);")
                   && ShaderContract.DepthSafe(CastLayerVs) && ShaderContract.DepthSafe(CastLayerMaskVs)
                   && !CastLayerVs.Contains("discard")

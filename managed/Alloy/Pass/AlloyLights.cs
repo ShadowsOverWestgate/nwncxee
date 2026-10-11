@@ -42,7 +42,8 @@ internal static unsafe class AlloyLights
     /// wrapping and the atomics off every other frame.</summary>
     private const int TallyEvery = 16;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
-    private const uint BindLights = 0, BindCounts = 1, BindIndices = 2, BindStats = 3, BindMovers = 25;
+    private const uint BindLights = SsboSlots.Lights, BindCounts = SsboSlots.ClusterCount, BindIndices = SsboSlots.ClusterIdx,
+                       BindStats = SsboSlots.LightStats, BindMovers = SsboSlots.Movers;
     /// <summary>Point-light attenuation, as the ENGINE computes it: <c>f2 = d^2 / R^2</c> (R is
     /// <c>GetLightAdjustedRadius</c>, which is what we upload) and <c>att = (1 - f2) / (mi + ff * f2)</c>,
     /// verified against <c>inc_lighting.shd</c> at <c>GAMMA_CORRECTION == 1</c>. Range-NORMALISED, so the
@@ -693,7 +694,16 @@ internal static unsafe class AlloyLights
     /// follow a pass where the build was skipped).</summary>
     internal static void BindForDraw()
     {
-        if (!Ready) return;
+        if (!Ready)
+        {
+            // shared points: left alone, the lit stages would read the last compute pass's scratch as lights
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, 0);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, 0);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, 0);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMovers, 0);
+            PairShadows.BindAtlas();
+            return;
+        }
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _gl.BufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _gl.BufCounts);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _gl.BufIndices);

@@ -1,12 +1,12 @@
 #version 460 core
 layout(local_size_x = 64) in;   // GroupSize
-layout(std430, binding = 12) readonly buffer CxCullSrc     { uint uSrc[]; };
-layout(std430, binding = 13) readonly buffer CxCullSphere  { vec4 uSph[]; };
-layout(std430, binding = 14) writeonly buffer CxCullCmd    { uint uCmd[]; };
-layout(std430, binding = 15) writeonly buffer CxCullOutIdx { int  uOut[]; };
-layout(std430, binding = 16) buffer CxCullCount            { uint uCnt[]; };
-layout(std430, binding = 17) buffer CxCullKey              { float uKey[]; };
-layout(std430, binding = 21) buffer CxCullRej              { uint uRejBuf[]; };
+layout(std430, binding = 8) readonly buffer CxCullSrc     { uint uSrc[]; };
+layout(std430, binding = 9) readonly buffer CxCullSphere  { vec4 uSph[]; };
+layout(std430, binding = 10) writeonly buffer CxCullCmd    { uint uCmd[]; };
+layout(std430, binding = 11) writeonly buffer CxCullOutIdx { int  uOut[]; };
+layout(std430, binding = 12) buffer CxCullCount            { uint uCnt[]; };
+layout(std430, binding = 13) buffer CxCullKey              { float uKey[]; };
+layout(std430, binding = 14) buffer CxCullRej              { uint uRejBuf[]; };
 uniform int uDrawN;
 uniform vec4 uPlanes[6];
 uniform mat4 uVP;

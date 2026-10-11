@@ -33,7 +33,7 @@ public sealed unsafe partial class AlloyRenderer
     /// how many vertices.</summary>
     private static readonly int[] _oDpAt = new int[MaxOwned], _oDpBase = new int[MaxOwned], _oDpN = new int[MaxOwned];
     /// <summary>Last frame's dangly vertices, read by the mover sweep alone.</summary>
-    internal const uint BindDanglyPrev = 27;
+    internal const uint BindDanglyPrev = SsboSlots.DanglyPrev;
 
     /// <summary>The dangly solve's hand-off, called before it overwrites <paramref name="dst"/>: keep the
     /// outgoing positions of an OWNED part for the mover sweep. Main thread, per dangly part per frame;

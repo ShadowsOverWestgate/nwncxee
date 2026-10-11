@@ -8,7 +8,7 @@ layout(location = 2) in vec3 aNrm;
 layout(location = 3) in vec4 aColor;
 layout(location = 8) in vec4 aBoneIdx;
 layout(location = 9) in vec4 aBoneWeight;
-layout(std430, binding = 31) readonly buffer CxGuiBuf { vec4 uGui[]; };
+layout(std430, binding = 8) readonly buffer CxGuiBuf { vec4 uGui[]; };
 uniform int uBoneStart;   // vec4 index of the first palette, after the records
 out vec2 vUv;
 out vec4 vColor;

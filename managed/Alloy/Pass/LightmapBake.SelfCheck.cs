@@ -19,8 +19,8 @@ internal static unsafe partial class LightmapBake
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
-        check.Expect(ChartBufDecl.Contains($"binding = {BindChart}") && ChartBufDecl.Contains($"binding = {UnitA}") && ChartBufDecl.Contains($"binding = {UnitB}")
-                     && ChartBufDecl.Contains($"binding = {UnitC}"),
+        check.Expect(ChartBufDecl.Contains($"binding = {BindChart})") && ChartBufDecl.Contains($"binding = {UnitA})") && ChartBufDecl.Contains($"binding = {UnitB})")
+                     && ChartBufDecl.Contains($"binding = {UnitC})"),
           "the GLSL bindings drifted from BindChart/UnitA/UnitB/UnitC");
         check.Expect(ChartBufDecl.Contains($"CX_LM_PAGE = {PageSize}.0") && BakeVs.Contains($"CX_LM_PAGE = {PageSize}.0") && BakeGs.Contains($"CX_LM_PAGE = {PageSize}.0"), "the GLSL page size drifted from PageSize");
         check.Expect(BakeFs.Contains("CxPointLight(") && BakeFs.Contains("CxPointDiffuse(") && BakeFs.Contains("CxLocalShadow("),

@@ -21,7 +21,7 @@ public sealed unsafe partial class AlloyRenderer
     internal const string ShdWaterVs = "cx_water_vs", ShdWaterFs = "cx_water_fs";
 
     /// <summary>The per-draw block, reached through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>: everything that
-    /// varies per part, so one multidraw covers a group. Records persist by ownership slot; <c>binding = 4</c>
+    /// varies per part, so one multidraw covers a group. Records persist by ownership slot; its binding
     /// must match <see cref="BindDraw"/>, <c>rot</c> is (cos, sin) of the tile texture rotation and
     /// <c>prev</c> last frame's model matrix. ponytail: GL 4.6 requires no vertex SSBO; a refused link is loud.</summary>
     internal static string DrawBufDecl => ShaderSource.Get("cx_drawbuf.glsl");
@@ -32,7 +32,7 @@ public sealed unsafe partial class AlloyRenderer
     internal static string FeatDecl => ShaderSource.Get("cx_featdecl.glsl");
 
     /// <summary>The skinning half of the Alloy vertex stages, vertex-side only and shared by both stages
-    /// verbatim so a robe shades identically lit or unlit. <c>binding = 7</c> must stay in step with
+    /// verbatim so a robe shades identically lit or unlit. its binding must stay in step with
     /// <see cref="BindBones"/> and the attribute locations with <see cref="LocBoneIdx"/>/<see cref="LocBoneW"/>;
     /// a std430 <c>mat4</c> array's 64-byte stride IS the engine's <c>m_bones</c>, so the CPU side is a memcpy.</summary>
     internal static string BoneVs => ShaderSource.Get("cx_bone_v.glsl");

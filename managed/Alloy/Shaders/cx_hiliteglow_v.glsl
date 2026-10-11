@@ -2,7 +2,7 @@
 // gl_VertexID. The record is the quad's world centre and its two half-axes, built on the CPU from each mesh
 // part's bounding box under the part's composed transform.
 #version 460 core
-layout(std430, binding = 30) readonly buffer CxHiliteGlowBuf { vec4 uGlow[]; };   // (centre, alpha), (U, 0), (V, 0), (rgb, 0)
+layout(std430, binding = 8) readonly buffer CxHiliteGlowBuf { vec4 uGlow[]; };   // (centre, alpha), (U, 0), (V, 0), (rgb, 0)
 uniform mat4 uView;
 uniform mat4 uProj;
 out vec2 vUV;

@@ -157,6 +157,7 @@ internal static unsafe partial class LightmapBake
         Gl.ClearBufferfv(Gl.COLOR, 0, zero); Gl.ClearBufferfv(Gl.COLOR, 1, zero); Gl.ClearBufferfv(Gl.COLOR, 2, zero);
         Gl.DepthMask(1); Gl.ClearBufferfv(Gl.DEPTH, 0, zero); Gl.DepthMask(0);
         Gl.UseProgram(_gl.ProgBake);
+        AlloyLights.BindForDraw();
         Gl.Uniform1i(_bMode, 0);
         BindNullCubes();
         Gl.Uniform1f(_bDepth, -1f);
@@ -268,6 +269,7 @@ internal static unsafe partial class LightmapBake
         new PassState(depth: true, depthWrite: true, blend: true, cull: false, srgb: false, blendSrc: Gl.ONE, blendDst: Gl.ONE).Apply();
         Gl.DepthFunc(Gl.GREATER);
         Gl.UseProgram(_gl.ProgBake);
+        AlloyLights.BindForDraw();
         Gl.Uniform1i(_bMode, 1);
         Gl.Uniform1f(_bDepth, (float)(_bakeLight + 1) / BakeDepthSteps * 2f - 1f);
         Vector3 c = _setCol[l];

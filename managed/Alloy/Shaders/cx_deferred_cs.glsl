@@ -133,7 +133,7 @@ shared uint sMiss;
 /// threw away: the reach window's, the relevance cut's and the facing test's own rejects.
 /// Averages for the period line, not an audit: the quotients resolve to about CX_WALK_UNIT / (pixels in a
 /// group) = 1/16 of a light, a tap or an entry per pixel. Loud by the period line, never silent.
-layout(std430, binding = 29) buffer CxDeferredStats { uint uDefStats[]; };
+layout(std430, binding = 14) buffer CxDeferredStats { uint uDefStats[]; };
 
 // ---- the list source ------------------------------------------------------------------------------------
 // cx_lightfrag declares these; the walk reads nothing else. uTiles is a uniform, so the branch is coherent

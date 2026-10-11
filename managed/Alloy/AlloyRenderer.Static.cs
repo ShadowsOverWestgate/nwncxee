@@ -7,7 +7,7 @@ namespace CX.Alloy;
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>Headless: the per-draw record's layout contract -- <c>CxDraw</c>, one 72-float, 288-byte std430
-    /// block at binding 4 indexed by ownership slot, sound only while the GLSL declares that same layout.</summary>
+    /// block at <see cref="SsboSlots.Draw"/> indexed by ownership slot, sound only while the GLSL declares that same layout.</summary>
     internal static bool StaticSelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "AlloyRenderer.StaticSelfCheck");
@@ -15,8 +15,8 @@ public sealed unsafe partial class AlloyRenderer
         check.Expect(ExtFloat == PrevFloat + 16 && ExtFloat + ParamFloats - ParamExt == DrawFloats,
           "ADR 0026's ext0..ext2 do not sit between prev and the record's end");
         check.Expect(ShaderContract.RecordSafe(DrawBufDecl), "the GLSL CxDraw declaration does not add up to DrawFloats");
-        check.Expect(DrawBufDecl.Contains($"binding = {BindDraw}"), $"CxDrawBuf is not declared at binding {BindDraw}");
-        check.Expect(DrawBufDecl.Contains($"binding = {BindDrawIdx}"), $"CxDrawIdxBuf is not declared at binding {BindDrawIdx}");
+        check.Expect(DrawBufDecl.Contains($"binding = {BindDraw})"), $"CxDrawBuf is not declared at binding {BindDraw}");
+        check.Expect(DrawBufDecl.Contains($"binding = {BindDrawIdx})"), $"CxDrawIdxBuf is not declared at binding {BindDrawIdx}");
         check.Expect(CullPass.SourceStrideSafe(),
           "the cull or sort stage strides the source list by something other than CullPass.SrcUints");
 

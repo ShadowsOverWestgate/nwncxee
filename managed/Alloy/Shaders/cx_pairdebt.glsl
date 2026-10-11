@@ -63,7 +63,7 @@ shared uint sN, sDrop, sMinZ, sMaxZ;
 /// Loud by the period line, never silent. PER TILE and written by lane 0 alone: a counter incremented per
 /// owing PIXEL would be a hundred thousand atomics a frame on one word, which is a cost to measure with and
 /// not a measurement; tiles x the group's 256 pixels is the footprint either way.
-layout(std430, binding = 30) buffer CxPairStats { uint uPairStats[]; };
+layout(std430, binding = 14) buffer CxPairStats { uint uPairStats[]; };
 
 /// This group's view-space box, from its padded NDC rect and the depth slab its own BAKED deferred pixels
 /// span, plus the world-space bounding sphere the pair volumes are tested against. The rect is padded by one

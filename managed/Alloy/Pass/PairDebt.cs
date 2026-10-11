@@ -19,9 +19,8 @@ internal static unsafe class PairDebt
 
     /// <summary>The pass's own stats buffer: [0] tiles whose pair list overflowed, [1] the pairs they dropped,
     /// [2] tiles that held a pair, [3] the ablation ladder's sink, which the shipped program never writes and
-    /// nothing reads. A point nothing else in the colour bracket takes
-    /// (<see cref="TriggerHighlight"/>'s is a later program's).</summary>
-    private const uint BindStats = 30;
+    /// nothing reads. A shared point, bound before the dispatch.</summary>
+    private const uint BindStats = SsboSlots.PairStats;
     private const int StatsWords = 4;
     /// <summary>Frames between stats harvests. The counters accumulate GPU-side and are never reset, so a
     /// sampled harvest loses nothing -- the delta since the last one is what the period line adds up.</summary>

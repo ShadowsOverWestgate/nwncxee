@@ -6,8 +6,8 @@ uniform int uViz;
 uniform int uMode;
 uniform int uNet;        // 1 = the weighted pair was written this frame (mode 2 writes it only after an overflow)
 uniform ivec2 uOitDim;   // (head-table stride, node capacity)
-layout(std430, binding = 22) readonly buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
-layout(std430, binding = 23) readonly buffer CxOitNodes { uvec4 uOitNode[]; };
+layout(std430, binding = 4) readonly buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
+layout(std430, binding = 5) readonly buffer CxOitNodes { uvec4 uOitNode[]; };
 // ponytail: 16 sorted layers a pixel; past that the far end composites unsorted. Raise if glass stacks deeper.
 const int K = 16;
 const int VizWalk = 64;   // uViz 4: nodes walked per pixel before the grey saturates

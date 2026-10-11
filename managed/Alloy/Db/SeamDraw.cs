@@ -168,6 +168,7 @@ internal static class SeamDraw
             sig = (sig ^ DbGui.LastWhy) * 1099511628211;
         }
         if (say && sig != _orderSig) { _orderSig = sig; SayOrder(f); }
+        SayWorldViews(f);
         // CX-120 (gui): issue the frame's captured GUI layers HERE, after every view. GuiPass's own two flush
         // sites are the engine's draw order -- nk_sdl_render inside CGuiMan::UpdateAndRender, and PrePresent
         // priority 5 -- and both run BEFORE this boundary, so a panel captured here was issued at the NEXT
@@ -259,6 +260,53 @@ internal static class SeamDraw
     }
 
     private static long _guiViews, _guiText;
+
+    /// <summary>The world-view tripwire's memory: the set last said, and the lines left to say.</summary>
+    private sealed class WorldViewState { public ulong Sig; public int Left = 40; }
+    private static WorldViewState _worldViews = new();
+
+    /// <summary>A frame that draws the world through more than one view, or through a camera with a viewport of its
+    /// own, said whenever that set changes: each such view clears its rect and paints the area from its camera.
+    /// Silent, and allocation-free, on the ordinary frame of one world view through the world camera.</summary>
+    private static void SayWorldViews(RenderSnapshot.Frame f)
+    {
+        WorldViewState st = _worldViews;
+        int n = 0;
+        bool odd = false;
+        ulong sig = 14695981039346656037;   // not-an-offset: the FNV-1a 64 offset basis
+        for (int k = 0; k < f.ViewCount; k++)
+        {
+            ref RenderSnapshot.ViewRec v = ref f.Views[k];
+            if (!v.World) continue;
+            n++;
+            int c = v.Camera.Index;
+            if ((uint)c < SceneDb.MaxCameras && SceneDb.CamViewW[c] > 0f) odd = true;
+            sig = (sig ^ v.Camera.Value) * 1099511628211;
+            sig = (sig ^ v.Scene.Value) * 1099511628211;
+        }
+        if (n > 1) odd = true;
+        if (!odd) sig = 0;
+        if (sig == st.Sig || st.Left <= 0) return;
+        st.Sig = sig;
+        st.Left--;
+        if (!odd) { _log?.Always($"SeamDraw: [worldviews] frame {f.Index}: back to one world view through the world camera"); return; }
+        var sb = new System.Text.StringBuilder();
+        for (int k = 0; k < f.ViewCount; k++)
+        {
+            ref RenderSnapshot.ViewRec v = ref f.Views[k];
+            if (!v.World) continue;
+            int c = v.Camera.Index, s = v.Scene.Index;
+            bool cam = (uint)c < SceneDb.MaxCameras;
+            DbId camScene = cam ? SceneDb.CamScene[c] : default;
+            sb.Append(" | view ").Append(k).Append(" scene=").Append(s).Append(" \"")
+              .Append((uint)s < SceneDb.MaxScenes ? SceneDb.SceneName[s] ?? "?" : "?").Append("\" cam=").Append(c)
+              .Append(v.Camera == SceneInputs.DbWorldCamera ? " (THE world camera)" : "")
+              .Append(" camScene=").Append(camScene.Index)
+              .Append(cam ? $" camRect={SceneDb.CamViewX[c]:F0},{SceneDb.CamViewY[c]:F0} {SceneDb.CamViewW[c]:F0}x{SceneDb.CamViewH[c]:F0}" : "")
+              .Append($" drawRect={v.X},{v.Y} {v.W}x{v.H} camPos=({v.CamPos.X:F1},{v.CamPos.Y:F1},{v.CamPos.Z:F1}) persp={v.Perspective}");
+        }
+        _log?.Always($"SeamDraw: [worldviews] frame {f.Index}: {n} world view(s) of {f.ViewCount}{sb}");
+    }
 
     private const int OrderBudget = 80;
     private static int _orderSaid;

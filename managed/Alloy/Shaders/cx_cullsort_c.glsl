@@ -1,9 +1,9 @@
 #version 460 core
 layout(local_size_x = 64) in;   // GroupSize
-layout(std430, binding = 12) readonly buffer CxCullSrc     { uint uSrc[]; };
-layout(std430, binding = 14) writeonly buffer CxCullCmd    { uint uCmd[]; };
-layout(std430, binding = 15) writeonly buffer CxCullOutIdx { int  uOut[]; };
-layout(std430, binding = 17) readonly buffer CxCullKey     { float uKey[]; };
+layout(std430, binding = 8) readonly buffer CxCullSrc     { uint uSrc[]; };
+layout(std430, binding = 10) writeonly buffer CxCullCmd    { uint uCmd[]; };
+layout(std430, binding = 11) writeonly buffer CxCullOutIdx { int  uOut[]; };
+layout(std430, binding = 13) readonly buffer CxCullKey     { float uKey[]; };
 uniform int uDrawN;
 uniform int uCompactBelow;
 

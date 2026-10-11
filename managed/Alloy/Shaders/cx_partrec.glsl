@@ -28,4 +28,4 @@ struct CxParticle
     vec4 prev;        // CX-48: xyz = the centre this particle had LAST frame (its own centre where there is
                       // no previous frame to take one from), w unused
 };
-layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
+layout(std430, binding = 14) readonly buffer CxParticleBuf { CxParticle particles[]; };

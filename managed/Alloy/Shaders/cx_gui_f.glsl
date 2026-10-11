@@ -7,7 +7,7 @@ in vec2 vUv;
 in vec4 vColor;
 in vec3 vNrm;
 flat in int vRec;
-layout(std430, binding = 31) readonly buffer CxGuiBuf { vec4 uGui[]; };
+layout(std430, binding = 8) readonly buffer CxGuiBuf { vec4 uGui[]; };
 layout(binding = 0) uniform sampler2D uTex;
 layout(binding = 19) uniform sampler2D uPltPal;
 uniform int uGamma;   // GAMMA_CORRECTION: the engine's ApplyColorSpace/RevertColorSpace pair is live

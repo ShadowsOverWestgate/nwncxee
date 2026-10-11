@@ -23,9 +23,9 @@ internal static unsafe class DeferredLights
 
     /// <summary>The deferred pass's stats buffer: [0] tiles whose list overflowed, [1] the lights they dropped,
     /// [2] pixels that found no usable shadow record, [3] lights <see cref="DeferredShadows"/> left unshadowed
-    /// past <c>shadow.perpixel</c>'s budget. The shader's binding, and a point nothing else in the colour bracket
-    /// takes; the shadow pass binds the same buffer, so one harvest covers both dispatches.</summary>
-    internal const uint BindStats = 29;
+    /// past <c>shadow.perpixel</c>'s budget. A shared point, bound before each dispatch;
+    /// the shadow pass binds the same buffer, so one harvest covers both dispatches.</summary>
+    internal const uint BindStats = SsboSlots.DeferredStats;
     private const int StatsWords = 8;
     /// <summary>Frames between stats harvests. The counters accumulate GPU-side and are never reset, so a
     /// sampled harvest loses nothing -- the delta since the last one is what the period line adds up.</summary>
@@ -119,7 +119,7 @@ internal static unsafe class DeferredLights
 
         if (Own) SelectEscape(AlloyLights.ShadowCap <= 0f || AlloyLights.ShadowPerPixel <= 0f || DeferredShadows.Res <= 0);
         Gl.UseProgram(_gl.Prog);
-        // The light SSBO, the cluster table and the mover spheres (binding 25), exactly as a lit draw gets them.
+        // The light SSBO, the cluster table and the mover spheres, exactly as a lit draw gets them.
         AlloyLights.BindForDraw();
         // ...and this pass's own CxPass block, the cascade and cube arrays, and uLocalCubes. Filled from the same
         // frame state and the same viewport as the colour pass's binds, so the block compares equal and no upload
