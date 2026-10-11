@@ -4,6 +4,8 @@ CX is an optional add-on for the Neverwinter Nights: Enhanced Edition client. It
 game client (a modern renderer, a new chatbox, hotkeys, nameplates, combat text, positional audio and
 more). It is a client mod: it changes nothing on the server and needs nothing from it.
 
+See it in the game in the [gallery](media/README.md).
+
 Run the stock client and you play vanilla. Uninstalling is deleting a few files.
 
 CX is not affiliated with or endorsed by Beamdog. It loads into the game process, so only install a
@@ -92,6 +94,9 @@ architecture and how to add a feature.
 Fork the repository and open a pull request against `main`. CI doesn't run on a pull request from a
 fork until a maintainer approves it. Once you've had a pull request merged here, your CI runs start
 on their own.
+
+Owners push their branches as `owners/<name>`. Any other branch in this repository can't change a file
+under `.gitea/`, and that includes merging in a workflow change from `main`.
 
 ## Reporting a problem
 

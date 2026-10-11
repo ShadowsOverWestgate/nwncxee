@@ -222,6 +222,7 @@ shrink. Adding a rule means adding its gate in the same change, and one line her
   goes on to log "passed". A self-check Claude writes names its oracle in the check's `<summary>`.
 - `server-neutral.sh`: `managed/` naming a specific server or its content (SoW, Westgate, Arelith) fails;
   describe it generically. `Framework/Product.cs` (the hosting URLs) is exempt.
+- `media-size.sh`: a file under `media/` over 300 KB fails; compress it to WebP or WebM.
 - `workflows.sh`: a workflow under `.gitea/workflows/` or `.github/workflows/` that actionlint refuses fails --
   bad YAML or expressions, a runner label missing from `.github/actionlint.yaml`, a shellcheck warning in a `run:`.
 - `local-paths.sh`: a home directory, mount point or personal checkout path in a tracked file fails
